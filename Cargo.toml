@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/desktop",
+    "apps/app-server",
+    "crates/protocol",
+    "crates/media-transport",
+    "benchmarks/harness",
+    "tools/media-probe",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+dsmini-protocol = { path = "crates/protocol" }
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "process", "io-util"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tokio-tungstenite = "0.30"
+prost = "0.14"
+prost-build = "0.14"
+protox = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Keep debug builds small: full debug info only for workspace crates.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+opt-level = 3

@@ -1,0 +1,139 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "AMD Ryzen 5 5500",
+    "git_commit": null,
+    "logical_cpus": 12,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 34246471680
+  },
+  "label": "femtovg",
+  "params": {
+    "client_args": [
+      "--window-pos",
+      "2020,100",
+      "--no-activate"
+    ],
+    "env": [],
+    "exe": "D:/dsmini-target/release/dsmini-desktop.exe",
+    "runs": 7,
+    "settle_ms": 3000
+  },
+  "samples": [
+    {
+      "clean_exit": true,
+      "first_frame_ms": 345.3282,
+      "in_app_first_frame_ms": 328.0,
+      "memory": {
+        "peak_working_set_bytes": 75382784,
+        "private_bytes": 80392192,
+        "working_set_bytes": 74993664
+      },
+      "renderer": "opengl",
+      "run": 0
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 346.00399999999996,
+      "in_app_first_frame_ms": 332.0,
+      "memory": {
+        "peak_working_set_bytes": 75587584,
+        "private_bytes": 80826368,
+        "working_set_bytes": 75464704
+      },
+      "renderer": "opengl",
+      "run": 1
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 410.1705,
+      "in_app_first_frame_ms": 394.0,
+      "memory": {
+        "peak_working_set_bytes": 75390976,
+        "private_bytes": 81207296,
+        "working_set_bytes": 75096064
+      },
+      "renderer": "opengl",
+      "run": 2
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 413.14689999999996,
+      "in_app_first_frame_ms": 396.0,
+      "memory": {
+        "peak_working_set_bytes": 75317248,
+        "private_bytes": 79691776,
+        "working_set_bytes": 75022336
+      },
+      "renderer": "opengl",
+      "run": 3
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 409.6227,
+      "in_app_first_frame_ms": 392.0,
+      "memory": {
+        "peak_working_set_bytes": 63193088,
+        "private_bytes": 63754240,
+        "working_set_bytes": 63082496
+      },
+      "renderer": "opengl",
+      "run": 4
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 372.16900000000004,
+      "in_app_first_frame_ms": 357.0,
+      "memory": {
+        "peak_working_set_bytes": 75313152,
+        "private_bytes": 79880192,
+        "working_set_bytes": 75018240
+      },
+      "renderer": "opengl",
+      "run": 5
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 398.4455,
+      "in_app_first_frame_ms": 384.0,
+      "memory": {
+        "peak_working_set_bytes": 75333632,
+        "private_bytes": 80470016,
+        "working_set_bytes": 74993664
+      },
+      "renderer": "opengl",
+      "run": 6
+    }
+  ],
+  "scenario": "desktop-startup",
+  "summary": {
+    "all_clean_exit": true,
+    "exe_mib": 9.09375,
+    "first_frame_ms": {
+      "max": 413.14689999999996,
+      "min": 345.3282,
+      "n": 7,
+      "p50": 398.4455,
+      "p95": 413.14689999999996,
+      "p99": 413.14689999999996
+    },
+    "first_run_ms": 345.3282,
+    "private_mib": {
+      "max": 77.4453125,
+      "min": 60.80078125,
+      "n": 7,
+      "p50": 76.66796875,
+      "p95": 77.4453125,
+      "p99": 77.4453125
+    },
+    "working_set_mib": {
+      "max": 71.96875,
+      "min": 60.16015625,
+      "n": 7,
+      "p50": 71.54296875,
+      "p95": 71.96875,
+      "p99": 71.96875
+    }
+  }
+}

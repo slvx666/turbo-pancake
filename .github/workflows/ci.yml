@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest] # macos-latest = Apple Silicon
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain version comes from rust-toolchain.toml.
+      - name: Install toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Linux system packages (winit/X11/Wayland, fontconfig, ALSA)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype-dev libasound2-dev libgl1-mesa-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --locked
+
+      - name: release build (size tracking)
+        run: cargo build --release --locked -p dsmini-desktop -p dsmini-app-server
+
+      - name: desktop smoke (Linux, Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb
+          xvfb-run -a cargo run --release --locked -p dsmini-bench -- \
+            --out-dir target/bench desktop-startup --exe target/release/dsmini-desktop \
+            --runs 2 --settle-ms 1000 --label ci-xvfb --env SLINT_BACKEND=winit-software
+
+      - name: signaling benchmark smoke
+        shell: bash
+        run: |
+          exe=target/release/dsmini-app-server
+          [ "$RUNNER_OS" = "Windows" ] && exe="$exe.exe"
+          cargo run --release --locked -p dsmini-bench -- --out-dir target/bench \
+            signaling --server-exe "$exe" --messages 200 --idle-connections 100
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}
+          path: target/bench/*.json
+          if-no-files-found: ignore
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

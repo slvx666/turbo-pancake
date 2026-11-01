@@ -1,0 +1,80 @@
+{
+  "default_host": "Wasapi",
+  "hosts": [
+    {
+      "default_input": "Микрофон (fifine Microphone)",
+      "default_output": "Realtek HD Audio 2nd output (Realtek(R) Audio)",
+      "host": "Wasapi",
+      "inputs": [
+        {
+          "default": {
+            "buffer_size": "Range { min: 480, max: 480 }",
+            "channels": 2,
+            "sample_format": "F32",
+            "sample_rate": 48000
+          },
+          "name": "Virtual Mic (Virtual Mic for AudioRelay)"
+        },
+        {
+          "default": {
+            "buffer_size": "Range { min: 1920, max: 1920 }",
+            "channels": 1,
+            "sample_format": "F32",
+            "sample_rate": 192000
+          },
+          "name": "Микрофон (fifine Microphone)"
+        },
+        {
+          "default": {
+            "buffer_size": "Range { min: 480, max: 480 }",
+            "channels": 2,
+            "sample_format": "F32",
+            "sample_rate": 48000
+          },
+          "name": "Микрофон (Realtek(R) Audio)"
+        }
+      ],
+      "outputs": [
+        {
+          "default": {
+            "buffer_size": "Range { min: 1920, max: 1920 }",
+            "channels": 2,
+            "sample_format": "F32",
+            "sample_rate": 192000
+          },
+          "name": "Realtek HD Audio 2nd output (Realtek(R) Audio)"
+        },
+        {
+          "default": {
+            "buffer_size": "Range { min: 480, max: 480 }",
+            "channels": 2,
+            "sample_format": "F32",
+            "sample_rate": 48000
+          },
+          "name": "P2510H PRO+ (NVIDIA High Definition Audio)"
+        },
+        {
+          "default": {
+            "buffer_size": "Range { min: 480, max: 480 }",
+            "channels": 2,
+            "sample_format": "F32",
+            "sample_rate": 48000
+          },
+          "name": "Virtual Speakers (Virtual Speakers for AudioRelay)"
+        }
+      ]
+    }
+  ],
+  "open_test": {
+    "default_input": {
+      "callbacks_per_sec": 96,
+      "expected_frames_per_sec": 192000,
+      "frames_per_sec": 182784
+    },
+    "default_output": {
+      "callbacks_per_sec": 100,
+      "expected_frames_per_sec": 192000,
+      "frames_per_sec": 194304
+    }
+  }
+}

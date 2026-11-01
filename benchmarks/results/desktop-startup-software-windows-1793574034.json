@@ -1,0 +1,144 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "AMD Ryzen 5 5500",
+    "git_commit": null,
+    "logical_cpus": 12,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 34246471680
+  },
+  "label": "software",
+  "params": {
+    "client_args": [
+      "--window-pos",
+      "2020,100",
+      "--no-activate"
+    ],
+    "env": [
+      [
+        "SLINT_BACKEND",
+        "winit-software"
+      ]
+    ],
+    "exe": "D:/dsmini-target/release/dsmini-desktop.exe",
+    "runs": 7,
+    "settle_ms": 3000
+  },
+  "samples": [
+    {
+      "clean_exit": true,
+      "first_frame_ms": 73.5513,
+      "in_app_first_frame_ms": 56.0,
+      "memory": {
+        "peak_working_set_bytes": 22867968,
+        "private_bytes": 6594560,
+        "working_set_bytes": 22867968
+      },
+      "renderer": "software",
+      "run": 0
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 137.2859,
+      "in_app_first_frame_ms": 110.0,
+      "memory": {
+        "peak_working_set_bytes": 22798336,
+        "private_bytes": 6533120,
+        "working_set_bytes": 22798336
+      },
+      "renderer": "software",
+      "run": 1
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 72.6078,
+      "in_app_first_frame_ms": 50.0,
+      "memory": {
+        "peak_working_set_bytes": 22814720,
+        "private_bytes": 6537216,
+        "working_set_bytes": 22814720
+      },
+      "renderer": "software",
+      "run": 2
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 54.690000000000005,
+      "in_app_first_frame_ms": 37.0,
+      "memory": {
+        "peak_working_set_bytes": 22822912,
+        "private_bytes": 6561792,
+        "working_set_bytes": 22822912
+      },
+      "renderer": "software",
+      "run": 3
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 43.4658,
+      "in_app_first_frame_ms": 31.0,
+      "memory": {
+        "peak_working_set_bytes": 24043520,
+        "private_bytes": 7041024,
+        "working_set_bytes": 24043520
+      },
+      "renderer": "software",
+      "run": 4
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 108.41919999999999,
+      "in_app_first_frame_ms": 68.0,
+      "memory": {
+        "peak_working_set_bytes": 22818816,
+        "private_bytes": 6533120,
+        "working_set_bytes": 22818816
+      },
+      "renderer": "software",
+      "run": 5
+    },
+    {
+      "clean_exit": true,
+      "first_frame_ms": 67.7537,
+      "in_app_first_frame_ms": 48.0,
+      "memory": {
+        "peak_working_set_bytes": 22798336,
+        "private_bytes": 6516736,
+        "working_set_bytes": 22798336
+      },
+      "renderer": "software",
+      "run": 6
+    }
+  ],
+  "scenario": "desktop-startup",
+  "summary": {
+    "all_clean_exit": true,
+    "exe_mib": 9.09375,
+    "first_frame_ms": {
+      "max": 137.2859,
+      "min": 43.4658,
+      "n": 7,
+      "p50": 72.6078,
+      "p95": 137.2859,
+      "p99": 137.2859
+    },
+    "first_run_ms": 73.5513,
+    "private_mib": {
+      "max": 6.71484375,
+      "min": 6.21484375,
+      "n": 7,
+      "p50": 6.234375,
+      "p95": 6.71484375,
+      "p99": 6.71484375
+    },
+    "working_set_mib": {
+      "max": 22.9296875,
+      "min": 21.7421875,
+      "n": 7,
+      "p50": 21.76171875,
+      "p95": 22.9296875,
+      "p99": 22.9296875
+    }
+  }
+}
