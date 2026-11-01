@@ -54,7 +54,9 @@ footprint than OpenGL. Video frames (S3+) will need a GPU path regardless.
 3. Frame-time p50/p95/p99 during animations/scrolling at 60/144 Hz per renderer. **UNVERIFIED.**
 4. Text rendering quality with Cyrillic + emoji at 100/125/150/200 % scaling. Visual check
    at 100 % done (screenshot during S0 smoke); other scales **UNVERIFIED**.
-5. macOS (M4) and Linux X11/Wayland measurements. **UNVERIFIED.**
+5. macOS (M4) and Linux X11/Wayland measurements on real hardware. **UNVERIFIED.**
+   CI smoke only (2026-11-02, shared VMs without GPU): Linux X11/Xvfb software renderer
+   first frame 44 ms, RSS 19.8 MiB; macOS arm64 runner OpenGL first frame ~1 s, RSS 105.5 MiB.
 
 ## Alternatives (if Slint fails an item)
 

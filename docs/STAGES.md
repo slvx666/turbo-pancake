@@ -5,7 +5,7 @@ verbatim-in-meaning so each session can check them.
 
 | Stage | Scope | Acceptance (short) | Status |
 |---|---|---|---|
-| S0 | Audit, skeleton, media feasibility | compiles on CI targets or blockers recorded; real native window; toolchain recorded; reproducible benchmark harness; PROJECT_STATE filled; ADRs for UI/codecs/GPU textures/str0m/capture/audio | IN_PROGRESS (see state) |
+| S0 | Audit, skeleton, media feasibility | compiles on CI targets or blockers recorded; real native window; toolchain recorded; reproducible benchmark harness; PROJECT_STATE filled; ADRs for UI/codecs/GPU textures/str0m/capture/audio | DONE (2026-11-02, CI run 41364362270) |
 | S1 | 1:1 voice end-to-end | two real clients talk via server; continuity under moderate loss; no audio loop; resources freed after leave; trials recorded | NOT_STARTED |
 | S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | NOT_STARTED |
 | S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | NOT_STARTED |
