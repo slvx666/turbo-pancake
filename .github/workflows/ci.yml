@@ -51,6 +51,13 @@ jobs:
       - name: release build (size tracking)
         run: cargo build --release --locked -p dsmini-desktop -p dsmini-app-server
 
+      - name: desktop smoke (macOS, runner GUI session)
+        if: runner.os == 'macOS'
+        run: |
+          cargo run --release --locked -p dsmini-bench -- \
+            --out-dir target/bench desktop-startup --exe target/release/dsmini-desktop \
+            --runs 2 --settle-ms 1000 --label ci-macos
+
       - name: desktop smoke (Linux, Xvfb)
         if: runner.os == 'Linux'
         run: |
