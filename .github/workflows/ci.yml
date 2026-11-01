@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -19,7 +22,7 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest] # macos-latest = Apple Silicon
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Toolchain version comes from rust-toolchain.toml.
       - name: Install toolchain
@@ -64,7 +67,7 @@ jobs:
           cargo run --release --locked -p dsmini-bench -- --out-dir target/bench \
             signaling --server-exe "$exe" --messages 200 --idle-connections 100
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: bench-${{ matrix.os }}
           path: target/bench/*.json
@@ -72,8 +75,11 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write # audit-check publishes its result as a check run
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

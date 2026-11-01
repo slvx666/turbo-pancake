@@ -5,10 +5,11 @@
 
 mod mem;
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
@@ -165,14 +166,21 @@ fn stats(mut v: Vec<f64>) -> Option<Stats> {
 
 const MIB: f64 = 1024.0 * 1024.0;
 
-/// Spawns a child with piped stdout and forwards its lines over a channel.
-fn spawn_lines(mut cmd: Command) -> anyhow::Result<(Child, mpsc::Receiver<String>)> {
+/// Last lines of a child's stderr, kept for diagnostics when it misbehaves.
+type StderrTail = Arc<Mutex<VecDeque<String>>>;
+
+const STDERR_TAIL_LINES: usize = 40;
+
+/// Spawns a child with piped stdout/stderr; stdout lines are forwarded over a
+/// channel, the tail of stderr is retained for error reports.
+fn spawn_lines(mut cmd: Command) -> anyhow::Result<(Child, mpsc::Receiver<String>, StderrTail)> {
     let mut child = cmd
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("spawning {cmd:?}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -181,7 +189,18 @@ fn spawn_lines(mut cmd: Command) -> anyhow::Result<(Child, mpsc::Receiver<String
             }
         }
     });
-    Ok((child, rx))
+    let tail: StderrTail = Arc::default();
+    let tail_w = tail.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let mut t = tail_w.lock().expect("stderr tail lock");
+            if t.len() == STDERR_TAIL_LINES {
+                t.pop_front();
+            }
+            t.push_back(line);
+        }
+    });
+    Ok((child, rx, tail))
 }
 
 fn wait_line(
@@ -195,9 +214,37 @@ fn wait_line(
         match rx.recv_timeout(left) {
             Ok(l) if l.starts_with(prefix) => return Ok(l),
             Ok(_) => continue,
-            Err(_) => bail!("timed out waiting for `{prefix}`"),
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!("timed out waiting for `{prefix}`"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("process closed stdout (exited?) before printing `{prefix}`")
+            }
         }
     }
+}
+
+/// Adds exit status and stderr tail of `child` to an error.
+fn with_child_diag(err: anyhow::Error, child: &mut Child, tail: &StderrTail) -> anyhow::Error {
+    // Give the stderr reader a moment to drain after the process died.
+    std::thread::sleep(Duration::from_millis(200));
+    let status = match child.try_wait() {
+        Ok(Some(s)) => s.to_string(),
+        Ok(None) => "still running".to_owned(),
+        Err(e) => format!("unknown ({e})"),
+    };
+    let stderr = tail
+        .lock()
+        .map(|t| {
+            t.iter().cloned().collect::<Vec<_>>().join(
+                "
+",
+            )
+        })
+        .unwrap_or_default();
+    err.context(format!(
+        "child status: {status}
+--- child stderr (tail) ---
+{stderr}"
+    ))
 }
 
 fn desktop_startup(
@@ -224,8 +271,15 @@ fn desktop_startup(
             .args(client_args)
             .envs(envs.iter().cloned());
         let t0 = Instant::now();
-        let (mut child, rx) = spawn_lines(cmd)?;
-        let line = wait_line(&rx, "DSMINI_FIRST_FRAME", Duration::from_secs(30))?;
+        let (mut child, rx, tail) = spawn_lines(cmd)?;
+        let line = match wait_line(&rx, "DSMINI_FIRST_FRAME", Duration::from_secs(30)) {
+            Ok(l) => l,
+            Err(e) => {
+                let err = with_child_diag(e, &mut child, &tail);
+                let _ = child.kill();
+                return Err(err);
+            }
+        };
         let first_frame_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let mut parts = line.split_whitespace().skip(1);
         let in_app_ms: f64 = parts
@@ -323,8 +377,9 @@ async fn signaling(
 ) -> anyhow::Result<serde_json::Value> {
     let mut cmd = Command::new(server_exe);
     cmd.args(["--bind", "127.0.0.1:0"]).env("RUST_LOG", "warn");
-    let (mut child, rx) = spawn_lines(cmd)?;
+    let (mut child, rx, tail) = spawn_lines(cmd)?;
     let result = signaling_inner(&child, &rx, messages, idle_connections).await;
+    let result = result.map_err(|e| with_child_diag(e, &mut child, &tail));
     let _ = child.kill();
     let _ = child.wait();
     let (summary, raw) = result?;

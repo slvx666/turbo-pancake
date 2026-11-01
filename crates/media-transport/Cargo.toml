@@ -8,9 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Pure-Rust crypto backend for the spike (no cmake/NASM/OpenSSL needed on any OS).
-# Production backend selection is tracked in docs/ADR/0003-webrtc-str0m.md.
-str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
+# aws-lc-rs backend (str0m default). `rust-crypto` was dropped: it pulls
+# crypto-bigint 0.5 (RUSTSEC-2026-0387, timing side channels). See ADR 0003.
+str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 thiserror.workspace = true
 
 [dev-dependencies]
