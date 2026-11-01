@@ -2,7 +2,7 @@
 //!
 //! Windows: working set, peak working set and private bytes (commit charge)
 //! via `GetProcessMemoryInfo`. Linux: VmRSS / VmHWM and private (anon+file
-//! private) pages from `/proc/<pid>/smaps_rollup`. macOS: RSS via `sysinfo`
+//! private) pages from `/proc/<pid>/smaps_rollup`. macOS: RSS via `ps`
 //! (private bytes not yet sampled: UNVERIFIED there).
 
 use serde::Serialize;
@@ -79,15 +79,17 @@ pub fn sample(pid: u32) -> anyhow::Result<MemSample> {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn sample(pid: u32) -> anyhow::Result<MemSample> {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
-    let mut sys = System::new()?;
-    let pid = Pid::from_u32(pid);
-    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    let p = sys
-        .process(pid)
-        .ok_or_else(|| anyhow::anyhow!("process {pid} not found"))?;
+    // `sysinfo` did not find the child on the macOS CI runner; `ps` is part of
+    // the base system and reports RSS in KiB.
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()?;
+    let kib: u64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("ps reported no RSS for process {pid}"))?;
     Ok(MemSample {
-        working_set_bytes: p.memory(),
+        working_set_bytes: kib * 1024,
         peak_working_set_bytes: 0,
         private_bytes: None,
     })
