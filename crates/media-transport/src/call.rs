@@ -16,7 +16,12 @@
 //! The offerer creates the SDP offer with one send/receive audio m-line (Opus only,
 //! FEC via in-band LBRR, no RED); host candidates travel inside the SDP, extra ones
 //! (later: server-reflexive/TURN) through [`CallDriver::remote_candidate`].
+//!
+//! With the SFU (ADR 0008) the server sends every other member as its own SSRC on the one
+//! m-line; [`CallDriver::expect_source`] registers each SSRC the signaling announced, and
+//! [`AudioIn::ssrc`] tells the streams apart.
 
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -26,7 +31,7 @@ use std::time::{Duration, Instant};
 use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::format::Codec;
 use str0m::media::{Direction, MediaKind, Mid, Pt};
-use str0m::rtp::{RtpWrite, SeqNo};
+use str0m::rtp::{RtpWrite, SeqNo, Ssrc};
 use str0m::{Candidate, Event, IceConnectionState, Rtc};
 
 use crate::{TransportError, TunnelSend, UdpPeer};
@@ -103,6 +108,8 @@ pub struct AudioOut {
 /// One received Opus packet.
 #[derive(Debug, Clone)]
 pub struct AudioIn {
+    /// RTP stream the packet came on (one per remote member through the SFU).
+    pub ssrc: u32,
     pub seq: u16,
     pub timestamp: u32,
     pub payload: Vec<u8>,
@@ -171,6 +178,8 @@ enum Command {
     RemoteOffer(String),
     RemoteAnswer(String),
     RemoteCandidate(String),
+    ExpectSource(u32),
+    ForgetSource(u32),
     Stop,
 }
 
@@ -214,7 +223,8 @@ impl CallDriver {
             peer.set_send_loss(config.send_loss, 0x5eed);
         }
         let local_addr = peer.local_addr();
-        let (cmd_tx, cmd_rx) = sync_channel(16);
+        // Room for a whole room's sources announced at once (≤ 100 members).
+        let (cmd_tx, cmd_rx) = sync_channel(256);
         let (ev_tx, ev_rx) = sync_channel(64);
         let stats = Arc::new(Mutex::new(CallStats::default()));
         let worker = Worker {
@@ -236,6 +246,8 @@ impl CallDriver {
             tx_seq: None,
             last_rx: Instant::now(),
             rx_bytes_seen: 0,
+            sources: HashSet::new(),
+            sources_pending: Vec::new(),
         };
         let thread = std::thread::Builder::new()
             .name("tp-call".into())
@@ -274,6 +286,16 @@ impl CallDriver {
 
     pub fn remote_candidate(&self, candidate: String) -> Result<(), TransportError> {
         self.send(Command::RemoteCandidate(candidate))
+    }
+
+    /// Accept the remote RTP stream with this SSRC (packets of unknown SSRCs are dropped).
+    /// May be called before the call is connected.
+    pub fn expect_source(&self, ssrc: u32) -> Result<(), TransportError> {
+        self.send(Command::ExpectSource(ssrc))
+    }
+
+    pub fn forget_source(&self, ssrc: u32) -> Result<(), TransportError> {
+        self.send(Command::ForgetSource(ssrc))
     }
 
     pub fn stats(&self) -> CallStats {
@@ -323,6 +345,9 @@ struct Worker {
     /// Last time any datagram arrived (bytes counter moved).
     last_rx: Instant,
     rx_bytes_seen: u64,
+    /// Remote SSRCs to accept; `sources_pending` waits until the audio m-line exists.
+    sources: HashSet<u32>,
+    sources_pending: Vec<u32>,
 }
 
 /// Longest idle sleep of the call loop: bounds the extra latency of an outgoing frame.
@@ -361,6 +386,7 @@ impl Worker {
                 break;
             }
             self.send_audio();
+            self.declare_sources();
             match self.peer.step(STEP) {
                 Ok(events) => {
                     for e in events {
@@ -423,6 +449,22 @@ impl Worker {
                 Command::RemoteCandidate(c) => Candidate::from_sdp_string(&c)
                     .map(|c| self.peer.rtc.add_remote_candidate(c))
                     .map_err(|e| TransportError::Candidate(e.to_string())),
+                Command::ExpectSource(ssrc) => {
+                    if self.sources.insert(ssrc) {
+                        self.sources_pending.push(ssrc);
+                    }
+                    Ok(())
+                }
+                Command::ForgetSource(ssrc) => {
+                    if self.sources.remove(&ssrc) {
+                        self.sources_pending.retain(|s| *s != ssrc);
+                        self.peer
+                            .rtc
+                            .direct_api()
+                            .remove_stream_rx(Ssrc::from(ssrc));
+                    }
+                    Ok(())
+                }
             };
             if let Err(e) = result {
                 self.fail(format!("signaling: {e}"));
@@ -454,6 +496,20 @@ impl Worker {
         self.peer.rtc.sdp_api().accept_answer(pending, answer)?;
         self.set_state(CallState::Connecting);
         Ok(())
+    }
+
+    /// Registers pending remote SSRCs once the audio m-line exists.
+    fn declare_sources(&mut self) {
+        if self.sources_pending.is_empty() {
+            return;
+        }
+        let Some(mid) = self.mid.filter(|m| self.peer.rtc.media(*m).is_some()) else {
+            return;
+        };
+        let mut api = self.peer.rtc.direct_api();
+        for ssrc in self.sources_pending.drain(..) {
+            api.expect_stream_rx(Ssrc::from(ssrc), None, mid, None);
+        }
     }
 
     fn send_audio(&mut self) {
@@ -520,6 +576,7 @@ impl Worker {
                     self.set_state(CallState::Connected);
                 }
                 (self.on_audio)(AudioIn {
+                    ssrc: *p.header.ssrc,
                     // Truncating the extended number gives the sender's u16 back.
                     seq: *p.seq_no as u16,
                     timestamp: p.header.timestamp,

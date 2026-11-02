@@ -4,12 +4,17 @@
 //! Covers (spec S1 acceptance, headless part): join → call with 5 % loss, mute, leave
 //! releases devices and threads and the other member sees it at once, rejoin; a VPN that
 //! carries no UDP (every UDP datagram dropped) → automatic fallback to the WebSocket; a
-//! server without UDP → WebSocket at once; a signaling outage ends media and reconnects.
+//! server without UDP → WebSocket at once; a signaling outage ends media and reconnects;
+//! three members each hear both others as separate streams (S2, ADR 0008).
+//!
+//! The tests run one at a time ([`serial`]): each client is a real-time audio pipeline
+//! paced by the wall clock, and several debug builds of them in parallel starve each
+//! other (seen as concealed frames), which is not what these tests measure.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use turbo_pancake_app_server::Config;
@@ -134,6 +139,12 @@ fn played(s: &Snapshot) -> u64 {
         .map_or(0, |p| p.stats.jitter.played)
 }
 
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Starts an app-server (with its SFU) on its own runtime thread; dropping the sender
 /// stops it.
 fn server(
@@ -181,6 +192,7 @@ fn talking(o: Opts) -> Opts {
 
 #[test]
 fn two_sessions_call_through_the_server() {
+    let _serial = serial();
     let (addr, _server) = server(None, Config::default());
     // A talks (440 Hz tone) and loses 5 % of what it sends; B is silent.
     let (mut a, mut b) = pair(
@@ -261,6 +273,7 @@ fn two_sessions_call_through_the_server() {
 
 #[test]
 fn vpn_without_udp_falls_back_to_the_websocket() {
+    let _serial = serial();
     let (addr, _server) = server(None, Config::default());
     // Every UDP datagram of both clients is lost: only the tunnel can work.
     let blocked = || Opts {
@@ -286,6 +299,7 @@ fn vpn_without_udp_falls_back_to_the_websocket() {
 
 #[test]
 fn server_without_udp_uses_the_websocket_at_once() {
+    let _serial = serial();
     let config = Config {
         media_udp: false,
         ..Config::default()
@@ -304,6 +318,7 @@ fn server_without_udp_uses_the_websocket_at_once() {
 
 #[test]
 fn signaling_outage_ends_media_and_reconnects() {
+    let _serial = serial();
     let (addr, server_stop) = server(None, Config::default());
     let (mut a, mut b) = pair(addr, "outage", talking(Opts::default()), Opts::default());
 
@@ -332,4 +347,69 @@ fn signaling_outage_ends_media_and_reconnects() {
     a.quit();
     b.quit();
     assert!(a.released() && b.released());
+}
+
+/// Remote streams at this client that played at least `frames` frames of sound.
+fn heard(s: &Snapshot, frames: u64) -> usize {
+    s.engine.as_ref().map_or(0, |e| {
+        e.peers
+            .iter()
+            .filter(|p| p.stats.jitter.played >= frames && p.stats.last_peak > 0.1)
+            .count()
+    })
+}
+
+#[test]
+fn three_members_each_hear_both_others() {
+    let _serial = serial();
+    let (addr, _server) = server(None, Config::default());
+    let names = ["Алиса", "Боб", "Вера"];
+    let mut c: Vec<Client> = names
+        .iter()
+        .map(|n| Client::start(addr, n, talking(Opts::default())))
+        .collect();
+    for x in &mut c {
+        x.send(Command::Join("trio".into()));
+        x.wait("joined", 10, |s| s.joined && s.engine.is_some());
+    }
+    // Every member: two separate remote streams (one per other member), both audible.
+    for x in &mut c {
+        x.wait("both others heard", 20, |s| {
+            s.members.len() == 2 && heard(s, 100) == 2
+        });
+        let e = x.last.engine.as_ref().unwrap();
+        assert_eq!(e.peers.len(), 2, "{:?}", e.peers);
+        for p in &e.peers {
+            assert_eq!(p.stats.decode_errors, 0);
+            assert!(p.stats.concealed_ratio() < 0.03, "{:?}", p.stats);
+        }
+    }
+
+    // Вера leaves: the others keep hearing each other, her stream is gone at once.
+    let mut v = c.pop().unwrap();
+    v.send(Command::Leave);
+    v.wait("left", 10, |s| s.engine.is_none());
+    assert!(v.released());
+    for x in &mut c {
+        x.wait("one stream left", 5, |s| {
+            s.members.len() == 1 && s.engine.as_ref().is_some_and(|e| e.peers.len() == 1)
+        });
+        let before = x.played();
+        x.wait("still hears the other", 10, |s| played(s) >= before + 50);
+    }
+
+    // She comes back with a new session: everyone hears both others again.
+    v.send(Command::Join("trio".into()));
+    c.push(v);
+    for x in &mut c {
+        x.wait("both others heard again", 20, |s| {
+            s.members.len() == 2
+                && s.engine.as_ref().is_some_and(|e| e.peers.len() == 2)
+                && heard(s, 50) == 2
+        });
+    }
+    for mut x in c {
+        x.quit();
+        assert!(x.released());
+    }
 }

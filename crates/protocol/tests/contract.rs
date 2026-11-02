@@ -189,6 +189,41 @@ fn media_field_numbers_are_pinned() {
 }
 
 #[test]
+fn track_field_numbers_are_pinned() {
+    // ServerEnvelope field 20 (len) = TrackPublished { 1:"r", 2:"p", 3: 5 }
+    let published = v1::ServerEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 0,
+        event_id: 0,
+        body: Some(S::TrackPublished(v1::TrackPublished {
+            room_id: "r".into(),
+            peer_id: "p".into(),
+            ssrc: 5,
+        })),
+    };
+    let bytes = encode(&published);
+    assert_eq!(
+        bytes,
+        vec![
+            0x08, 0x01, 0xA2, 0x01, 0x08, 0x0A, 0x01, b'r', 0x12, 0x01, b'p', 0x18, 0x05
+        ]
+    );
+    assert_eq!(decode_server(&bytes).unwrap(), published);
+    // Field 21 = TrackUnpublished, same layout.
+    let unpublished = v1::ServerEnvelope {
+        body: Some(S::TrackUnpublished(v1::TrackUnpublished {
+            room_id: "r".into(),
+            peer_id: "p".into(),
+            ssrc: 0xFFFF_FFFF,
+        })),
+        ..published
+    };
+    let bytes = encode(&unpublished);
+    assert_eq!(&bytes[..4], &[0x08, 0x01, 0xAA, 0x01]);
+    assert_eq!(decode_server(&bytes).unwrap(), unpublished);
+}
+
+#[test]
 fn media_validation() {
     use turbo_pancake_protocol::{MAX_DATAGRAM_BYTES, validate_datagram, validate_media_offer};
     let ok = v1::MediaOffer {

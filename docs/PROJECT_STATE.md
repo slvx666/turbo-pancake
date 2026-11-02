@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S2 — group audio + SFU
 Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
-Last verified commit: f802358 (branch `main`, CI run 41480272959: Windows, Ubuntu, audit green; macOS job not run — GitHub could not acquire a macOS arm64 runner in 4 attempts, last green macOS: run 41457062573)
+Last verified commit: f802358 (branch `main`, CI run 41480272959: Windows, Ubuntu, audit green; macOS job not run — GitHub could not acquire a macOS arm64 runner in 4 attempts, last green macOS: run 41457062573); S2 step 1 commit: see the session log below
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
 
@@ -33,7 +33,8 @@ Last session: 2026-11-02
 | **Voice DSP** (S1): WebRTC APM 2.1.0 (vendored patched sys crate), NS + AEC3 (+HPF, optional AGC2) on the capture path, mix as render reference, live config; feature `apm` | `crates/media-audio/src/dsp.rs`, `third_party/webrtc-audio-processing-sys/` | 3 unit + 2 engine tests; CI job `apm` |
 | **Audio engine** (S1): worker thread owning both streams, mic → `VoiceSender` → bounded outgoing channel; non-blocking `PacketSink` → per-peer `VoiceReceiver` (≤ 100 peers) → 48 kHz mix → output resample, speaker-paced playout with 40 ms prefill (wall clock without speaker), bounded command channel (mute, device switch, per-peer volume, remove peer, encoder config), status snapshot every 50 ms, failed stream → reopen selected → default → retry 1 s; `SimIo` simulated devices | `crates/media-audio/src/{engine,sim}.rs` | 5 integration tests `tests/engine.rs`; `examples/engine_check` on real Windows devices |
 | **Desktop session + voice room** (S1): `Session` thread (Tokio current-thread) — `/v1/signal` hello/join/leave/relay/ping, reconnect with backoff 0.5→5 s and rejoin; engine (APM on by default) started on join, `CallDriver` per remote (later joiner offers), restart after `Failed`, `PeerLeft` ends the call, leave releases everything; Slint panel (room id, join/leave, mute, NS/AEC, input/output pickers, remote volume, mic level, state + RTT/loss/jitter stats); CLI `--server --name --room --mute --remote-volume --call-log --test-send-loss` | `apps/desktop/src/{lib,session,view,main}.rs`, `ui/main.slint` | 1 unit + 2 integration tests (`tests/session.rs`, real app-server + WS + UDP, simulated devices); `benchmarks/scripts/voice-trial.ps1` with real devices |
-| ADRs 0001–0006, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
+| **Per-member audio** (S2): SFU assigns an SSRC per member session and forwards every member to every other member (no transcoding, no renegotiation); `TrackPublished`/`TrackUnpublished`; client `CallDriver::expect_source`, engine peer per SSRC | `crates/media-sfu`, `proto/…/signaling.proto`, `crates/media-transport/src/call.rs`, `apps/desktop/src/session.rs` | `tests/session.rs::three_members_each_hear_both_others`, contract test, ADR 0008 |
+| ADRs 0001–0008, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
 
@@ -75,6 +76,18 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
 | Planned platforms | CI on Windows/Ubuntu/macOS (unit + impairment tests) | build/tests in CI; device I/O on macOS/Linux **UNVERIFIED** | CI run (see session log) |
 
+## Acceptance checks — S2 (IN_PROGRESS)
+
+| Criterion | Command / procedure | Result | Evidence |
+|---|---|---|---|
+| ≥ 3 real clients | three desktop clients on real devices (by hand) | **UNVERIFIED** (not run yet); headless 3 sessions: **PASS** | `cargo test -p turbo-pancake-desktop --test session three_members` |
+| Automated 20-participant scenario | headless sessions + real server | **UNVERIFIED** (not written yet, S2 step 5) | |
+| Join / leave | 3-member test: leave → others keep hearing each other, rejoin → all hear all | **PASS (headless)** | same test |
+| Reconnection | signaling outage test (2 members) | **PASS (2 members, headless)**; group reconnect **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects` |
+| New call closes the previous one | — | **UNVERIFIED** (S2 step 4) | |
+| No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008) | **PASS (by design)**; CPU/bandwidth for 20 members **UNVERIFIED** (S2 step 6) | `crates/media-sfu/src/lib.rs` |
+| Per-member volume, speaking indicator, voice activation, AEC/NS toggle | — | volume per stream in the engine; UI per member, VAD **UNVERIFIED** (S2 step 3); AEC/NS toggle from S1 | |
+
 ## Known issues and blockers
 
 1. **Owner decision: Slint license** (GPL-3.0 vs Royalty-free 2.0 with attribution) — ADR 0002.
@@ -107,8 +120,13 @@ performance results for the target hardware (RTX 4070 Super / M4).
 16. Media: host + server-reflexive (STUN) candidates since 2026-11-02; no TURN, so symmetric NAT / CGNAT on both sides cannot connect. In the trial `rx_peak` stayed 0.000 with remote volume 0 although B's mic peak was 0.05 — the peak is measured after the volume; audible quality needs an owner-assisted trial.
 17. The S1 room is joined by id without authentication (accounts in S5); a third member in a room is ignored (1:1 only).
 19. **Media goes through the server since 2026-11-02 (ADR 0007):** UDP to the server or a
-    WebSocket tunnel. S1 SFU forwards one stream per member (rooms of > 2: each hears the
-    earliest other member) — per-member tracks are S2. No E2EE (the SFU decrypts SRTP).
+    WebSocket tunnel. Since S2 step 1 every member hears every other member as its own
+    SSRC (ADR 0008). No E2EE (the SFU decrypts SRTP). No speaker cap yet: N·(N−1)
+    forwarded streams (planned guard: last-N speakers, S2 step 6).
+20. `apps/desktop/tests/session.rs` runs its tests one at a time (shared mutex): several
+    real-time simulated clients in parallel debug builds starved each other (≈ 4 %
+    concealed frames, failing the < 3 % bound); serial runs: 0 concealed. One serial run in
+    ~10 still failed while the dev machine was busy with other work.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -123,6 +141,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 * [0004 Signaling protocol](ADR/0004-signaling-protocol.md) — accepted
 * [0005 Media/OS research](ADR/0005-media-platform-research.md) — research
 * [0007 Media through the SFU, UDP + WebSocket fallback](ADR/0007-media-through-sfu.md) — accepted
+* [0008 Per-member audio: one m-line, one SSRC per member](ADR/0008-per-member-audio-streams.md) — accepted
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -287,11 +306,28 @@ run `voice-trial` (or two clients against one server) and record. Still open on 
 and doable any time: a measured two-homes run with `--call-log` (with/without VPN), the
 DTLS backend benchmark (ADR 0003).
 
-## Exact next task — S2 step 1 (plan in `docs/STAGES.md` → "S2 plan")
+## Session log 2026-11-02 (S2, step 1 — per-member audio)
 
-Write ADR 0008 after a spike of the per-member audio options in `crates/media-sfu`
-(renegotiation per member vs. last-N slots vs. one m-line with several SSRCs), then
-implement it with a 3-member headless test (everyone hears both others).
+Decision ADR 0008: one m-line, one SSRC per member, mapping by `TrackPublished`. Found in
+str0m 0.24.1 on the way: (1) with several SSRCs on one m-line the receiver re-maps an
+unknown SSRC carrying the `mid` extension onto the existing stream → the SFU no longer
+negotiates `mid`; (2) the pacer queues by (mid, rid), a second stream without a rid was
+never sent (first test run: clients received 0 packets) → one rid per forwarded stream.
+Files: `proto/turbo_pancake/v1/signaling.proto`, `crates/protocol/tests/contract.rs`,
+`crates/media-sfu/src/lib.rs`, `apps/app-server/src/signaling.rs`,
+`crates/media-transport/src/call.rs`, `apps/desktop/src/session.rs`,
+`apps/desktop/tests/session.rs`, `docs/ADR/0008-per-member-audio-streams.md`, ADR 0007,
+`docs/{API,ARCHITECTURE,STAGES,PROJECT_STATE}.md`.
+Local (Windows, through `apm-env.ps1`): fmt OK, clippy `-D warnings` OK,
+`cargo test --workspace --locked` 64 passed; session suite 5× in a row green (serial).
+
+## Exact next task — S2 step 3 (plan in `docs/STAGES.md` → "S2 plan")
+
+Client side of group calls: `Snapshot` lists members with their stream (peer id → SSRC →
+engine `PeerStatus`), Slint member list with a volume slider and a speaking indicator per
+member (`Command::SetMemberVolume(peer_id, v)`), and voice activation with an adjustable
+threshold in the engine (stop sending below the threshold with a hangover; indicator for
+the own mic). Then step 5: automated 20-member headless scenario.
 
 ## Previous next-task list — S1 (plan in `docs/STAGES.md` → "S1 plan")
 

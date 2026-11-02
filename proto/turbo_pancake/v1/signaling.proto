@@ -53,6 +53,8 @@ message ServerEnvelope {
     RoomLeft room_left = 17;
     MediaAnswer media_answer = 18;
     MediaDatagram media_datagram = 19;
+    TrackPublished track_published = 20;
+    TrackUnpublished track_unpublished = 21;
   }
 }
 
@@ -219,4 +221,23 @@ message MediaAnswer {
 // in either direction. The server never inspects its contents.
 message MediaDatagram {
   bytes data = 1;
+}
+
+// Server -> client (spec §11 media.track_published): another member's audio arrives on
+// this connection's media session as the RTP stream with this SSRC (one m-line, one SSRC
+// per member, ADR 0008). Sent for every member already sending when the client's media
+// session is accepted, then whenever a member's media session starts. A member's new
+// session gets a new SSRC (a TrackUnpublished for the old one comes first).
+message TrackPublished {
+  string room_id = 1;
+  string peer_id = 2;
+  uint32 ssrc = 3;
+}
+
+// Server -> client (spec §11 media.track_unpublished): the member's stream ended (left
+// the room, media session replaced or lost).
+message TrackUnpublished {
+  string room_id = 1;
+  string peer_id = 2;
+  uint32 ssrc = 3;
 }

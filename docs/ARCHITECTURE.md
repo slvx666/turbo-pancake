@@ -47,7 +47,9 @@ crates): `crates/media-capture` and
 
 S1 room model (`apps/desktop/src/session.rs`, ADR 0007): after joining a room each member
 offers one WebRTC session to the server's SFU (`crates/media-sfu`, a thread in
-`app-server`), which forwards RTP between members; media goes over UDP to the server or,
+`app-server`), which forwards every member's RTP to every other member as its own SSRC
+(ADR 0008; `TrackPublished` says whose it is, each SSRC is an engine peer with its own
+jitter buffer and volume); media goes over UDP to the server or,
 when UDP does not connect, through the signaling WebSocket. Joining starts the audio engine, leaving
 stops call and engine (devices, threads and socket released). A failed call is restarted
 while the peer is still in the room; a lost signaling connection ends the call and is
@@ -76,3 +78,5 @@ See `docs/ADR/`. Summary:
 | 0004 | Signaling over WebSocket + protobuf binary frames | accepted |
 | 0005 | Media/OS API research plan (audio, capture, codecs, system-audio exclusion) | research, most items UNVERIFIED |
 | 0006 | Voice pipeline: cpal + rtrb + rubato + libopus 1.6.1 (static), own jitter buffer | accepted for S1; APM open |
+| 0007 | Media through the server SFU, UDP + WebSocket tunnel fallback | accepted |
+| 0008 | Per-member audio: one m-line, one SSRC per member, `TrackPublished` mapping | accepted |

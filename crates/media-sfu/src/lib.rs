@@ -12,10 +12,15 @@
 //! UDP does not get through (VPNs, firewalls) the same encrypted datagrams travel inside
 //! the signaling WebSocket ([`Link::Tunnel`]).
 //!
-//! S1 scope: one forwarded audio stream per member. In a room with more than two members
-//! each member hears the earliest other member; per-member tracks come with S2.
+//! Every member hears every other member (ADR 0008): one audio m-line per session, and
+//! each member's audio leaves the SFU as its own RTP stream with an SSRC the SFU assigns
+//! for that member's session. [`PeerSink::track`] tells a member which SSRC belongs to
+//! whom; no renegotiation happens when members come and go. The RTP `mid` header
+//! extension is not negotiated: with several SSRCs on one m-line a receiver would use it
+//! to re-map its existing stream to an unknown SSRC.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel};
@@ -25,11 +30,10 @@ use std::time::{Duration, Instant};
 
 use str0m::change::SdpOffer;
 use str0m::format::Codec;
-use str0m::media::{MediaKind, Mid, Pt};
+use str0m::media::{MediaKind, Mid, Pt, Rid};
 use str0m::net::{Protocol, Receive};
-use str0m::rtp::{RtpWrite, SeqNo};
+use str0m::rtp::{Extension, ExtensionMap, RtpWrite, SeqNo, Ssrc};
 use str0m::{Candidate, Event, Input, Output, Rtc};
-use turbo_pancake_media_transport::call::extend_seq;
 use turbo_pancake_media_transport::{TUNNEL_CLIENT, TUNNEL_SERVER, init_crypto};
 
 pub type PeerId = String;
@@ -41,6 +45,9 @@ pub trait PeerSink: Send + 'static {
     fn answer(&mut self, result: Result<String, String>);
     /// One datagram for a [`Link::Tunnel`] member.
     fn datagram(&mut self, data: Vec<u8>);
+    /// Another member's audio is published on this member's session under `ssrc`, or
+    /// that stream ended (`published == false`).
+    fn track(&mut self, peer: &str, ssrc: u32, published: bool);
 }
 
 /// How a member's datagrams travel.
@@ -66,6 +73,8 @@ pub struct SfuStats {
     pub connected_peers: usize,
     pub rtp_in: u64,
     pub rtp_out: u64,
+    /// Outgoing per-member streams over all sessions (one per listener and source).
+    pub streams_out: usize,
     pub udp_in: u64,
     pub udp_out: u64,
     pub tunnel_in: u64,
@@ -120,7 +129,7 @@ impl Sfu {
             udp_port: udp_port.unwrap_or(0),
             cmds: rx,
             peers: HashMap::new(),
-            order: 0,
+            next_ssrc: first_ssrc(),
             buf: vec![0; 2048],
             st: SfuStats::default(),
             stats: stats.clone(),
@@ -206,20 +215,20 @@ struct Member {
     pt: Option<Pt>,
     connected: bool,
     next_timeout: Instant,
-    /// Join order: in rooms of more than two, everyone hears the earliest other member.
-    order: u64,
-    /// Outgoing sequence numbering: extended number of the current source's stream and the
-    /// offset that keeps our numbers monotonic when the source changes (SRTP index).
-    src: Option<PeerId>,
-    src_ext: Option<u64>,
-    offset: i64,
-    last_out: Option<u64>,
+    /// SSRC of this member's audio in every other member's session.
+    ssrc: u32,
+    /// Streams declared on this session: source SSRC → offset subtracted from the source's
+    /// extended sequence numbers, so each stream starts with rollover counter 0 (the
+    /// receiver's SRTP assumption) however long the source has been sending.
+    out: HashMap<u32, u64>,
 }
 
 struct Forward {
     from: PeerId,
     room: String,
-    seq: u16,
+    ssrc: u32,
+    /// Extended sequence number from the source's session.
+    seq: u64,
     timestamp: u32,
     payload: Vec<u8>,
 }
@@ -229,7 +238,7 @@ struct Worker {
     udp_port: u16,
     cmds: Receiver<Cmd>,
     peers: HashMap<PeerId, Member>,
-    order: u64,
+    next_ssrc: u32,
     buf: Vec<u8>,
     st: SfuStats,
     stats: Arc<Mutex<SfuStats>>,
@@ -279,7 +288,15 @@ impl Worker {
                 let more = self.drain();
                 self.forward(more);
             }
-            self.peers.retain(|_, m| m.rtc.is_alive());
+            let dead: Vec<PeerId> = self
+                .peers
+                .iter()
+                .filter(|(_, m)| !m.rtc.is_alive())
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in dead {
+                self.remove(&id);
+            }
             if last_publish.elapsed() >= Duration::from_millis(500) {
                 self.publish();
                 last_publish = Instant::now();
@@ -305,7 +322,11 @@ impl Worker {
                 match self.accept(&room, &offer, &link) {
                     Ok((rtc, answer, local)) => {
                         sink.answer(Ok(answer));
-                        self.order += 1;
+                        let ssrc = self.new_ssrc();
+                        for (id, m) in self.peers.iter_mut().filter(|(_, m)| m.room == room) {
+                            sink.track(id, m.ssrc, true);
+                            m.sink.track(&peer, ssrc, true);
+                        }
                         self.peers.insert(
                             peer,
                             Member {
@@ -318,11 +339,8 @@ impl Worker {
                                 pt: None,
                                 connected: false,
                                 next_timeout: Instant::now(),
-                                order: self.order,
-                                src: None,
-                                src_ext: None,
-                                offset: 0,
-                                last_out: None,
+                                ssrc,
+                                out: HashMap::new(),
                             },
                         );
                     }
@@ -353,15 +371,29 @@ impl Worker {
         true
     }
 
-    /// Drops a member's session. Its listeners restart their numbering on the next
-    /// source: a new session of the same member starts a new sequence space.
+    /// Drops a member's session and its stream in every other session of the room. A new
+    /// session of the same member gets a new SSRC (and so a new sequence space).
     fn remove(&mut self, peer: &str) {
-        if let Some(mut m) = self.peers.remove(peer) {
-            m.rtc.disconnect();
+        let Some(mut gone) = self.peers.remove(peer) else {
+            return;
+        };
+        gone.rtc.disconnect();
+        for m in self.peers.values_mut().filter(|m| m.room == gone.room) {
+            if m.out.remove(&gone.ssrc).is_some() {
+                m.rtc.direct_api().remove_stream_tx(Ssrc::from(gone.ssrc));
+            }
+            m.sink.track(peer, gone.ssrc, false);
         }
-        for m in self.peers.values_mut() {
-            if m.src.as_deref() == Some(peer) {
-                m.src = None;
+    }
+
+    /// A fresh SSRC, unique among live sessions.
+    fn new_ssrc(&mut self) -> u32 {
+        loop {
+            // Weyl sequence: distinct values for 2^32 calls.
+            self.next_ssrc = self.next_ssrc.wrapping_add(0x9E37_79B9);
+            let s = self.next_ssrc;
+            if s != 0 && !self.peers.values().any(|m| m.ssrc == s) {
+                return s;
             }
         }
     }
@@ -372,11 +404,17 @@ impl Worker {
         offer: &str,
         link: &Link,
     ) -> Result<(Rtc, String, SocketAddr), String> {
+        // Standard extensions minus `mid` (see the crate docs).
+        let mut exts = ExtensionMap::empty();
+        exts.set(1, Extension::AudioLevel);
+        exts.set(2, Extension::AbsoluteSendTime);
+        exts.set(3, Extension::TransportSequenceNumber);
         let mut rtc = Rtc::builder()
             .set_ice_lite(true)
             .set_rtp_mode(true)
             .clear_codecs()
             .enable_opus(true, false)
+            .set_extension_map(exts)
             .build(Instant::now());
         let local = match link {
             Link::Tunnel => {
@@ -486,7 +524,8 @@ impl Worker {
                             forwards.push(Forward {
                                 from: id.clone(),
                                 room: m.room.clone(),
-                                seq: *p.seq_no as u16,
+                                ssrc: m.ssrc,
+                                seq: *p.seq_no,
                                 timestamp: p.header.timestamp,
                                 payload: p.payload.to_vec(),
                             });
@@ -505,41 +544,42 @@ impl Worker {
 
     fn forward(&mut self, forwards: Vec<Forward>) {
         for f in forwards {
-            // Earliest other member of each target's room is its source.
-            let targets: Vec<PeerId> = self
-                .peers
-                .iter()
-                .filter(|(id, m)| **id != f.from && m.room == f.room)
-                .filter(|(id, _)| self.source_of(id).as_deref() == Some(f.from.as_str()))
-                .map(|(id, _)| id.clone())
-                .collect();
-            for t in targets {
-                let Some(m) = self.peers.get_mut(&t) else {
+            for (id, m) in self.peers.iter_mut() {
+                if *id == f.from || m.room != f.room {
                     continue;
-                };
+                }
                 let (Some(mid), Some(pt), true) = (m.mid, m.pt, m.connected) else {
                     continue;
                 };
-                if m.src.as_deref() != Some(f.from.as_str()) {
-                    // New source: continue our numbering after the last packet sent.
-                    m.src = Some(f.from.clone());
-                    m.src_ext = None;
-                }
-                let ext = extend_seq(m.src_ext, f.seq);
-                if m.src_ext.is_none() {
-                    m.offset = m.last_out.map_or(0, |l| l as i64 + 1 - ext as i64);
-                }
-                m.src_ext = Some(ext);
-                let out = (ext as i64 + m.offset).max(0) as u64;
-                m.last_out = Some(m.last_out.map_or(out, |l| l.max(out)));
+                let base = match m.out.entry(f.ssrc) {
+                    Entry::Occupied(e) => *e.get(),
+                    Entry::Vacant(e) => {
+                        // str0m's pacer queues by (mid, rid), so every stream on the one
+                        // m-line needs its own rid. The rid header extension is not
+                        // negotiated: the rid never goes on the wire.
+                        let rid = Rid::from(format!("{:08x}", f.ssrc).as_str());
+                        m.rtc.direct_api().declare_stream_tx(
+                            Ssrc::from(f.ssrc),
+                            None,
+                            mid,
+                            Some(rid),
+                        );
+                        *e.insert(f.seq & !0xFFFF)
+                    }
+                };
+                // A packet reordered across the first one's rollover would need a negative
+                // index: drop it (it is late anyway).
+                let Some(seq) = f.seq.checked_sub(base) else {
+                    continue;
+                };
                 let write = RtpWrite::new(
                     pt,
-                    SeqNo::from(out),
+                    SeqNo::from(seq),
                     f.timestamp,
                     Instant::now(),
                     f.payload.clone(),
                 );
-                if let Some(tx) = m.rtc.direct_api().stream_tx_by_mid(mid, None) {
+                if let Some(tx) = m.rtc.direct_api().stream_tx(&Ssrc::from(f.ssrc)) {
                     tx.write_rtp(write);
                     self.st.rtp_out += 1;
                 }
@@ -547,23 +587,24 @@ impl Worker {
         }
     }
 
-    fn source_of(&self, target: &str) -> Option<PeerId> {
-        let room = &self.peers.get(target)?.room;
-        self.peers
-            .iter()
-            .filter(|(id, m)| id.as_str() != target && &m.room == room)
-            .min_by_key(|(_, m)| m.order)
-            .map(|(id, _)| id.clone())
-    }
-
     fn publish(&mut self) {
         self.st.peers = self.peers.len();
         self.st.tunnel_peers = self.peers.values().filter(|m| m.tunnel).count();
         self.st.connected_peers = self.peers.values().filter(|m| m.connected).count();
+        self.st.streams_out = self.peers.values().map(|m| m.out.len()).sum();
         if let Ok(mut s) = self.stats.lock() {
             let dropped = s.dropped_commands;
             *s = self.st.clone();
             s.dropped_commands = dropped;
         }
     }
+}
+
+/// Start of the SSRC sequence: differs between server runs, so a client that missed a
+/// restart does not mistake new streams for old ones.
+fn first_ssrc() -> u32 {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    t.subsec_nanos() ^ (t.as_secs() as u32).rotate_left(16)
 }

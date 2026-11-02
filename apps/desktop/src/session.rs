@@ -17,7 +17,9 @@
 //!
 //! Media goes through the server, never directly between members: the client offers one
 //! WebRTC session (ICE + DTLS-SRTP, Opus) to the SFU after joining a room, and the server
-//! forwards the other member's audio on it. The client always sends first, so this works
+//! forwards every other member's audio on it, one RTP stream (SSRC) per member, announced
+//! by `TrackPublished` (ADR 0008). Each stream is its own engine peer (id = SSRC) with
+//! its own jitter buffer and volume. The client always sends first, so this works
 //! behind NATs and VPNs. With [`TransportPref::Auto`] it tries UDP to the server first and
 //! falls back to tunneling the same encrypted datagrams through the signaling WebSocket
 //! when UDP does not connect within `udp_attempt_timeout` (VPN without UDP, port not
@@ -26,7 +28,7 @@
 //! device, thread and socket is released. A lost signaling connection ends the media
 //! session and is retried with backoff; the room is rejoined.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -47,8 +49,6 @@ use turbo_pancake_media_transport::call::{
 use turbo_pancake_protocol::{self as proto, v1};
 use v1::{client_envelope::Body as C, server_envelope::Body as S};
 
-/// Engine peer id of the audio forwarded by the server.
-const REMOTE: PeerId = 1;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
@@ -298,6 +298,8 @@ struct Core {
     /// Other room members: peer id → (join order, display name).
     members: BTreeMap<String, (u64, String)>,
     member_order: u64,
+    /// Other members' streams on our media session: peer id → SSRC (= engine peer id).
+    tracks: HashMap<String, u32>,
     audio: Option<Audio>,
     media: Option<Media>,
     /// Transport of the next media session.
@@ -338,6 +340,7 @@ impl Core {
             join_rid: 0,
             members: BTreeMap::new(),
             member_order: 0,
+            tracks: HashMap::new(),
             audio: None,
             media: None,
             next_transport,
@@ -517,6 +520,7 @@ impl Core {
         self.end_media();
         self.joined = None;
         self.members.clear();
+        self.tracks.clear();
         self.outbox.clear();
         self.snap.peer_id = None;
         self.snap.signaling_rtt_ms = None;
@@ -584,7 +588,8 @@ impl Core {
             Command::SetRemoteVolume(v) => {
                 self.remote_volume = v.clamp(0.0, 4.0);
                 let v = self.remote_volume;
-                self.with_engine(|e| e.set_peer_volume(REMOTE, v));
+                let peers: Vec<PeerId> = self.tracks.values().map(|s| PeerId::from(*s)).collect();
+                self.with_engine(|e| peers.iter().try_for_each(|p| e.set_peer_volume(*p, v)));
             }
             Command::Quit => {
                 self.leave_room();
@@ -606,6 +611,7 @@ impl Core {
     fn leave_room(&mut self) {
         self.end_media();
         self.members.clear();
+        self.tracks.clear();
         let room = self.joined.take().or_else(|| self.want_room.clone());
         if let (Some(room), true) = (room, self.online) {
             self.push(C::LeaveRoom(v1::LeaveRoom { room_id: room }));
@@ -646,12 +652,24 @@ impl Core {
                 }
             }
             S::PeerLeft(l) => {
-                if self.members.remove(&l.peer_id).is_some()
-                    && self.members.is_empty()
-                    && let Some(a) = &self.audio
+                // Its stream ends with TrackUnpublished.
+                self.members.remove(&l.peer_id);
+            }
+            S::TrackPublished(t) => {
+                if self.joined.as_deref() != Some(t.room_id.as_str()) {
+                    return;
+                }
+                if let Some(old) = self.tracks.insert(t.peer_id, t.ssrc)
+                    && old != t.ssrc
                 {
-                    // Nobody left to hear: drop the jitter buffer of the old stream.
-                    let _ = a.engine.remove_peer(REMOTE);
+                    self.drop_source(old);
+                }
+                self.add_source(t.ssrc);
+            }
+            S::TrackUnpublished(t) => {
+                if self.tracks.get(&t.peer_id) == Some(&t.ssrc) {
+                    self.tracks.remove(&t.peer_id);
+                    self.drop_source(t.ssrc);
                 }
             }
             S::MediaAnswer(a) => {
@@ -696,6 +714,28 @@ impl Core {
                 }
             }
             S::Welcome(_) | S::RoomLeft(_) | S::Signal(_) => {}
+        }
+    }
+
+    /// Accepts a member's stream on the media session and gives it the remote volume.
+    fn add_source(&mut self, ssrc: u32) {
+        if let Some(m) = &self.media {
+            let _ = m.driver.expect_source(ssrc);
+        }
+        if let Some(a) = &self.audio {
+            let _ = a
+                .engine
+                .set_peer_volume(PeerId::from(ssrc), self.remote_volume);
+        }
+    }
+
+    /// Stops accepting a stream and drops its jitter buffer.
+    fn drop_source(&mut self, ssrc: u32) {
+        if let Some(m) = &self.media {
+            let _ = m.driver.forget_source(ssrc);
+        }
+        if let Some(a) = &self.audio {
+            let _ = a.engine.remove_peer(PeerId::from(ssrc));
         }
     }
 
@@ -848,7 +888,7 @@ impl Core {
         };
         let started = CallDriver::start_with(cc, link, rx, move |p| {
             sink.push(IncomingPacket {
-                peer: REMOTE,
+                peer: PeerId::from(p.ssrc),
                 seq: p.seq,
                 payload: p.payload,
                 arrival: p.arrival,
@@ -881,7 +921,6 @@ impl Core {
             }
         };
         *audio.route.lock().unwrap() = Some(tx);
-        let _ = audio.engine.set_peer_volume(REMOTE, self.remote_volume);
         self.media = Some(Media {
             driver,
             generation,
@@ -893,6 +932,11 @@ impl Core {
         });
         self.snap.media_sessions += 1;
         self.dirty = true;
+        // Streams the server announced earlier stay valid until it says otherwise.
+        let known: Vec<u32> = self.tracks.values().copied().collect();
+        for ssrc in known {
+            self.add_source(ssrc);
+        }
     }
 
     fn end_media(&mut self) {
@@ -906,8 +950,11 @@ impl Core {
         // The call thread has exited, so the bridge's receiver is closed; it never
         // blocks on the (unbounded) session channel.
         let _ = media.bridge.join();
+        // Jitter buffers start over with the next session.
         if let Some(a) = &self.audio {
-            let _ = a.engine.remove_peer(REMOTE);
+            for ssrc in self.tracks.values() {
+                let _ = a.engine.remove_peer(PeerId::from(*ssrc));
+            }
         }
         self.dirty = true;
     }

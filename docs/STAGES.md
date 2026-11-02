@@ -21,12 +21,13 @@ Base already in place from S1 (ADR 0007): every member has one media session wit
 server's SFU (UDP or WebSocket tunnel), RTP is forwarded without transcoding, the engine
 mixes up to 100 peers with per-peer volume and jitter buffers.
 
-1. **Per-member audio in the SFU** (ADR 0008 first): today a member hears only one other
-   member. Options to decide by a small spike: (a) server-initiated renegotiation adding one
+1. ~~**Per-member audio in the SFU**~~ — done 2026-11-02: option (c), ADR 0008; 3-member
+   headless test. Was: today a member hears only one other member. Options to decide by a small spike: (a) server-initiated renegotiation adding one
    recvonly m-line per member; (b) a fixed number of receive slots (last-N loudest speakers)
    with a slot → member mapping event; (c) one m-line with one SSRC per member (str0m RTP
    mode). Criteria: 100 members, join/leave without glitches, CPU on the server.
-2. Protocol: speaker/slot mapping (`media.track_published/unpublished`, spec §11) and,
+2. ~~Protocol~~ — done: `TrackPublished`/`TrackUnpublished` (fields 20/21, contract test).
+   Was: speaker/slot mapping (`media.track_published/unpublished`, spec §11) and,
    for (a), server offers; contract tests.
 3. Client: per-member streams → engine peers, member list with volume sliders and a
    speaking indicator; voice activation with an adjustable threshold (spec §4 MUST).

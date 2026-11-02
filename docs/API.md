@@ -81,6 +81,18 @@ token-authenticated handshake (Hello field 3 is reserved for it).
 * Media datagrams to a slow connection are dropped (like packet loss), never queued
   without bound, and never disconnect it.
 
+Server events (ADR 0008, spec §11 `media.track_published/unpublished`):
+
+| Event | Meaning |
+|---|---|
+| `TrackPublished{room_id, peer_id, ssrc}` | The member's audio arrives on this connection's media session as the RTP stream `ssrc`. Sent for every member already sending when the client's media session is accepted, then whenever another member's session starts. |
+| `TrackUnpublished{room_id, peer_id, ssrc}` | That stream ended (member left, its session was replaced or died). |
+
+* Every other member is its own SSRC on the one audio m-line; no renegotiation. A
+  member's new session gets a new SSRC (its `TrackUnpublished` for the old one comes
+  first). The server answers without the RTP `mid` header extension, so streams are told
+  apart by SSRC only; packets of an SSRC not announced yet are dropped by the client.
+
 ### Error codes
 
 `UNSUPPORTED_VERSION(1)`, `BAD_REQUEST(2)`, `PAYLOAD_TOO_LARGE(3)`, `HELLO_REQUIRED(4)`,

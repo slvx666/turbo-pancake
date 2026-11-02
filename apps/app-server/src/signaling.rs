@@ -91,6 +91,25 @@ impl PeerSink for WsSink {
         self.handle
             .send_media(S::MediaDatagram(v1::MediaDatagram { data }));
     }
+
+    fn track(&mut self, peer: &str, ssrc: u32, published: bool) {
+        let (room_id, peer_id) = (self.room.clone(), peer.to_owned());
+        let body = if published {
+            S::TrackPublished(v1::TrackPublished {
+                room_id,
+                peer_id,
+                ssrc,
+            })
+        } else {
+            S::TrackUnpublished(v1::TrackUnpublished {
+                room_id,
+                peer_id,
+                ssrc,
+            })
+        };
+        // Control events: a member that cannot take them is too slow and gets dropped.
+        self.handle.send(0, body);
+    }
 }
 
 fn error_body(code: ErrorCode, message: &str) -> S {

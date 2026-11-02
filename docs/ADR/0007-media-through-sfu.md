@@ -44,8 +44,7 @@ both a separate service and still UDP-first.
 * Latency over the tunnel is TCP: under loss, head-of-line blocking adds jitter; the
   adaptive jitter buffer absorbs it, UDP stays preferred.
 * S1 scope of the SFU: one forwarded stream per member; in rooms of more than two each
-  member hears the earliest other member. Per-member tracks, subscriptions and mixing
-  rules are S2 work.
+  member heard the earliest other member. Superseded by ADR 0008 (one SSRC per member).
 * The P2P path (`CallDriver` between two clients, STUN candidates) remains in
   `media-transport` and its tests; the desktop no longer uses it.
 * Protocol v1 gains `MediaOffer`, `MediaAnswer`, `MediaDatagram` (new oneof variants,
