@@ -25,6 +25,8 @@ $env:PATH = (($paths | Where-Object { Test-Path $_ }) -join ";") + ";" + $env:PA
 # installed (older) clang-cl found on PATH fails on their builtins (seen on CI images).
 $env:CC = Join-Path $llvm "clang-cl.exe"
 $env:CXX = $env:CC
+# bindgen must use the libclang of the same LLVM as those headers.
+$env:LIBCLANG_PATH = $llvm
 $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
 $line = ($Command | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join " "
 cmd /c "call `"$vcvars`" >nul && $line"
