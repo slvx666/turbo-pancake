@@ -1,6 +1,8 @@
-// turbo-pancake main window (S0 shell).
+// turbo-pancake main window (S0 shell + S1 voice room panel).
 // Layout follows the spec: conversation list on the left, conversation area on
 // the right, user panel at the bottom-left. No server/channel rail by design.
+
+import { Button, LineEdit, CheckBox, ComboBox, Slider, Palette } from "std-widgets.slint";
 
 export global Theme {
     in-out property <bool> dark: true;
@@ -137,6 +139,174 @@ component Sidebar inherits Rectangle {
     }
 }
 
+// S1 milestone: a voice room joined by id (accounts and dialogs arrive in S5).
+component CallPanel inherits Rectangle {
+    in-out property <string> room-text;
+    in property <bool> in-room;
+    in property <string> title;
+    in property <string> detail;
+    in property <string> stats;
+    in property <string> devices;
+    in property <string> error;
+    in property <float> mic-level;
+    in property <bool> dsp-available;
+    in-out property <bool> muted;
+    in-out property <bool> ns: true;
+    in-out property <bool> aec: true;
+    in property <[string]> inputs;
+    in property <[string]> outputs;
+    in-out property <int> input-index;
+    in-out property <int> output-index;
+    in-out property <float> remote-volume: 100;
+    callback join(string);
+    callback leave();
+    callback mute-changed(bool);
+    callback dsp-changed(bool, bool);
+    callback input-selected(int);
+    callback output-selected(int);
+    callback remote-volume-changed(float);
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        alignment: start;
+        Text {
+            text: root.title;
+            color: Theme.text-normal;
+            font-size: 20px;
+            font-weight: 700;
+        }
+        Text {
+            text: root.detail;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            room := LineEdit {
+                placeholder-text: "id комнаты";
+                text <=> root.room-text;
+                enabled: !root.in-room;
+                accepted(t) => { root.join(t); }
+            }
+            Button {
+                text: root.in-room ? "Выйти" : "Войти";
+                primary: !root.in-room;
+                clicked => {
+                    if root.in-room {
+                        root.leave();
+                    } else {
+                        root.join(room.text);
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            Button {
+                text: root.muted ? "Включить микрофон" : "Выключить микрофон";
+                clicked => {
+                    root.muted = !root.muted;
+                    root.mute-changed(root.muted);
+                }
+            }
+            CheckBox {
+                text: "Шумоподавление";
+                enabled: root.dsp-available;
+                checked <=> root.ns;
+                toggled => { root.dsp-changed(root.ns, root.aec); }
+            }
+            CheckBox {
+                text: "Эхоподавление";
+                enabled: root.dsp-available;
+                checked <=> root.aec;
+                toggled => { root.dsp-changed(root.ns, root.aec); }
+            }
+        }
+        // Microphone level (what the peers hear; zero while muted).
+        Rectangle {
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.bg-tertiary;
+            Rectangle {
+                x: 0;
+                width: parent.width * min(1.0, root.mic-level * 2.0);
+                height: parent.height;
+                border-radius: 3px;
+                background: root.mic-level > 0.02 ? #23a55a : Theme.text-muted;
+            }
+        }
+        GridLayout {
+            spacing: 8px;
+            Row {
+                Text {
+                    text: "Микрофон";
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    model: root.inputs;
+                    current-index <=> root.input-index;
+                    selected => { root.input-selected(self.current-index); }
+                }
+            }
+            Row {
+                Text {
+                    text: "Вывод";
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    model: root.outputs;
+                    current-index <=> root.output-index;
+                    selected => { root.output-selected(self.current-index); }
+                }
+            }
+            Row {
+                Text {
+                    text: "Громкость собеседника";
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Slider {
+                        minimum: 0;
+                        maximum: 200;
+                        value <=> root.remote-volume;
+                        changed(v) => { root.remote-volume-changed(v); }
+                    }
+                    Text {
+                        width: 48px;
+                        text: round(root.remote-volume) + " %";
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        Text {
+            text: root.devices;
+            color: Theme.text-muted;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.stats;
+            color: Theme.text-muted;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.error;
+            color: #f23f43;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "turbo-pancake";
     preferred-width: 1100px;
@@ -150,12 +320,44 @@ export component MainWindow inherits Window {
     in property <string> connection-status: "Не подключено";
     in property <string> build-info;
 
+    in-out property <string> room-text;
+    in property <bool> in-room;
+    in property <string> call-title: "Не в звонке";
+    in property <string> call-detail;
+    in property <string> call-stats;
+    in property <string> call-devices;
+    in property <string> call-error;
+    in property <float> mic-level;
+    in property <bool> dsp-available;
+    in-out property <bool> muted;
+    in-out property <bool> ns: true;
+    in-out property <bool> aec: true;
+    in property <[string]> inputs: ["По умолчанию"];
+    in property <[string]> outputs: ["По умолчанию"];
+    in-out property <int> input-index;
+    in-out property <int> output-index;
+    in-out property <float> remote-volume: 100;
+    callback join(string);
+    callback leave();
+    callback mute-changed(bool);
+    callback dsp-changed(bool, bool);
+    callback input-selected(int);
+    callback output-selected(int);
+    callback remote-volume-changed(float);
+
+    init => {
+        Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
     HorizontalLayout {
         Sidebar {
             width: 240px;
             user-name: root.user-name;
             connection-status: root.connection-status;
-            toggle-theme => { Theme.dark = !Theme.dark; }
+            toggle-theme => {
+                Theme.dark = !Theme.dark;
+                Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
+            }
         }
         VerticalLayout {
             Rectangle {
@@ -164,7 +366,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 16px;
                     Text {
-                        text: "Диалог не выбран";
+                        text: "Голосовая комната";
                         color: Theme.text-normal;
                         font-weight: 600;
                         vertical-alignment: center;
@@ -172,23 +374,37 @@ export component MainWindow inherits Window {
                 }
             }
             Rectangle { height: 1px; background: Theme.separator; }
-            Rectangle {
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 8px;
-                    Text {
-                        text: "Выберите диалог или найдите собеседника по @username";
-                        color: Theme.text-muted;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: root.build-info;
-                        color: Theme.text-muted;
-                        font-size: 11px;
-                        horizontal-alignment: center;
-                    }
-                }
+            CallPanel {
+                room-text <=> root.room-text;
+                in-room: root.in-room;
+                title: root.call-title;
+                detail: root.call-detail;
+                stats: root.call-stats;
+                devices: root.call-devices;
+                error: root.call-error;
+                mic-level: root.mic-level;
+                dsp-available: root.dsp-available;
+                muted <=> root.muted;
+                ns <=> root.ns;
+                aec <=> root.aec;
+                inputs: root.inputs;
+                outputs: root.outputs;
+                input-index <=> root.input-index;
+                output-index <=> root.output-index;
+                remote-volume <=> root.remote-volume;
+                join(r) => { root.join(r); }
+                leave => { root.leave(); }
+                mute-changed(m) => { root.mute-changed(m); }
+                dsp-changed(n, a) => { root.dsp-changed(n, a); }
+                input-selected(i) => { root.input-selected(i); }
+                output-selected(i) => { root.output-selected(i); }
+                remote-volume-changed(v) => { root.remote-volume-changed(v); }
+            }
+            Text {
+                text: root.build-info;
+                color: Theme.text-muted;
+                font-size: 11px;
+                horizontal-alignment: center;
             }
         }
     }

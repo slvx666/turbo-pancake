@@ -19,6 +19,7 @@ cargo test --workspace --locked
 | signaling integration | `apps/app-server/tests/signaling.rs` | real TCP+WS: hello/welcome, join/leave, offer/answer/ICE relay, error codes, heartbeat eviction, room capacity, connection limit, oversize close, 20-peer join/relay/leave, gap-free `event_id`, health/ready/version |
 | call driver | `crates/media-transport/tests/call.rs`, `src/call.rs` (unit) | real UDP: offer/answer relay, ICE+DTLS-SRTP, 150 frames each way at 20 ms across the u16 sequence wrap (payload/timestamp intact), 10 % wire loss loses exactly those packets, peer loss → Reconnecting → Failed; sequence extension across wrap/reorder |
 | two headless clients | `crates/media-transport/tests/voice_call.rs` | two `AudioEngine`s (simulated devices) + two `CallDriver`s over UDP, 5 % loss: ≥ 300 frames played, FEC repairs, concealment < 3 %, ≤ 3 late, 0 decode errors, tone reaches the far speaker, silent mic stays silent; leaving releases devices, device threads and socket; the other side goes Reconnecting |
+| desktop sessions | `apps/desktop/tests/session.rs`, `src/view.rs` (unit) | the client's own `Session` (signaling + engine + call, simulated devices) ×2 through an in-process `app-server` over real WS + UDP, 5 % loss one way: join → call, ≥ 200 frames played, concealment < 3 %, 0 decode errors, mute silences the far speaker while the stream continues, leave releases devices/threads and the other side sees it in < 2 s (PeerLeft), rejoin calls again; server outage → both see it, call ends, both reconnect to the restarted server, rejoin and call again |
 | WebRTC spike | `crates/media-transport/tests/loopback_spike.rs` | str0m ICE+DTLS+SRTP over real loopback UDP, SDP via protobuf, 100/100 RTP packets, data channel |
 | audio unit | `crates/media-audio/src/{resample,codec,jitter}.rs` | 16/44.1/48/96/192 kHz ↔ 48 kHz (tone + level preserved), Opus round trip level/bitrate, FEC beats PLC on lost frames, DTX, jitter buffer order/reorder/dup/late/FEC/PLC/wrap-around/adaptation/stall+burst |
 | audio engine | `crates/media-audio/tests/engine.rs` (simulated devices, `sim.rs`) | start/stop and drop release every device stream and device thread; mic → Opus → loop back as a peer → jitter buffer → mix → speaker (peak kept), peer volume 0 and mute silence the output, muted frames still sent; input + output switch with different rates keeps seq/timestamp continuous; unplugged device → fallback to default; no speaker → wall-clock ticks and retry, recovery when it returns; unknown ids at start fall back |
@@ -37,6 +38,9 @@ $T/release/turbo-pancake-media-probe > benchmarks/results/media-probe-<os>-<ts>.
 cargo run --release -p turbo-pancake-media-audio --example codec_cost
 cargo run --release -p turbo-pancake-media-audio --example device_check -- 5
 cargo run --release -p turbo-pancake-media-audio --example engine_check -- 20
+# S1 trial: server + two real desktop clients (second monitor, no focus, default devices),
+# one TURBO_PANCAKE_CALL status line per second per client
+powershell -File benchmarks/scripts/voice-trial.ps1 -Seconds 30 -Loss 0.05 -Out benchmarks/results/voice-trial-windows-<ts>.log
 # WebRTC APM evaluation (stand-alone crate; Windows needs the steps in tools/apm-eval/README.md)
 (cd tools/apm-eval && cargo run --release)
 ```

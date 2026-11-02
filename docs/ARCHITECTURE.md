@@ -11,7 +11,7 @@ turbo-pancake/
 ├─ Cargo.toml                 workspace, shared deps, release profile
 ├─ rust-toolchain.toml        pinned toolchain (1.99.1)
 ├─ apps/
-│  ├─ desktop/                Slint native client (S0: window shell + smoke mode)
+│  ├─ desktop/                Slint native client: window, voice room panel; lib: session (signaling + engine + call), view
 │  └─ app-server/             Axum server (S0: health/version + signaling relay)
 ├─ crates/
 │  ├─ protocol/               prost types generated from proto/ + validation + limits
@@ -36,10 +36,19 @@ crates): `apps/media-sfu` (S2), `crates/media-capture` and
 ```text
  desktop (Slint UI thread)                     app-server (Tokio)
  ├─ UI event loop  ── never blocks ──┐         ├─ /healthz /readyz /v1/version
- ├─ net task (Tokio, S1)  ◄──WS/protobuf──────►├─ /v1/signal  (rooms, SDP/ICE relay)
- ├─ audio RT threads (cpal callbacks, S1)      └─ (S5) auth, chat, PostgreSQL
- └─ media transport (str0m, S1) ◄──UDP/DTLS-SRTP──► peer (S1) / media-sfu (S2+)
+ ├─ tp-session (Tokio current-thread)  ◄─WS/protobuf─►├─ /v1/signal  (rooms, SDP/ICE relay)
+ │    commands in (bounded), snapshots out (invoke_from_event_loop)
+ ├─ tp-audio (AudioEngine) + cpal RT callbacks └─ (S5) auth, chat, PostgreSQL
+ │    └─ tp-audio-pump ─▶ current call (bounded, drop when full)
+ └─ tp-call (CallDriver, str0m) ◄──UDP/DTLS-SRTP──► peer (S1) / media-sfu (S2+)
+      └─ tp-call-events ─▶ tp-session
 ```
+
+S1 room model (`apps/desktop/src/session.rs`): the first member of a room waits and
+answers, the member who joins later offers. Joining starts the audio engine, leaving
+stops call and engine (devices, threads and socket released). A failed call is restarted
+while the peer is still in the room; a lost signaling connection ends the call and is
+retried with backoff (0.5 → 5 s), then the room is rejoined.
 
 Concurrency rules (§3): UI thread only renders and dispatches; network on Tokio; audio
 callbacks are real-time and lock-free (bounded SPSC rings); capture/encode/decode on

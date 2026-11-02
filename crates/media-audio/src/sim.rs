@@ -109,6 +109,19 @@ impl SimIo {
         }
     }
 
+    /// Same devices as another `SimIo` sharing `state` (an engine restarted later).
+    pub fn with_state(
+        inputs: Vec<SimDevice>,
+        outputs: Vec<SimDevice>,
+        state: Arc<SimState>,
+    ) -> Self {
+        Self {
+            inputs,
+            outputs,
+            state,
+        }
+    }
+
     pub fn state(&self) -> Arc<SimState> {
         self.state.clone()
     }

@@ -7,11 +7,27 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+name = "turbo_pancake_desktop"
+path = "src/lib.rs"
+
 [[bin]]
 name = "turbo-pancake-desktop"
 path = "src/main.rs"
 
+[features]
+# WebRTC APM (echo cancellation, noise suppression). Needs meson, ninja and llvm-tools to
+# build; on Windows run cargo through benchmarks/scripts/apm-env.ps1 (ADR 0006).
+default = ["apm"]
+apm = ["turbo-pancake-media-audio/apm"]
+
 [dependencies]
+turbo-pancake-protocol.workspace = true
+turbo-pancake-media-audio = { path = "../../crates/media-audio" }
+turbo-pancake-media-transport = { path = "../../crates/media-transport" }
+futures-util.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
 # Qt backend deliberately excluded: winit + FemtoVG (OpenGL) with software fallback.
 slint = { version = "1.18", default-features = false, features = [
     "std",
@@ -24,6 +40,9 @@ slint = { version = "1.18", default-features = false, features = [
     # Pinned via Cargo.lock; revisit on Slint upgrades (API is unstable-flagged).
     "unstable-winit-030",
 ] }
+
+[dev-dependencies]
+turbo-pancake-app-server = { path = "../app-server" }
 
 [build-dependencies]
 slint-build = "1.18"
