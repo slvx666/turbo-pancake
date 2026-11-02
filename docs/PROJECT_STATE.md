@@ -1,8 +1,8 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
-Current stage: S1 — end-to-end 1:1 voice
-Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02; S1: audio pipeline, AudioEngine, APM, call driver, desktop session + voice room UI done; audible/cross-platform trials open)
-Last verified commit: c28fd19 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41457062573 green on Windows/Ubuntu/macOS + audit; APM now built and tested in the main job)
+Current stage: S2 — group audio + SFU
+Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
+Last verified commit: f802358 (branch `main`, CI run 41480272959: Windows, Ubuntu, audit green; macOS job not run — GitHub could not acquire a macOS arm64 runner in 4 attempts, last green macOS: run 41457062573)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
 
@@ -66,7 +66,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
-| Two real desktop clients talk through the server (signaling + WebRTC) | `powershell -File benchmarks/scripts/voice-trial.ps1 -Seconds 30 -Loss 0.05` (server + two release clients, real default devices, 2nd monitor, `--no-activate`) | **PASS (Windows, one machine, signaling over loopback, media over the LAN host candidate)**: joined, call connected 7–8 ms after the driver started, 30 s, A→B 1395 sent / 1282 received (5 % test loss), B played 1331 frames, FEC 57, concealed 0, late 0, decode errors 0, RTT 5–16 ms, 0 xruns, both exit cleanly and A sees B leave at once. Speakers ran at volume 0 (owner at work), so **audibility is UNVERIFIED**; two physical machines, macOS and Linux devices **UNVERIFIED**. Headless: `apps/desktop/tests/session.rs` PASS | `benchmarks/results/voice-trial-windows-20261102.log` |
+| Two real desktop clients talk through the server (signaling + WebRTC) | `powershell -File benchmarks/scripts/voice-trial.ps1 -Seconds 30 -Loss 0.05` (server + two release clients, real default devices, 2nd monitor, `--no-activate`) | **PASS (Windows, two homes, by ear, 2026-11-02)**: owner and a remote tester through the SFU build — both heard each other clearly (no metrics captured). **PASS (Windows, one machine, signaling over loopback, media over the LAN host candidate)**: joined, call connected 7–8 ms after the driver started, 30 s, A→B 1395 sent / 1282 received (5 % test loss), B played 1331 frames, FEC 57, concealed 0, late 0, decode errors 0, RTT 5–16 ms, 0 xruns, both exit cleanly and A sees B leave at once. Speakers ran at volume 0 (owner at work), so **audibility is UNVERIFIED**; two physical machines, macOS and Linux devices **UNVERIFIED**. Headless: `apps/desktop/tests/session.rs` PASS | `benchmarks/results/voice-trial-windows-20261102.log` |
 | Speech continuity under moderate packet loss | `cargo test -p turbo-pancake-media-audio --test impairment` (in-process network model) | **PASS (pipeline level)**: loss ≤ 10 % × jitter ≤ 50 ms → 0 decode errors, 0 late, PLC-only ≤ 1.4 % of frames, FEC repairs ≈ 90 % of losses, level ratio ≥ 0.91; **PASS (headless, real UDP)**: two engines + call drivers, 5 % wire loss → 301 played, 17 FEC, 1 concealed, 0 late, 0 decode errors (`cargo test -p turbo-pancake-media-transport --test voice_call`); **PASS (two real desktop clients, Windows)**: 5 % loss → 57 FEC repairs, 0 concealed, 0 late (voice-trial log) | `benchmarks/results/audio-impairment-windows-20261102.json` |
 | No audio loop | `tests/engine.rs::echo_canceller_breaks_the_audio_loop` (`--features apm`, simulated speaker→mic coupling) | **PASS (engine level, 3 OS)**: remote voice comes back with AEC3 + NS at −67.6 dB (Windows CI), −67.8 dB (Ubuntu), −44.1 dB (macOS VM) vs ≈ −7 dB without (CI run 41386258757); two real clients **UNVERIFIED** | ADR 0006 |
 | Resources released after leave | `AudioEngine::stop`/drop: `tests/engine.rs` (simulated: 0 open streams, 0 device threads, engine thread joined); `examples/engine_check` (real Windows devices reopen right after stop, stop 15 ms) | **PASS (engine + call level, headless)**: `tests/voice_call.rs` hang-up → 0 streams, 0 device threads, call thread joined, socket closed; **PASS (desktop session, headless)**: `apps/desktop/tests/session.rs` leave/quit → 0 streams, 0 device threads, peer told in < 2 s; real clients exit cleanly after leaving (voice-trial) | `benchmarks/results/audio-engine-check-windows-20261102.json` |
@@ -278,7 +278,22 @@ address and `UdpPeer` treated it as fatal; now EINVAL/EADDRNOTAVAIL/EPERM on one
 ignored like unreachable errors (ICE consent decides). macOS jobs in runs 41459625029 and
 41472046421: runner not acquired / cancelled (GitHub capacity), not a test failure.
 
-## Exact next task — S1 (plan in `docs/STAGES.md` → "S1 plan")
+## S1 blocker (2026-11-02)
+
+macOS and Linux real-device voice trials (spec §17 S1: planned platforms must pass before
+DONE) cannot run: the owner has no Mac or Linux machine. Builds and all tests pass in CI on
+Ubuntu and macOS arm64 (simulated devices). Unblock: any Apple Silicon Mac / Linux box →
+run `voice-trial` (or two clients against one server) and record. Still open on Windows
+and doable any time: a measured two-homes run with `--call-log` (with/without VPN), the
+DTLS backend benchmark (ADR 0003).
+
+## Exact next task — S2 step 1 (plan in `docs/STAGES.md` → "S2 plan")
+
+Write ADR 0008 after a spike of the per-member audio options in `crates/media-sfu`
+(renegotiation per member vs. last-N slots vs. one m-line with several SSRCs), then
+implement it with a 3-member headless test (everyone hears both others).
+
+## Previous next-task list — S1 (plan in `docs/STAGES.md` → "S1 plan")
 
 1. ~~AudioEngine~~ — done (see session log above).
 2. ~~APM~~ — done, green on 3 OS. When the desktop starts using `media-audio` (item 4),
