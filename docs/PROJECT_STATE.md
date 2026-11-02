@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S2 — group audio + SFU
 Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
-Last verified commit: 9af5491 (branch `main`, CI run 41503469373: Windows, Ubuntu, audit green; macOS job cancelled — no macOS arm64 runner acquired in 15 min (0 steps), as in runs 41480272959/41500008299; last green macOS: run 41457062573)
+Last verified commit: 7c36c8d (branch `main`, CI run 41540292365: Windows, Ubuntu, audit green; macOS job cancelled — no macOS arm64 runner acquired in 15 min (0 steps), as in runs 41480272959/41500008299/41503469373; last green macOS: run 41457062573)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-03
 
@@ -341,6 +341,8 @@ Local (Windows, through `apm-env.ps1`): fmt OK, clippy `-D warnings` OK,
 `cargo test --workspace --locked` 71 passed (new: 3 pipeline, 2 jitter, 1 engine, 1 session).
 GUI: `window-check.ps1` — window at the requested position, exit 0, UI renders the new
 controls; but the window was foreground (known issue 21), so no further GUI runs.
+CI run 41540292365 (commit 7c36c8d): Windows, Ubuntu (incl. the new engine and session
+tests), audit green; macOS runner not acquired (cancelled, 0 steps).
 
 ## Session log 2026-11-02 (S2, step 1 — per-member audio)
 
