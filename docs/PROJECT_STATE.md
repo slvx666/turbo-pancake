@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S2 — group audio + SFU
 Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
-Last verified commit: f802358 (branch `main`, CI run 41480272959: Windows, Ubuntu, audit green; macOS job not run — GitHub could not acquire a macOS arm64 runner in 4 attempts, last green macOS: run 41457062573); S2 step 1 commit: see the session log below
+Last verified commit: 9af5491 (branch `main`, CI run 41503469373: Windows, Ubuntu, audit green; macOS job cancelled — no macOS arm64 runner acquired in 15 min (0 steps), as in runs 41480272959/41500008299; last green macOS: run 41457062573)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
 
@@ -327,6 +327,8 @@ old stream's packets still queued in the engine re-created its peer after `remov
 queue first, and the session drops packets of SSRCs it no longer accepts (checked on the
 call thread); the test now asserts exactly one stream after reconnect. Local: 64 passed,
 session suite 4× green.
+CI run 41503469373 (commit 9af5491): Windows, Ubuntu (incl. the 3-member and outage tests),
+audit green; macOS runner not acquired (cancelled, 0 steps).
 
 ## Exact next task — S2 step 3 (plan in `docs/STAGES.md` → "S2 plan")
 
