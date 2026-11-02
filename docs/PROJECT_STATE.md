@@ -320,6 +320,13 @@ Files: `proto/turbo_pancake/v1/signaling.proto`, `crates/protocol/tests/contract
 `docs/{API,ARCHITECTURE,STAGES,PROJECT_STATE}.md`.
 Local (Windows, through `apm-env.ps1`): fmt OK, clippy `-D warnings` OK,
 `cargo test --workspace --locked` 64 passed; session suite 5× in a row green (serial).
+CI run 41500008299 (commit 87294fc): Windows + audit green, macOS cancelled (runner),
+Ubuntu failed `signaling_outage_ends_media_and_reconnects` ("audio after reconnect"): the
+old stream's packets still queued in the engine re-created its peer after `remove_peer`
+(a silent ghost stream next to the new one). Fixed: `RemovePeer` drains the incoming
+queue first, and the session drops packets of SSRCs it no longer accepts (checked on the
+call thread); the test now asserts exactly one stream after reconnect. Local: 64 passed,
+session suite 4× green.
 
 ## Exact next task — S2 step 3 (plan in `docs/STAGES.md` → "S2 plan")
 

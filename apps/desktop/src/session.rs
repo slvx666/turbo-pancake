@@ -28,7 +28,7 @@
 //! device, thread and socket is released. A lost signaling connection ends the media
 //! session and is retried with backoff; the room is rejoined.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -266,6 +266,9 @@ impl Drop for Session {
 struct Audio {
     engine: AudioEngine,
     sink: PacketSink,
+    /// SSRCs whose packets reach the engine (checked on the call thread): a stream that
+    /// was dropped must not come back as a peer from packets still in flight.
+    accepted: Arc<Mutex<HashSet<u32>>>,
     /// Where the pump forwards encoded mic frames: the current media session, if any.
     route: Arc<Mutex<Option<SyncSender<AudioOut>>>>,
     pump: JoinHandle<()>,
@@ -723,6 +726,7 @@ impl Core {
             let _ = m.driver.expect_source(ssrc);
         }
         if let Some(a) = &self.audio {
+            a.accepted.lock().unwrap().insert(ssrc);
             let _ = a
                 .engine
                 .set_peer_volume(PeerId::from(ssrc), self.remote_volume);
@@ -735,6 +739,7 @@ impl Core {
             let _ = m.driver.forget_source(ssrc);
         }
         if let Some(a) = &self.audio {
+            a.accepted.lock().unwrap().remove(&ssrc);
             let _ = a.engine.remove_peer(PeerId::from(ssrc));
         }
     }
@@ -819,6 +824,7 @@ impl Core {
                         self.audio = Some(Audio {
                             engine,
                             sink: link.incoming,
+                            accepted: Arc::default(),
                             route,
                             pump,
                         });
@@ -854,6 +860,7 @@ impl Core {
         let transport = self.next_transport;
         let (tx, rx) = sync_channel::<AudioOut>(50);
         let sink = audio.sink.clone();
+        let accepted = audio.accepted.clone();
         let mut cc = CallConfig::new(Role::Offerer, self.cfg.media_bind);
         cc.advertise = self.cfg.advertise;
         cc.send_loss = self.cfg.send_loss;
@@ -887,6 +894,9 @@ impl Core {
             }
         };
         let started = CallDriver::start_with(cc, link, rx, move |p| {
+            if !accepted.lock().unwrap().contains(&p.ssrc) {
+                return;
+            }
             sink.push(IncomingPacket {
                 peer: PeerId::from(p.ssrc),
                 seq: p.seq,
@@ -952,6 +962,7 @@ impl Core {
         let _ = media.bridge.join();
         // Jitter buffers start over with the next session.
         if let Some(a) = &self.audio {
+            a.accepted.lock().unwrap().clear();
             for ssrc in self.tracks.values() {
                 let _ = a.engine.remove_peer(PeerId::from(*ssrc));
             }

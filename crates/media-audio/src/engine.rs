@@ -535,6 +535,8 @@ impl Worker {
                     }
                 }
                 Ok(Command::RemovePeer(peer)) => {
+                    // Packets queued before the command would otherwise bring it back.
+                    self.receive();
                     self.receivers.remove(&peer);
                     self.volumes.remove(&peer);
                 }

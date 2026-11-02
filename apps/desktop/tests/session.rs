@@ -344,6 +344,9 @@ fn signaling_outage_ends_media_and_reconnects() {
     b.wait("b back in call", 30, Snapshot::in_call);
     let before = b.played();
     b.wait("audio after reconnect", 10, |s| played(s) >= before + 50);
+    // The stream of the session before the outage is gone, not a silent ghost peer.
+    let peers = &b.last.engine.as_ref().unwrap().peers;
+    assert_eq!(peers.len(), 1, "{peers:?}");
     a.quit();
     b.quit();
     assert!(a.released() && b.released());
