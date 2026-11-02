@@ -1,15 +1,18 @@
 //! WebRTC transport built on `str0m` (Sans-I/O).
 //!
-//! [`UdpPeer`] owns one UDP socket and one `Rtc` and moves datagrams between them.
+//! [`UdpPeer`] owns one UDP socket (or a datagram tunnel through the signaling
+//! connection) and one `Rtc` and moves datagrams between them.
 //! [`call::CallDriver`] runs one peer on its own thread for a 1:1 voice call (S1):
 //! SDP offer/answer, an Opus track in RTP mode (our jitter buffer does the reordering),
 //! bounded channels to and from the audio engine, and call state.
 
 pub mod call;
+pub mod stun;
 
 use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::Once;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 pub use str0m;
@@ -35,10 +38,30 @@ pub fn init_crypto() {
     CRYPTO.call_once(|| str0m::crypto::from_feature_flags().install_process_default());
 }
 
-/// One WebRTC endpoint bound to one UDP socket.
+/// Virtual addresses of the two ends of a datagram tunnel (`MEDIA_TRANSPORT_WEBSOCKET`):
+/// ICE needs addresses, the tunnel has none. Both sides announce these as host candidates
+/// and stamp them on tunneled datagrams; they are never used for real sockets.
+pub const TUNNEL_CLIENT: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 254, 0, 2), 9));
+pub const TUNNEL_SERVER: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 254, 0, 1), 9));
+
+/// Sends one tunneled datagram; must not block (drop when the link is full).
+pub type TunnelSend = Box<dyn FnMut(Vec<u8>) + Send>;
+
+enum Io {
+    Udp(UdpSocket),
+    /// Datagrams to and from the server through the signaling connection.
+    Tunnel {
+        inbound: Receiver<Vec<u8>>,
+        outbound: TunnelSend,
+    },
+}
+
+/// One WebRTC endpoint on one UDP socket or one datagram tunnel.
 pub struct UdpPeer {
     pub rtc: Rtc,
-    socket: UdpSocket,
+    io: Io,
     local: SocketAddr,
     buf: Vec<u8>,
     next_timeout: Instant,
@@ -81,7 +104,7 @@ impl UdpPeer {
         rtc.add_local_candidate(candidate);
         Ok(Self {
             rtc,
-            socket,
+            io: Io::Udp(socket),
             local,
             buf: vec![0; 2000],
             next_timeout: Instant::now(),
@@ -91,6 +114,36 @@ impl UdpPeer {
             rng: 0x9e37_79b9_7f4a_7c15,
             datagrams_dropped: 0,
         })
+    }
+
+    /// A peer whose datagrams travel through a tunnel (client side: the remote end is
+    /// [`TUNNEL_SERVER`]). `inbound` closing ends the peer with an error.
+    pub fn tunnel(
+        inbound: Receiver<Vec<u8>>,
+        outbound: TunnelSend,
+        config: RtcConfig,
+    ) -> Result<Self, TransportError> {
+        init_crypto();
+        let mut rtc = config.build(Instant::now());
+        let candidate = Candidate::host(TUNNEL_CLIENT, "udp")
+            .map_err(|e| TransportError::Candidate(e.to_string()))?;
+        rtc.add_local_candidate(candidate);
+        Ok(Self {
+            rtc,
+            io: Io::Tunnel { inbound, outbound },
+            local: TUNNEL_CLIENT,
+            buf: vec![0; 2000],
+            next_timeout: Instant::now(),
+            bytes_sent: 0,
+            bytes_received: 0,
+            send_loss: 0.0,
+            rng: 0x9e37_79b9_7f4a_7c15,
+            datagrams_dropped: 0,
+        })
+    }
+
+    pub fn is_tunnel(&self) -> bool {
+        matches!(self.io, Io::Tunnel { .. })
     }
 
     /// Drops `loss` (0–1) of all outgoing datagrams, for tests over real UDP.
@@ -117,6 +170,74 @@ impl UdpPeer {
         self.local
     }
 
+    /// Asks `servers` (STUN, same IP family as the socket) which public address they see
+    /// this socket as and adds it as a server-reflexive ICE candidate, so a peer behind
+    /// another NAT can reach us (spec §6). Must run before any SDP is created (the
+    /// candidate travels in it) and before the remote knows our address: datagrams that
+    /// are not answers to our requests are dropped. Retransmits every 250 ms and waits
+    /// at most `timeout` for the first answer. Returns the mapped address, or `None`
+    /// without an answer or when it equals the host candidate (no NAT).
+    pub fn add_server_reflexive(
+        &mut self,
+        servers: &[SocketAddr],
+        timeout: Duration,
+    ) -> Option<SocketAddr> {
+        let Io::Udp(socket) = &self.io else {
+            return None;
+        };
+        let servers: Vec<SocketAddr> = servers
+            .iter()
+            .copied()
+            .filter(|s| s.is_ipv4() == self.local.is_ipv4())
+            .collect();
+        if servers.is_empty() {
+            return None;
+        }
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64)
+            ^ u64::from(self.local.port());
+        let transactions: Vec<[u8; 12]> = (0..servers.len())
+            .map(|i| {
+                let mut t = [0u8; 12];
+                t[..8].copy_from_slice(&seed.to_be_bytes());
+                t[8..].copy_from_slice(&(i as u32).to_be_bytes());
+                t
+            })
+            .collect();
+        let deadline = Instant::now() + timeout;
+        let mut next_send = Instant::now();
+        let mut mapped = None;
+        'wait: while Instant::now() < deadline {
+            if Instant::now() >= next_send {
+                for (server, tx) in servers.iter().zip(&transactions) {
+                    let _ = socket.send_to(&stun::binding_request(*tx), server);
+                }
+                next_send += Duration::from_millis(250);
+            }
+            loop {
+                match socket.recv_from(&mut self.buf) {
+                    Ok((n, _)) => {
+                        for tx in &transactions {
+                            if let Some(a) = stun::parse_binding_response(&self.buf[..n], tx) {
+                                mapped = Some(a);
+                                break 'wait;
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    // ICMP unreachable from a server, timeouts: keep waiting for others.
+                    Err(_) => break,
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mapped = mapped.filter(|a| *a != self.local)?;
+        let candidate = Candidate::server_reflexive(mapped, self.local, "udp").ok()?;
+        self.rtc.add_local_candidate(candidate);
+        Some(mapped)
+    }
+
     /// Flushes pending output, feeds every datagram already queued on the socket (and
     /// the clock) into the `Rtc`, and returns the emitted events. When nothing arrived it
     /// then sleeps until the next `Rtc` timeout, at most `max_wait`.
@@ -129,7 +250,21 @@ impl UdpPeer {
         self.drain(&mut events)?;
         let mut received = 0;
         loop {
-            match self.socket.recv_from(&mut self.buf) {
+            let got = match &mut self.io {
+                Io::Udp(socket) => socket.recv_from(&mut self.buf),
+                Io::Tunnel { inbound, .. } => match inbound.try_recv() {
+                    Ok(d) => {
+                        let n = d.len().min(self.buf.len());
+                        self.buf[..n].copy_from_slice(&d[..n]);
+                        Ok((n, TUNNEL_SERVER))
+                    }
+                    Err(TryRecvError::Empty) => Err(ErrorKind::WouldBlock.into()),
+                    Err(TryRecvError::Disconnected) => {
+                        Err(std::io::Error::new(ErrorKind::BrokenPipe, "tunnel closed"))
+                    }
+                },
+            };
+            match got {
                 Ok((n, source)) => {
                     received += 1;
                     self.bytes_received += n as u64;
@@ -183,7 +318,14 @@ impl UdpPeer {
                         continue;
                     }
                     self.bytes_sent += t.contents.len() as u64;
-                    match self.socket.send_to(&t.contents, t.destination) {
+                    let socket = match &mut self.io {
+                        Io::Udp(socket) => socket,
+                        Io::Tunnel { outbound, .. } => {
+                            outbound(t.contents.to_vec());
+                            continue;
+                        }
+                    };
+                    match socket.send_to(&t.contents, t.destination) {
                         Ok(_) => {}
                         // Unreachable/no route: ICE consent checks will notice; a call
                         // must not die on one failed datagram.

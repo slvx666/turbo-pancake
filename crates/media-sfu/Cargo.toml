@@ -1,0 +1,15 @@
+[package]
+name = "turbo-pancake-media-sfu"
+description = "Selective forwarding unit: per-member WebRTC sessions, RTP forwarding over UDP or a WebSocket tunnel."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+turbo-pancake-media-transport = { path = "../media-transport" }
+str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
+
+[lints]
+workspace = true

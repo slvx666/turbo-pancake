@@ -1,9 +1,12 @@
-//! Client session (S1): signaling connection, audio engine and one 1:1 call.
+//! Client session (S1): signaling connection, audio engine and the room's media session
+//! with the server's SFU.
 //!
 //! ```text
 //! UI ─▶ bounded Command channel ─▶ session thread (Tokio, current-thread runtime)
-//!          │  WebSocket /v1/signal: hello, join/leave room, SDP/ICE relay, ping
-//!          │  AudioEngine (own thread) ── pump thread ─▶ CallDriver (own thread) ─▶ UDP
+//!          │  WebSocket /v1/signal: hello, join/leave room, media offer/answer, ping,
+//!          │                        tunneled media datagrams
+//!          │  AudioEngine (own thread) ── pump thread ─▶ CallDriver (own thread)
+//!          │        CallDriver ─▶ UDP to the server, or datagrams through the session
 //!          │  CallDriver events ── bridge thread ─▶ session thread
 //!          └─▶ on_update(&Snapshot) every `status_interval` and after every change
 //! ```
@@ -12,12 +15,18 @@
 //! session thread only does signaling and bookkeeping; media runs on the engine and call
 //! threads, connected by bounded non-blocking channels.
 //!
-//! Room model for the S1 milestone (accounts arrive in S5): the first member of a room
-//! waits and answers, the member who joins later creates the offer. Leaving the room stops
-//! the call and the audio engine, so every device, thread and socket is released. A lost
-//! signaling connection ends the call and is retried with backoff; the room is rejoined.
+//! Media goes through the server, never directly between members: the client offers one
+//! WebRTC session (ICE + DTLS-SRTP, Opus) to the SFU after joining a room, and the server
+//! forwards the other member's audio on it. The client always sends first, so this works
+//! behind NATs and VPNs. With [`TransportPref::Auto`] it tries UDP to the server first and
+//! falls back to tunneling the same encrypted datagrams through the signaling WebSocket
+//! when UDP does not connect within `udp_attempt_timeout` (VPN without UDP, port not
+//! forwarded); after a failure it alternates. Room model for S1 (accounts arrive in S5):
+//! a room is joined by id. Leaving the room stops media and the audio engine, so every
+//! device, thread and socket is released. A lost signaling connection ends the media
+//! session and is retried with backoff; the room is rejoined.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -26,21 +35,39 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::Message;
 use turbo_pancake_media_audio::{
     AudioEngine, AudioError, AudioIo, DspConfig, EngineConfig, EngineStatus, IncomingPacket,
     PacketSink, PeerId, VoiceLink,
 };
 use turbo_pancake_media_transport::call::{
-    AudioOut, CallConfig, CallDriver, CallEvent, CallState, CallStats, LocalSignal, Role,
+    AudioOut, CallConfig, CallDriver, CallEvent, CallState, CallStats, LocalSignal, MediaLink, Role,
 };
 use turbo_pancake_protocol::{self as proto, v1};
 use v1::{client_envelope::Body as C, server_envelope::Body as S};
 
-/// Engine peer id of the remote side of the 1:1 call.
+/// Engine peer id of the audio forwarded by the server.
 const REMOTE: PeerId = 1;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Which way media travels to the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportPref {
+    /// UDP first, the WebSocket tunnel when UDP does not connect.
+    Auto,
+    Udp,
+    /// Always through the signaling WebSocket (TCP).
+    Tunnel,
+}
+
+/// Transport of the current media session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaTransport {
+    Udp,
+    Tunnel,
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -54,8 +81,16 @@ pub struct SessionConfig {
     pub media_bind: SocketAddr,
     /// Host candidate IP when `media_bind` is unspecified (default: default route).
     pub advertise: Option<IpAddr>,
+    pub transport: TransportPref,
+    /// How long a UDP attempt may take before `Auto` switches to the tunnel.
+    pub udp_attempt_timeout: Duration,
     /// Test impairment: share of outgoing media datagrams dropped.
     pub send_loss: f32,
+    /// Test impairment: every UDP datagram is dropped (a VPN that carries no UDP).
+    pub block_udp: bool,
+    /// STUN servers (`host:port`) asked for a server-reflexive candidate. Not needed with
+    /// the SFU (the server answers to whatever address our datagrams come from).
+    pub stun_servers: Vec<String>,
     pub status_interval: Duration,
 }
 
@@ -72,7 +107,11 @@ impl SessionConfig {
             engine: EngineConfig::default(),
             media_bind: SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
             advertise: None,
+            transport: TransportPref::Auto,
+            udp_attempt_timeout: Duration::from_secs(3),
             send_loss: 0.0,
+            block_udp: false,
+            stun_servers: Vec::new(),
             status_interval: Duration::from_millis(250),
         }
     }
@@ -88,7 +127,7 @@ pub enum Command {
     /// Device id from `device::list_devices` (`None` = system default).
     SetInput(Option<String>),
     SetOutput(Option<String>),
-    /// Local playback gain of the remote peer, 0.0–4.0.
+    /// Local playback gain of the other member, 0.0–4.0.
     SetRemoteVolume(f32),
     Quit,
 }
@@ -102,11 +141,10 @@ pub enum ServerStatus {
     Disconnected(String),
 }
 
+/// The media session with the server.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RemotePeer {
-    pub peer_id: String,
-    pub name: String,
-    pub role: Role,
+pub struct MediaStatus {
+    pub transport: MediaTransport,
     pub state: CallState,
 }
 
@@ -120,15 +158,26 @@ pub struct Snapshot {
     pub room: Option<String>,
     /// The server confirmed membership of `room`.
     pub joined: bool,
-    /// Other members of the room.
-    pub others: usize,
-    pub remote: Option<RemotePeer>,
+    /// Display names of the other members, in join order.
+    pub members: Vec<String>,
+    pub media: Option<MediaStatus>,
     pub engine: Option<EngineStatus>,
     pub call: Option<CallStats>,
     pub signaling_rtt_ms: Option<f64>,
-    /// Call drivers started so far (restarts after failures included).
-    pub calls_started: u64,
+    /// Media sessions started so far (transport switches and restarts included).
+    pub media_sessions: u64,
     pub last_error: Option<String>,
+}
+
+impl Snapshot {
+    /// Media is up and somebody else is in the room.
+    pub fn in_call(&self) -> bool {
+        !self.members.is_empty()
+            && self
+                .media
+                .as_ref()
+                .is_some_and(|m| m.state == CallState::Connected)
+    }
 }
 
 type EngineStarter =
@@ -217,15 +266,20 @@ impl Drop for Session {
 struct Audio {
     engine: AudioEngine,
     sink: PacketSink,
-    /// Where the pump forwards encoded mic frames: the current call, if any.
+    /// Where the pump forwards encoded mic frames: the current media session, if any.
     route: Arc<Mutex<Option<SyncSender<AudioOut>>>>,
     pump: JoinHandle<()>,
 }
 
-struct Call {
+struct Media {
     driver: CallDriver,
     generation: u64,
-    remote: RemotePeer,
+    transport: MediaTransport,
+    state: CallState,
+    /// Request id of our MediaOffer (an Error with it fails this session).
+    offer_rid: u64,
+    /// Tunnel: datagrams from the server go here.
+    tunnel_in: Option<SyncSender<Vec<u8>>>,
     bridge: JoinHandle<()>,
 }
 
@@ -236,16 +290,23 @@ struct Core {
     snap: Snapshot,
     dirty: bool,
     online: bool,
+    /// Server IP the signaling connection reached (offered back as the UDP candidate).
+    dialed_ip: Option<IpAddr>,
     want_room: Option<String>,
     joined: Option<String>,
     join_rid: u64,
-    /// Other room members: peer id → display name.
-    members: HashMap<String, String>,
+    /// Other room members: peer id → (join order, display name).
+    members: BTreeMap<String, (u64, String)>,
+    member_order: u64,
     audio: Option<Audio>,
-    call: Option<Call>,
+    media: Option<Media>,
+    /// Transport of the next media session.
+    next_transport: MediaTransport,
     generation: u64,
     call_tx: mpsc::UnboundedSender<(u64, CallEvent)>,
     call_rx: Option<mpsc::UnboundedReceiver<(u64, CallEvent)>>,
+    tunnel_tx: mpsc::UnboundedSender<(u64, Vec<u8>)>,
+    tunnel_rx: Option<mpsc::UnboundedReceiver<(u64, Vec<u8>)>>,
     outbox: Vec<Vec<u8>>,
     next_rid: u64,
     remote_volume: f32,
@@ -253,8 +314,7 @@ struct Core {
     quit: bool,
 }
 
-type Ws =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Ws = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 impl Core {
     fn new(
@@ -263,6 +323,8 @@ impl Core {
         on_update: Box<dyn FnMut(&Snapshot) + Send>,
     ) -> Self {
         let (call_tx, call_rx) = mpsc::unbounded_channel();
+        let (tunnel_tx, tunnel_rx) = mpsc::unbounded_channel();
+        let next_transport = first_transport(cfg.transport);
         Self {
             cfg,
             start_engine,
@@ -270,15 +332,20 @@ impl Core {
             snap: Snapshot::default(),
             dirty: true,
             online: false,
+            dialed_ip: None,
             want_room: None,
             joined: None,
             join_rid: 0,
-            members: HashMap::new(),
+            members: BTreeMap::new(),
+            member_order: 0,
             audio: None,
-            call: None,
+            media: None,
+            next_transport,
             generation: 0,
             call_tx,
             call_rx: Some(call_rx),
+            tunnel_tx,
+            tunnel_rx: Some(tunnel_rx),
             outbox: Vec::new(),
             next_rid: 1,
             remote_volume: 1.0,
@@ -289,6 +356,7 @@ impl Core {
 
     async fn run(&mut self, mut cmds: mpsc::Receiver<Command>) {
         let mut call_rx = self.call_rx.take().expect("run once");
+        let mut tunnel_rx = self.tunnel_rx.take().expect("run once");
         let mut backoff = Duration::from_millis(500);
         while !self.quit {
             self.snap.server = ServerStatus::Connecting;
@@ -296,7 +364,8 @@ impl Core {
             let reason = match self.connect().await {
                 Ok((ws, heartbeat)) => {
                     backoff = Duration::from_millis(500);
-                    self.connected(ws, heartbeat, &mut cmds, &mut call_rx).await
+                    self.connected(ws, heartbeat, &mut cmds, &mut call_rx, &mut tunnel_rx)
+                        .await
                 }
                 Err(e) => e,
             };
@@ -313,8 +382,9 @@ impl Core {
                 tokio::select! {
                     _ = tokio::time::sleep_until(until) => break,
                     c = cmds.recv() => self.command(c.unwrap_or(Command::Quit)),
-                    // Events of calls that already ended.
+                    // Leftovers of media sessions that already ended.
                     Some(_) = call_rx.recv() => {}
+                    Some(_) = tunnel_rx.recv() => {}
                 }
                 self.outbox.clear();
                 if self.quit {
@@ -339,6 +409,10 @@ impl Core {
         .await
         .map_err(|_| "таймаут подключения".to_string())?
         .map_err(|e| e.to_string())?;
+        self.dialed_ip = match ws.get_ref() {
+            MaybeTlsStream::Plain(tcp) => tcp.peer_addr().ok().map(|a| a.ip()),
+            _ => None,
+        };
         let hello = C::Hello(v1::Hello {
             client_version: self.cfg.client_version.clone(),
             display_name: self.cfg.display_name.clone(),
@@ -376,10 +450,13 @@ impl Core {
         heartbeat: Duration,
         cmds: &mut mpsc::Receiver<Command>,
         call_rx: &mut mpsc::UnboundedReceiver<(u64, CallEvent)>,
+        tunnel_rx: &mut mpsc::UnboundedReceiver<(u64, Vec<u8>)>,
     ) -> String {
         self.online = true;
         self.snap.server = ServerStatus::Connected;
         self.dirty = true;
+        // A new connection may take another network path: start with UDP again.
+        self.next_transport = first_transport(self.cfg.transport);
         if let Some(room) = self.want_room.clone() {
             self.send_join(room);
         }
@@ -415,6 +492,12 @@ impl Core {
                 },
                 c = cmds.recv() => self.command(c.unwrap_or(Command::Quit)),
                 Some((generation, ev)) = call_rx.recv() => self.call_event(generation, ev),
+                Some((generation, data)) = tunnel_rx.recv() => {
+                    // Only the current tunnel session's datagrams reach the server.
+                    if self.media.as_ref().is_some_and(|m| m.generation == generation) {
+                        self.push(C::MediaDatagram(v1::MediaDatagram { data }));
+                    }
+                }
                 _ = ping.tick() => {
                     if last_rx.elapsed() > heartbeat * 3 {
                         return "сервер не отвечает".into();
@@ -427,11 +510,11 @@ impl Core {
         }
     }
 
-    /// The signaling connection is gone: the server dropped us from the room, so the
-    /// call ends. The engine keeps running while the user still wants the room.
+    /// The signaling connection is gone: the server dropped us from the room and the SFU,
+    /// so media ends. The engine keeps running while the user still wants the room.
     fn disconnected(&mut self) {
         self.online = false;
-        self.end_call();
+        self.end_media();
         self.joined = None;
         self.members.clear();
         self.outbox.clear();
@@ -519,9 +602,9 @@ impl Core {
         }
     }
 
-    /// Ends the call and tells the server we left (also for a join still in flight).
+    /// Ends media and tells the server we left (also for a join still in flight).
     fn leave_room(&mut self) {
-        self.end_call();
+        self.end_media();
         self.members.clear();
         let room = self.joined.take().or_else(|| self.want_room.clone());
         if let (Some(room), true) = (room, self.online) {
@@ -529,9 +612,17 @@ impl Core {
         }
     }
 
+    fn add_member(&mut self, peer: v1::Peer) {
+        self.member_order += 1;
+        self.members
+            .insert(peer.peer_id, (self.member_order, peer.display_name));
+    }
+
     fn server_event(&mut self, env: v1::ServerEnvelope) {
-        self.dirty = true;
         let Some(body) = env.body else { return };
+        if !matches!(body, S::MediaDatagram(_) | S::Pong(_)) {
+            self.dirty = true;
+        }
         match body {
             S::RoomJoined(j) => {
                 if self.want_room.as_deref() != Some(j.room_id.as_str()) {
@@ -540,162 +631,126 @@ impl Core {
                     return;
                 }
                 self.joined = Some(j.room_id);
-                self.members = j
-                    .peers
-                    .iter()
-                    .map(|p| (p.peer_id.clone(), p.display_name.clone()))
-                    .collect();
-                // We came last: we call the member who was waiting.
-                if let Some(p) = j.peers.first() {
-                    self.start_call(Role::Offerer, p.peer_id.clone(), p.display_name.clone());
+                self.members.clear();
+                for p in j.peers {
+                    self.add_member(p);
                 }
+                self.start_media();
             }
             S::PeerJoined(p) => {
                 if self.joined.as_deref() != Some(p.room_id.as_str()) {
                     return;
                 }
-                let Some(peer) = p.peer else { return };
-                self.members
-                    .insert(peer.peer_id.clone(), peer.display_name.clone());
-                if self.call.is_none() {
-                    self.start_call(Role::Answerer, peer.peer_id, peer.display_name);
+                if let Some(peer) = p.peer {
+                    self.add_member(peer);
                 }
             }
             S::PeerLeft(l) => {
-                self.members.remove(&l.peer_id);
-                if self
-                    .call
-                    .as_ref()
-                    .is_some_and(|c| c.remote.peer_id == l.peer_id)
+                if self.members.remove(&l.peer_id).is_some()
+                    && self.members.is_empty()
+                    && let Some(a) = &self.audio
                 {
-                    self.end_call();
+                    // Nobody left to hear: drop the jitter buffer of the old stream.
+                    let _ = a.engine.remove_peer(REMOTE);
                 }
             }
-            S::Signal(r) => self.relay_in(r),
+            S::MediaAnswer(a) => {
+                if let Some(m) = &self.media
+                    && env.request_id == m.offer_rid
+                    && let Err(e) = m.driver.remote_answer(a.sdp)
+                {
+                    self.snap.last_error = Some(e.to_string());
+                }
+            }
+            S::MediaDatagram(d) => {
+                if let Some(tx) = self.media.as_ref().and_then(|m| m.tunnel_in.as_ref()) {
+                    // Full: the call thread is behind; drop like a lost packet.
+                    let _ = tx.try_send(d.data);
+                }
+            }
             S::Pong(p) => {
                 let now = self.epoch.elapsed().as_micros() as u64;
                 self.snap.signaling_rtt_ms =
                     Some(now.saturating_sub(p.client_time_us) as f64 / 1000.0);
             }
             S::Error(e) => {
-                self.snap.last_error = Some(format!(
+                let msg = format!(
                     "сервер: {} ({:?})",
                     e.message,
                     v1::ErrorCode::try_from(e.code).unwrap_or(v1::ErrorCode::Unspecified)
-                ));
+                );
                 if env.request_id != 0 && env.request_id == self.join_rid {
+                    self.snap.last_error = Some(msg);
                     self.want_room = None;
                     self.joined = None;
                     self.stop_audio();
-                }
-            }
-            S::Welcome(_) | S::RoomLeft(_) => {}
-        }
-    }
-
-    fn relay_in(&mut self, r: v1::SignalRelay) {
-        use v1::signal_relay::Payload;
-        if self.joined.as_deref() != Some(r.room_id.as_str()) {
-            return;
-        }
-        let from = r.from_peer_id;
-        let ours = |c: &Option<Call>| c.as_ref().is_some_and(|c| c.remote.peer_id == from);
-        match r.payload {
-            Some(Payload::Description(d)) => match d.sdp_type() {
-                v1::SdpType::Offer => {
-                    if self.call.is_some() && !ours(&self.call) {
-                        return; // busy with another member (1:1 only in S1)
-                    }
-                    // A fresh answerer takes the offer; otherwise the remote restarted
-                    // the call (after a failure) and we start over as answerer.
-                    let fresh = self.call.as_ref().is_some_and(|c| {
-                        c.remote.role == Role::Answerer && c.remote.state == CallState::Negotiating
-                    });
-                    if !fresh {
-                        self.end_call();
-                        let name = self.members.get(&from).cloned().unwrap_or_default();
-                        self.start_call(Role::Answerer, from.clone(), name);
-                    }
-                    if let Some(c) = &self.call
-                        && let Err(e) = c.driver.remote_offer(d.sdp)
-                    {
-                        self.snap.last_error = Some(e.to_string());
-                    }
-                }
-                v1::SdpType::Answer => {
-                    if let Some(c) = &self.call
-                        && c.remote.peer_id == from
-                        && c.remote.role == Role::Offerer
-                        && let Err(e) = c.driver.remote_answer(d.sdp)
-                    {
-                        self.snap.last_error = Some(e.to_string());
-                    }
-                }
-                v1::SdpType::Unspecified => {}
-            },
-            Some(Payload::IceCandidate(c)) if !c.candidate.is_empty() => {
-                if let Some(call) = &self.call
-                    && call.remote.peer_id == from
-                    && let Err(e) = call.driver.remote_candidate(c.candidate)
+                } else if self
+                    .media
+                    .as_ref()
+                    .is_some_and(|m| env.request_id != 0 && m.offer_rid == env.request_id)
                 {
-                    self.snap.last_error = Some(e.to_string());
+                    // Offer rejected (e.g. no UDP on the server): try the other way.
+                    self.media_failed(msg);
+                } else {
+                    self.snap.last_error = Some(msg);
                 }
             }
-            _ => {}
+            S::Welcome(_) | S::RoomLeft(_) | S::Signal(_) => {}
         }
     }
 
     fn call_event(&mut self, generation: u64, ev: CallEvent) {
-        let Some(call) = self.call.as_mut().filter(|c| c.generation == generation) else {
-            return; // from a call that already ended
+        let Some(media) = self.media.as_mut().filter(|m| m.generation == generation) else {
+            return; // from a media session that already ended
         };
         self.dirty = true;
         match ev {
-            CallEvent::Signal(sig) => {
-                use v1::signal::Payload;
-                let desc = |t: v1::SdpType, sdp| {
-                    Payload::Description(v1::SessionDescription {
-                        sdp_type: t as i32,
-                        sdp,
-                    })
-                };
-                let payload = match sig {
-                    LocalSignal::Offer(sdp) => desc(v1::SdpType::Offer, sdp),
-                    LocalSignal::Answer(sdp) => desc(v1::SdpType::Answer, sdp),
-                    LocalSignal::Candidate(candidate) => Payload::IceCandidate(v1::IceCandidate {
-                        candidate,
-                        sdp_mid: String::new(),
-                        sdp_mline_index: 0,
-                    }),
-                };
-                let (Some(room), to) = (self.joined.clone(), call.remote.peer_id.clone()) else {
+            CallEvent::Signal(LocalSignal::Offer(sdp)) => {
+                let (Some(room), transport) = (self.joined.clone(), media.transport) else {
                     return;
                 };
-                self.push(C::Signal(v1::Signal {
+                let transport = match transport {
+                    MediaTransport::Udp => v1::MediaTransport::Udp,
+                    MediaTransport::Tunnel => v1::MediaTransport::Websocket,
+                };
+                let dialed_ip = self.dialed_ip.map(|ip| ip.to_string()).unwrap_or_default();
+                let rid = self.push(C::MediaOffer(v1::MediaOffer {
                     room_id: room,
-                    to_peer_id: to,
-                    payload: Some(payload),
+                    sdp,
+                    transport: transport as i32,
+                    dialed_ip,
                 }));
+                if let Some(m) = &mut self.media {
+                    m.offer_rid = rid;
+                }
             }
+            // The SFU is ICE-lite with its candidates in the answer: nothing to trickle.
+            CallEvent::Signal(_) => {}
             CallEvent::State(state) => {
-                call.remote.state = state.clone();
+                media.state = state.clone();
                 if let CallState::Failed(reason) = state {
-                    // Timed out connecting or reconnecting: start over while the peer is
-                    // still in the room (the offerer re-offers, the answerer waits).
-                    let RemotePeer {
-                        peer_id,
-                        name,
-                        role,
-                        ..
-                    } = call.remote.clone();
-                    self.snap.last_error = Some(format!("звонок: {reason}"));
-                    self.end_call();
-                    if self.members.contains_key(&peer_id) {
-                        self.start_call(role, peer_id, name);
-                    }
+                    self.media_failed(format!("медиа: {reason}"));
+                } else if state == CallState::Connected {
+                    self.snap.last_error = None;
                 }
             }
         }
+    }
+
+    /// The media session failed: switch transport (Auto) and start over while in the room.
+    fn media_failed(&mut self, reason: String) {
+        let Some(transport) = self.media.as_ref().map(|m| m.transport) else {
+            return;
+        };
+        self.snap.last_error = Some(reason);
+        self.end_media();
+        if self.cfg.transport == TransportPref::Auto {
+            self.next_transport = match transport {
+                MediaTransport::Udp => MediaTransport::Tunnel,
+                MediaTransport::Tunnel => MediaTransport::Udp,
+            };
+        }
+        self.start_media();
     }
 
     fn start_audio(&mut self) {
@@ -739,7 +794,7 @@ impl Core {
     }
 
     fn stop_audio(&mut self) {
-        self.end_call();
+        self.end_media();
         if let Some(a) = self.audio.take() {
             a.engine.stop();
             let _ = a.pump.join();
@@ -747,17 +802,51 @@ impl Core {
         self.dirty = true;
     }
 
-    fn start_call(&mut self, role: Role, peer_id: String, name: String) {
+    /// Starts the media session with the SFU over `next_transport` (in the joined room).
+    fn start_media(&mut self) {
+        if self.media.is_some() || self.joined.is_none() || !self.online {
+            return;
+        }
         let Some(audio) = &self.audio else {
-            self.snap.last_error = Some("звонок без аудиодвижка".into());
+            self.snap.last_error = Some("нет аудиодвижка".into());
             return;
         };
+        let transport = self.next_transport;
         let (tx, rx) = sync_channel::<AudioOut>(50);
         let sink = audio.sink.clone();
-        let mut cc = CallConfig::new(role, self.cfg.media_bind);
+        let mut cc = CallConfig::new(Role::Offerer, self.cfg.media_bind);
         cc.advertise = self.cfg.advertise;
         cc.send_loss = self.cfg.send_loss;
-        let started = CallDriver::start(cc, rx, move |p| {
+        cc.stun_servers = self.cfg.stun_servers.clone();
+        if transport == MediaTransport::Udp {
+            if self.cfg.transport == TransportPref::Auto {
+                cc.connect_timeout = self.cfg.udp_attempt_timeout;
+            }
+            if self.cfg.block_udp {
+                cc.send_loss = 1.0;
+            }
+        }
+        self.generation += 1;
+        let generation = self.generation;
+        let (link, tunnel_in) = match transport {
+            MediaTransport::Udp => (MediaLink::Udp, None),
+            MediaTransport::Tunnel => {
+                // A few seconds of audio + RTCP from the server.
+                let (in_tx, in_rx) = sync_channel::<Vec<u8>>(256);
+                let out = self.tunnel_tx.clone();
+                let outbound = Box::new(move |d: Vec<u8>| {
+                    let _ = out.send((generation, d));
+                });
+                (
+                    MediaLink::Tunnel {
+                        inbound: in_rx,
+                        outbound,
+                    },
+                    Some(in_tx),
+                )
+            }
+        };
+        let started = CallDriver::start_with(cc, link, rx, move |p| {
             sink.push(IncomingPacket {
                 peer: REMOTE,
                 seq: p.seq,
@@ -768,12 +857,10 @@ impl Core {
         let (driver, events) = match started {
             Ok(d) => d,
             Err(e) => {
-                self.snap.last_error = Some(format!("звонок: {e}"));
+                self.snap.last_error = Some(format!("медиа: {e}"));
                 return;
             }
         };
-        self.generation += 1;
-        let generation = self.generation;
         let to_session = self.call_tx.clone();
         // Ends when the call thread exits (its event sender is dropped).
         let bridge = std::thread::Builder::new()
@@ -789,36 +876,36 @@ impl Core {
             Ok(b) => b,
             Err(e) => {
                 driver.stop();
-                self.snap.last_error = Some(format!("звонок: {e}"));
+                self.snap.last_error = Some(format!("медиа: {e}"));
                 return;
             }
         };
         *audio.route.lock().unwrap() = Some(tx);
         let _ = audio.engine.set_peer_volume(REMOTE, self.remote_volume);
-        self.call = Some(Call {
+        self.media = Some(Media {
             driver,
             generation,
-            remote: RemotePeer {
-                peer_id,
-                name,
-                role,
-                state: CallState::Negotiating,
-            },
+            transport,
+            state: CallState::Negotiating,
+            offer_rid: 0,
+            tunnel_in,
             bridge,
         });
-        self.snap.calls_started += 1;
+        self.snap.media_sessions += 1;
         self.dirty = true;
     }
 
-    fn end_call(&mut self) {
-        let Some(call) = self.call.take() else { return };
+    fn end_media(&mut self) {
+        let Some(media) = self.media.take() else {
+            return;
+        };
         if let Some(a) = &self.audio {
             *a.route.lock().unwrap() = None;
         }
-        call.driver.stop();
+        media.driver.stop();
         // The call thread has exited, so the bridge's receiver is closed; it never
         // blocks on the (unbounded) session channel.
-        let _ = call.bridge.join();
+        let _ = media.bridge.join();
         if let Some(a) = &self.audio {
             let _ = a.engine.remove_peer(REMOTE);
         }
@@ -828,10 +915,22 @@ impl Core {
     fn publish(&mut self) {
         self.snap.room = self.want_room.clone();
         self.snap.joined = self.joined.is_some();
-        self.snap.others = self.members.len();
+        let mut members: Vec<&(u64, String)> = self.members.values().collect();
+        members.sort();
+        self.snap.members = members.into_iter().map(|(_, n)| n.clone()).collect();
         self.snap.engine = self.audio.as_ref().map(|a| a.engine.status());
-        self.snap.call = self.call.as_ref().map(|c| c.driver.stats());
-        self.snap.remote = self.call.as_ref().map(|c| c.remote.clone());
+        self.snap.call = self.media.as_ref().map(|m| m.driver.stats());
+        self.snap.media = self.media.as_ref().map(|m| MediaStatus {
+            transport: m.transport,
+            state: m.state.clone(),
+        });
         (self.on_update)(&self.snap);
+    }
+}
+
+fn first_transport(pref: TransportPref) -> MediaTransport {
+    match pref {
+        TransportPref::Tunnel => MediaTransport::Tunnel,
+        TransportPref::Auto | TransportPref::Udp => MediaTransport::Udp,
     }
 }

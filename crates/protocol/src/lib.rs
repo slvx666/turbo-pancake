@@ -24,6 +24,8 @@ pub const MAX_CLIENT_VERSION_LEN: usize = 128;
 /// SDP blobs are the largest legitimate payload; keep well under the frame limit.
 pub const MAX_SDP_BYTES: usize = 32 * 1024;
 pub const MAX_ICE_CANDIDATE_BYTES: usize = 1024;
+/// Largest media datagram carried in `MediaDatagram` (DTLS/SRTP stay below the MTU).
+pub const MAX_DATAGRAM_BYTES: usize = 2048;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DecodeError {
@@ -53,6 +55,10 @@ pub enum ValidationError {
     IceCandidate,
     #[error("peer id missing or too long")]
     PeerId,
+    #[error("media offer needs a transport and an SDP of at most {MAX_SDP_BYTES} bytes")]
+    MediaOffer,
+    #[error("media datagram empty or larger than {MAX_DATAGRAM_BYTES} bytes")]
+    Datagram,
 }
 
 /// Decodes and version-checks a client frame.
@@ -156,6 +162,27 @@ pub fn validate_signal(s: &v1::Signal) -> Result<(), ValidationError> {
                 Ok(())
             }
         }
+    }
+}
+
+pub fn validate_media_offer(m: &v1::MediaOffer) -> Result<(), ValidationError> {
+    validate_room_id(&m.room_id)?;
+    let ok = m.transport() != v1::MediaTransport::Unspecified
+        && !m.sdp.is_empty()
+        && m.sdp.len() <= MAX_SDP_BYTES
+        && m.dialed_ip.len() <= 64;
+    if ok {
+        Ok(())
+    } else {
+        Err(ValidationError::MediaOffer)
+    }
+}
+
+pub fn validate_datagram(d: &v1::MediaDatagram) -> Result<(), ValidationError> {
+    if d.data.is_empty() || d.data.len() > MAX_DATAGRAM_BYTES {
+        Err(ValidationError::Datagram)
+    } else {
+        Ok(())
     }
 }
 

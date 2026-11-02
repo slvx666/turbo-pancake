@@ -63,7 +63,23 @@ token-authenticated handshake (Hello field 3 is reserved for it).
   `SignalRelay` from members who reacted to its `PeerJoined`.
 * Slow consumers: each connection has a bounded outbound queue (256 frames); a peer
   whose queue overflows is disconnected rather than buffering without limit.
-* The server never logs SDP/ICE contents.
+* The server never logs SDP/ICE contents or media datagrams.
+
+### Media through the server (SFU, ADR 0007)
+
+| Client request | Success reply | Errors |
+|---|---|---|
+| `MediaOffer{room_id, sdp, transport, dialed_ip}` (in the joined room) | `MediaAnswer{room_id, sdp, transport}` with the same `request_id` | `NOT_IN_ROOM`, `BAD_REQUEST` (no transport, empty SDP or > 32 KiB, offer rejected e.g. UDP disabled), `INTERNAL` (media server busy/unavailable) |
+| `MediaDatagram{data}` (transport `WEBSOCKET` only) | none; the server sends `MediaDatagram` back | dropped silently when invalid (empty, > 2048 bytes) or without a media session |
+
+* The client offers one sendrecv Opus m-line; the server is ICE-lite, its candidates are in
+  the answer: for `UDP` the IP the client dialed, configured public IPs and its LAN
+  address, all with the media port (default: the WebSocket port number, UDP); for
+  `WEBSOCKET` a virtual address — datagrams then travel inside `MediaDatagram` frames.
+* A new `MediaOffer` replaces the connection's media session; `LeaveRoom` and a closed
+  connection end it.
+* Media datagrams to a slow connection are dropped (like packet loss), never queued
+  without bound, and never disconnect it.
 
 ### Error codes
 

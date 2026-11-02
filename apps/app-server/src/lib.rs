@@ -1,13 +1,15 @@
 //! turbo-pancake application server.
 //!
 //! S0 provides health/readiness/version endpoints and a development signaling
-//! relay (`/v1/signal`). Authentication, PostgreSQL and the messenger domain are
+//! relay (`/v1/signal`); S1 adds the media SFU (`turbo-pancake-media-sfu`): room members
+//! send audio to the server over UDP (same port number as the WebSocket listener) or
+//! tunneled through their signaling connection. Authentication, PostgreSQL and the messenger domain are
 //! added in S5; until then the server binds to loopback by default and must not
 //! be exposed publicly.
 
 pub mod signaling;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +20,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
+use turbo_pancake_media_sfu::{Sfu, SfuConfig};
 
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -34,6 +37,14 @@ pub struct Config {
     pub outbound_queue: usize,
     /// Maximum simultaneous WebSocket connections.
     pub max_connections: usize,
+    /// UDP media socket. `false` = media only through the WebSocket tunnel.
+    pub media_udp: bool,
+    /// UDP media port; `None` = the WebSocket listener's port number.
+    pub media_udp_port: Option<u16>,
+    /// Extra addresses announced as UDP candidates (e.g. the public IP behind a port
+    /// forward when clients dial a host name). The address a client dialed and the
+    /// default-route address are always announced.
+    pub public_ips: Vec<IpAddr>,
 }
 
 impl Default for Config {
@@ -44,6 +55,9 @@ impl Default for Config {
             max_room_peers: 100,
             outbound_queue: 256,
             max_connections: 2048,
+            media_udp: true,
+            media_udp_port: None,
+            public_ips: Vec::new(),
         }
     }
 }
@@ -53,6 +67,10 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub hub: Arc<signaling::Hub>,
     pub connections: Arc<Semaphore>,
+    /// Media forwarding; `None` only if it failed to start.
+    pub sfu: Option<Arc<Sfu>>,
+    /// Default-route address of this machine, announced as a UDP candidate.
+    pub lan_ip: Option<IpAddr>,
 }
 
 impl AppState {
@@ -62,7 +80,39 @@ impl AppState {
             config: Arc::new(config),
             hub: Arc::new(signaling::Hub::default()),
             connections,
+            sfu: None,
+            lan_ip: None,
         }
+    }
+
+    /// Starts the SFU: UDP on `port` when enabled; a UDP bind failure leaves the tunnel.
+    pub fn with_media(mut self, ip: IpAddr, port: u16) -> Self {
+        let udp_port = self.config.media_udp_port.unwrap_or(port);
+        let udp_ip = if ip.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        };
+        let mut cfg = SfuConfig {
+            udp_bind: self
+                .config
+                .media_udp
+                .then_some(SocketAddr::new(udp_ip, udp_port)),
+        };
+        let sfu = Sfu::start(cfg.clone()).or_else(|e| {
+            tracing::warn!(port = udp_port, error = %e, "UDP media unavailable, tunnel only");
+            cfg.udp_bind = None;
+            Sfu::start(cfg)
+        });
+        match sfu {
+            Ok(sfu) => {
+                tracing::info!(udp_port = ?sfu.udp_port(), "media SFU started");
+                self.sfu = Some(Arc::new(sfu));
+            }
+            Err(e) => tracing::error!(error = %e, "media SFU failed to start"),
+        }
+        self.lan_ip = turbo_pancake_media_transport::default_route_ip(ip.is_ipv6()).ok();
+        self
     }
 }
 
@@ -96,11 +146,18 @@ pub async fn serve(
     config: Config,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let app = router(AppState::new(config));
+    let local = listener.local_addr()?;
+    let state = AppState::new(config).with_media(local.ip(), local.port());
+    let sfu = state.sfu.clone();
+    let app = router(state);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown)
-    .await
+    .await?;
+    if let Some(sfu) = sfu {
+        sfu.stop();
+    }
+    Ok(())
 }

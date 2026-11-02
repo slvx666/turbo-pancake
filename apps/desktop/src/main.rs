@@ -7,6 +7,10 @@
 //!   `--mute` — start with the microphone muted.
 //!   `--remote-volume <0..200>` — playback volume of the other member in percent.
 //!   `--call-log` — print a `TURBO_PANCAKE_CALL key=value …` status line every second.
+//!   `--media <auto|udp|tcp>` — how call media reaches the server: UDP with a fallback
+//!       to the WebSocket (default), UDP only, or always through the WebSocket (TCP).
+//!   `--test-block-udp` — test impairment: drop every UDP media datagram (a VPN that
+//!       carries no UDP); with `--media auto` the call must move to the WebSocket.
 //!   `--test-send-loss <0..1>` — test impairment: drop this share of outgoing media.
 //!   `--smoke-exit-after-ms <N>` — benchmark/smoke mode: print machine-readable
 //!       markers on stdout and quit after N ms:
@@ -29,7 +33,7 @@ use slint::winit_030::winit::event::WindowEvent;
 use slint::winit_030::winit::event_loop::ActiveEventLoop;
 use slint::winit_030::winit::window::{Window as WinitWindow, WindowId};
 use slint::winit_030::{CustomApplicationHandler, EventResult};
-use turbo_pancake_desktop::session::{Command, Session, SessionConfig, Snapshot};
+use turbo_pancake_desktop::session::{Command, Session, SessionConfig, Snapshot, TransportPref};
 use turbo_pancake_desktop::view;
 use turbo_pancake_media_audio::{CpalIo, DspConfig, device};
 use turbo_pancake_protocol::validate_display_name;
@@ -49,6 +53,8 @@ struct Args {
     remote_volume: Option<f32>,
     call_log: bool,
     send_loss: f32,
+    media: Option<TransportPref>,
+    block_udp: bool,
 }
 
 fn parse_args() -> Args {
@@ -74,6 +80,14 @@ fn parse_args() -> Args {
                 out.remote_volume = args.next().and_then(|v| v.parse().ok());
             }
             "--call-log" => out.call_log = true,
+            "--media" => {
+                out.media = match args.next().as_deref() {
+                    Some("udp") => Some(TransportPref::Udp),
+                    Some("tcp" | "websocket") => Some(TransportPref::Tunnel),
+                    _ => Some(TransportPref::Auto),
+                };
+            }
+            "--test-block-udp" => out.block_udp = true,
             "--test-send-loss" => {
                 out.send_loss = args
                     .next()
@@ -160,6 +174,8 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     let mut cfg = SessionConfig::new(server, name);
     cfg.engine.muted = args.mute;
     cfg.send_loss = args.send_loss;
+    cfg.transport = args.media.unwrap_or(TransportPref::Auto);
+    cfg.block_udp = args.block_udp;
     window.set_muted(args.mute);
     window.set_ns(cfg.engine.dsp.noise_suppression);
     window.set_aec(cfg.engine.dsp.echo_cancellation);

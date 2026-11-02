@@ -6176,6 +6176,8 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing",
  "tracing-subscriber",
+ "turbo-pancake-media-sfu",
+ "turbo-pancake-media-transport",
  "turbo-pancake-protocol",
 ]
 
@@ -6230,6 +6232,14 @@ dependencies = [
  "anyhow",
  "cpal",
  "serde_json",
+]
+
+[[package]]
+name = "turbo-pancake-media-sfu"
+version = "0.1.0"
+dependencies = [
+ "str0m",
+ "turbo-pancake-media-transport",
 ]
 
 [[package]]

@@ -12,6 +12,22 @@ struct Args {
     /// Emit logs as JSON lines (for systemd/journald collection).
     #[arg(long, env = "TURBO_PANCAKE_LOG_JSON")]
     log_json: bool,
+    /// UDP port for call media (default: same number as the listen port). Forward it on
+    /// the router together with the TCP port for the lowest latency; without it media
+    /// falls back to the WebSocket.
+    #[arg(long, env = "TURBO_PANCAKE_MEDIA_PORT")]
+    media_port: Option<u16>,
+    /// Media only through the WebSocket (no UDP socket).
+    #[arg(long, env = "TURBO_PANCAKE_NO_MEDIA_UDP")]
+    no_media_udp: bool,
+    /// Public address to announce for UDP media (repeatable or comma-separated), e.g.
+    /// behind a port forward when clients connect by host name.
+    #[arg(
+        long = "public-ip",
+        env = "TURBO_PANCAKE_PUBLIC_IP",
+        value_delimiter = ','
+    )]
+    public_ips: Vec<std::net::IpAddr>,
 }
 
 #[tokio::main]
@@ -39,7 +55,13 @@ async fn main() -> anyhow::Result<()> {
     println!("TURBO_PANCAKE_LISTENING {}", listener.local_addr()?);
     tracing::info!(addr = %listener.local_addr()?, version = turbo_pancake_app_server::SERVER_VERSION, "listening");
 
-    turbo_pancake_app_server::serve(listener, Default::default(), async {
+    let config = turbo_pancake_app_server::Config {
+        media_udp: !args.no_media_udp,
+        media_udp_port: args.media_port,
+        public_ips: args.public_ips,
+        ..Default::default()
+    };
+    turbo_pancake_app_server::serve(listener, config, async {
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!("shutdown requested");
     })

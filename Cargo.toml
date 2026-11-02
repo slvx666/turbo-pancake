@@ -6,6 +6,7 @@ members = [
     "crates/protocol",
     "crates/media-transport",
     "crates/media-audio",
+    "crates/media-sfu",
     "benchmarks/harness",
     "tools/media-probe",
 ]

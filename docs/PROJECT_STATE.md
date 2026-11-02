@@ -10,26 +10,11 @@ Last session: 2026-11-02
 
 * Windows 11 Pro 10.0.28000, AMD Ryzen 5 5500 (12 threads), 32 GB RAM,
   **NVIDIA RTX 2060 SUPER** (driver 617.14) — *not* the spec's RTX 4070 Super test machine.
-* Monitors: DISPLAY1 primary 1920×1080 at (0,0); DISPLAY2 1920×1080 at (1920,0).
 * Toolchain: **rustc/cargo 1.99.1** (pinned in `rust-toolchain.toml`, installed by rustup into
   `%USERPROFILE%\.cargo`; PATH `$HOME/.cargo/bin`), MSVC 14.44 (VS 2022 Community),
   Windows SDK 10.0.28000. No system protoc (protox), no cmake/NASM needed (aws-lc-rs builds).
-* **Drive C: is ~98 % full.** Build directory is `D:/turbo-pancake-target` via the gitignored
-  `.cargo/config.toml`; on a fresh checkout of this machine recreate it:
-  `[build]` / `target-dir = "D:/turbo-pancake-target"`.
-* Docker Desktop engine does not start here (likely the full C: drive); Linux/macOS are
-  verified through GitHub Actions instead.
-* GitHub: remote `origin` = `https://github.com/slvx666/turbo-pancake` (public). `gh` is
-  logged in as `slvx666` (scopes repo, workflow). Owner authorised pushing to this repo
-  (2026-11-02). Check CI with `gh run list -R slvx666/turbo-pancake`.
-
-## Owner instruction for testing (2026-11-02)
-
-The owner keeps working on this machine during tests: **test GUI on the second monitor,
-never take mouse or focus.** Launch every client with `--window-pos 2020,100 --no-activate`
-and use `benchmarks/scripts/window-check.ps1` for smoke checks. Never move the mouse or
-send input; screenshots only of our own window region (and do not commit them if other
-apps are visible at the edges).
+* Machine-local setup (build directory, test display, container engine, GitHub access) is
+  kept in the untracked `CLAUDE.local.md`; Linux/macOS are verified through GitHub Actions.
 
 ## Implemented and verified
 
@@ -119,8 +104,11 @@ performance results for the target hardware (RTX 4070 Super / M4).
 13. **cpal reports non-fatal events through the error callback** (WASAPI capture discontinuity → `ErrorKind::Xrun`). Treating them as fatal caused a reopen storm (213 reopens / 10 s). Fixed in `device.rs`; only device/stream-level kinds mark a stream failed.
 14. Physical unplug and sleep/wake are not tested on real hardware (only simulated devices); engine thread runs at default OS priority.
 15. Desktop release exe grew 9.1 → 17.9 MiB (APM, str0m/aws-lc, Tokio, Slint std-widgets); installer ≤ 30 MB target to be measured in S7.
-16. Media uses host candidates only (no STUN/TURN yet): clients must reach each other directly (same LAN). In the trial `rx_peak` stayed 0.000 with remote volume 0 although B's mic peak was 0.05 — the peak is measured after the volume; audible quality needs an owner-assisted trial.
+16. Media: host + server-reflexive (STUN) candidates since 2026-11-02; no TURN, so symmetric NAT / CGNAT on both sides cannot connect. In the trial `rx_peak` stayed 0.000 with remote volume 0 although B's mic peak was 0.05 — the peak is measured after the volume; audible quality needs an owner-assisted trial.
 17. The S1 room is joined by id without authentication (accounts in S5); a third member in a room is ignored (1:1 only).
+19. **Media goes through the server since 2026-11-02 (ADR 0007):** UDP to the server or a
+    WebSocket tunnel. S1 SFU forwards one stream per member (rooms of > 2: each hears the
+    earliest other member) — per-member tracks are S2. No E2EE (the SFU decrypts SRTP).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -134,6 +122,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
   aws-lc-rs after `cargo audit` flagged RUSTSEC-2026-0387 in the rust-crypto path
 * [0004 Signaling protocol](ADR/0004-signaling-protocol.md) — accepted
 * [0005 Media/OS research](ADR/0005-media-platform-research.md) — research
+* [0007 Media through the SFU, UDP + WebSocket fallback](ADR/0007-media-through-sfu.md) — accepted
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -144,7 +133,7 @@ working title "DsMini" to **turbo-pancake**: crates/binaries `turbo-pancake-*`, 
 `turbo_pancake_*`, protobuf package `turbo_pancake.v1` (`proto/turbo_pancake/v1/`; wire
 encoding unchanged, contract tests pass), stdout markers/env vars `TURBO_PANCAKE_*`
 (e.g. `TURBO_PANCAKE_BIND`), build dir `D:/turbo-pancake-target`, project folder
-`C:\Users\burger\Desktop\clavdiy\turbo-pancake`. JSON reports in `benchmarks/results/`
+`%USERPROFILE%\Desktop\...\turbo-pancake`. JSON reports in `benchmarks/results/`
 created before the rename still mention `dsmini-*` executables (historical evidence, left
 as is).
 
@@ -243,6 +232,40 @@ failures); release build OK; voice trial as in the S1 table. Commits f258e45, ea
 CI run 41454787623: macOS/Ubuntu green, Windows clippy + all tests green but the APM release
 build failed (MAX_PATH, issue 18); fixed by a short target dir → **CI run 41457062573 all green**.
 
+## Session log 2026-11-02 (S1 — first call between two homes, STUN)
+
+The owner and a remote tester (Windows) tried a call over the internet: the tester ran
+`turbo-pancake-app-server --bind 0.0.0.0:7878` on a public IP (TCP 7878 reachable,
+`/v1/version` answered), the owner's client joined room `test` and saw the tester
+(`others=1`), but every call attempt ended in `connect timeout` (33 attempts in 5 min):
+only private host candidates were offered. Added STUN (server-reflexive candidates, ADR
+0003): `crates/media-transport/src/{stun.rs,lib.rs,call.rs}`, `tests/stun.rs`,
+`apps/desktop` (`SessionConfig::stun_servers`, `--stun`, `--no-stun`, public address and
+remote address in the stats line and `--call-log`). The two-homes call itself is
+**UNVERIFIED** until the tester runs the new client.
+
+## Session log 2026-11-02 (S1 — media through the server, works behind VPNs)
+
+The STUN build still failed between the two homes (owner behind a VPN client in TUN mode; with VPNs
+off too). Owner requirement: calls must work reliably with and without a VPN. Decision
+(ADR 0007): media through the server — new `crates/media-sfu` (ICE-lite str0m per member,
+RTP forwarding, one UDP socket on the WebSocket port number, WebSocket tunnel via
+`MediaDatagram`), protocol v1 `MediaOffer`/`MediaAnswer`/`MediaDatagram` (+ contract and
+validation tests), `app-server` (`--media-port`, `--no-media-udp`, `--public-ip`),
+`media-transport` tunnel link (`UdpPeer::tunnel`, `MediaLink`, `TUNNEL_CLIENT/SERVER`),
+desktop session rewritten (media session with the SFU after join, `TransportPref::Auto`
+UDP 3 s → tunnel, alternating; members list; `--media auto|udp|tcp`, `--test-block-udp`).
+Found and fixed in the SFU: a member's new session after rejoin restarts its sequence
+numbers; listeners kept extending the old ones and SRTP dropped the "replayed" packets.
+`apps/desktop/tests/session.rs`: 4 scenarios incl. **all UDP dropped → WebSocket, audio
+flows** and server without UDP — 3 runs without failures. Release clients on this machine
+(`voice-trial.ps1 -Seconds 20 -Loss 0.05`, real devices, volume 0): **UDP via SFU** — B
+played 824, FEC 43, concealed 0, late 0, decode errors 0, RTT 8–22 ms; **`--test-block-udp`
+on both** — switched to the WebSocket (2nd media session), B played 711, FEC 37, concealed
+0, decode errors 0, RTT ≈ 15 ms (`benchmarks/results/voice-trial-sfu-*-windows-20261102.log`).
+Local: clippy OK, `cargo test --workspace --locked` 62 passed. The real two-homes call is
+**UNVERIFIED** until the owner and the tester run the new server and client.
+
 ## Exact next task — S1 (plan in `docs/STAGES.md` → "S1 plan")
 
 1. ~~AudioEngine~~ — done (see session log above).
@@ -251,11 +274,15 @@ build failed (MAX_PATH, issue 18); fixed by a short target dir → **CI run 4145
    setup from job `apm` into the main CI job.
 3. ~~Call driver~~ — done (`CallDriver`, see session log).
 4. ~~Desktop signaling client + call UI + two clients on this machine~~ — done (see log).
-5. **Next:** owner-assisted audible trial — two machines on one LAN (or headphones on one
+5. **Next:** the call between two homes with the SFU build (the tester runs the new
+   `turbo-pancake-app-server --bind 0.0.0.0:7878`, TCP 7878 forwarded, UDP 7878 optional;
+   both run the new client, with and without VPN; record transport, RTT, loss, played/FEC/
+   concealed from `--call-log`), then the owner-assisted audible trial — two machines on one LAN (or headphones on one
    machine): `turbo-pancake-app-server --bind 0.0.0.0:7878` on one, clients with
    `--server ws://<ip>:7878/v1/signal --room test --call-log`, talk, toggle NS/AEC/mute,
    switch devices in the UI; record speech quality, echo, device switching. Needs the owner.
 6. macOS and Linux real-device runs of `voice-trial` (owner's M4; a Linux box with X11 and
    Wayland) — required before S1 DONE (spec §17 S1).
 7. DTLS backend benchmark (aws-lc-rs vs wincrypto) in the spike → ADR 0003.
-8. Server-reflexive (STUN) candidates so clients behind NAT outside one LAN connect (S1 plan item 4).
+8. ~~Server-reflexive (STUN) candidates~~ — done 2026-11-02 (see log); verify with the remote
+   tester (two homes, server on the tester's public IP): superseded by ADR 0007.

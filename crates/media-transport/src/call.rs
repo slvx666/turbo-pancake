@@ -17,7 +17,7 @@
 //! FEC via in-band LBRR, no RED); host candidates travel inside the SDP, extra ones
 //! (later: server-reflexive/TURN) through [`CallDriver::remote_candidate`].
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -29,7 +29,19 @@ use str0m::media::{Direction, MediaKind, Mid, Pt};
 use str0m::rtp::{RtpWrite, SeqNo};
 use str0m::{Candidate, Event, IceConnectionState, Rtc};
 
-use crate::{TransportError, UdpPeer};
+use crate::{TransportError, TunnelSend, UdpPeer};
+
+/// How the call's datagrams travel.
+pub enum MediaLink {
+    /// A UDP socket bound to `CallConfig::bind`.
+    Udp,
+    /// Through the signaling connection (`MEDIA_TRANSPORT_WEBSOCKET`): datagrams from the
+    /// server arrive on `inbound`, ours go to `outbound` (must not block).
+    Tunnel {
+        inbound: Receiver<Vec<u8>>,
+        outbound: TunnelSend,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -56,6 +68,11 @@ pub struct CallConfig {
     pub silence_timeout: Duration,
     /// Test impairment: share of outgoing datagrams dropped.
     pub send_loss: f32,
+    /// STUN servers (`host:port`) asked for our public address before the SDP is
+    /// created; empty = host candidates only (one LAN).
+    pub stun_servers: Vec<String>,
+    /// Longest wait for a STUN answer (delays the offer/answer by at most this).
+    pub stun_timeout: Duration,
 }
 
 impl CallConfig {
@@ -68,6 +85,8 @@ impl CallConfig {
             reconnect_timeout: Duration::from_secs(10),
             silence_timeout: Duration::from_secs(3),
             send_loss: 0.0,
+            stun_servers: Vec::new(),
+            stun_timeout: Duration::from_millis(1500),
         }
     }
 }
@@ -142,6 +161,8 @@ pub struct CallStats {
     pub ingress_loss: Option<f32>,
     pub connected_after_ms: Option<u64>,
     pub remote_addr: Option<SocketAddr>,
+    /// Our public address as a STUN server saw it (server-reflexive candidate).
+    pub reflexive_addr: Option<SocketAddr>,
     /// Longest gap between two loop iterations (thread starvation shows up here).
     pub max_loop_gap_ms: f64,
 }
@@ -170,12 +191,25 @@ impl CallDriver {
         outgoing: Receiver<AudioOut>,
         on_audio: impl FnMut(AudioIn) + Send + 'static,
     ) -> Result<(CallDriver, Receiver<CallEvent>), TransportError> {
+        Self::start_with(config, MediaLink::Udp, outgoing, on_audio)
+    }
+
+    /// [`CallDriver::start`] over an explicit [`MediaLink`] (no STUN on a tunnel).
+    pub fn start_with(
+        config: CallConfig,
+        link: MediaLink,
+        outgoing: Receiver<AudioOut>,
+        on_audio: impl FnMut(AudioIn) + Send + 'static,
+    ) -> Result<(CallDriver, Receiver<CallEvent>), TransportError> {
         let rtc = Rtc::builder()
             .set_rtp_mode(true)
             .clear_codecs()
             .enable_opus(true, false)
             .set_stats_interval(Some(Duration::from_secs(1)));
-        let mut peer = UdpPeer::with_config(config.bind, config.advertise, rtc)?;
+        let mut peer = match link {
+            MediaLink::Udp => UdpPeer::with_config(config.bind, config.advertise, rtc)?,
+            MediaLink::Tunnel { inbound, outbound } => UdpPeer::tunnel(inbound, outbound, rtc)?,
+        };
         if config.send_loss > 0.0 {
             peer.set_send_loss(config.send_loss, 0x5eed);
         }
@@ -296,6 +330,21 @@ const STEP: Duration = Duration::from_millis(1);
 
 impl Worker {
     fn run(mut self) {
+        // Before any SDP: the reflexive candidate travels inside the offer/answer. A
+        // remote offer waits in the command queue meanwhile.
+        if !self.config.stun_servers.is_empty() && !self.peer.is_tunnel() {
+            let servers: Vec<SocketAddr> = self
+                .config
+                .stun_servers
+                .iter()
+                .filter_map(|s| s.to_socket_addrs().ok())
+                .flatten()
+                .collect();
+            self.st.reflexive_addr = self
+                .peer
+                .add_server_reflexive(&servers, self.config.stun_timeout);
+            self.publish();
+        }
         if self.config.role == Role::Offerer
             && let Err(e) = self.create_offer()
         {
@@ -550,7 +599,7 @@ impl Worker {
 /// Extends a 16-bit sequence number relative to the previous extended one (nearest
 /// value, so reordering and wrap-around both work). The upper bits are the SRTP rollover
 /// counter, which the receiver assumes starts at 0: the first number is taken as is.
-fn extend_seq(prev: Option<u64>, seq: u16) -> u64 {
+pub fn extend_seq(prev: Option<u64>, seq: u16) -> u64 {
     match prev {
         None => u64::from(seq),
         Some(p) => {

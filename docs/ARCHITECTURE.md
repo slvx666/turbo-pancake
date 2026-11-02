@@ -16,7 +16,8 @@ turbo-pancake/
 ├─ crates/
 │  ├─ protocol/               prost types generated from proto/ + validation + limits
 │  ├─ media-transport/        str0m: UdpPeer + CallDriver (1:1 call thread, RTP-mode Opus, state machine)
-│  └─ media-audio/            voice pipeline: cpal I/O + SPSC rings, rubato, Opus, jitter buffer, AudioEngine thread
+│  ├─ media-audio/            voice pipeline: cpal I/O + SPSC rings, rubato, Opus, jitter buffer, AudioEngine thread
+│  └─ media-sfu/              SFU: ICE-lite session per member, RTP forwarding, UDP + WebSocket tunnel (ADR 0007)
 ├─ proto/turbo_pancake/v1/           protobuf schemas (source of truth for the wire format)
 ├─ benchmarks/
 │  ├─ harness/                turbo-pancake-bench: startup/memory/signaling scenarios → JSON
@@ -27,7 +28,7 @@ turbo-pancake/
 ```
 
 Planned additions (created when the owning stage starts, not before, to avoid empty
-crates): `apps/media-sfu` (S2), `crates/media-capture` and
+crates): `crates/media-capture` and
 `crates/media-codec` (S3), `crates/storage`, `crates/auth`, `crates/chat`, `migrations/`
 (S5), `deploy/` contents (S5/S8).
 
@@ -40,12 +41,14 @@ crates): `apps/media-sfu` (S2), `crates/media-capture` and
  │    commands in (bounded), snapshots out (invoke_from_event_loop)
  ├─ tp-audio (AudioEngine) + cpal RT callbacks └─ (S5) auth, chat, PostgreSQL
  │    └─ tp-audio-pump ─▶ current call (bounded, drop when full)
- └─ tp-call (CallDriver, str0m) ◄──UDP/DTLS-SRTP──► peer (S1) / media-sfu (S2+)
+ └─ tp-call (CallDriver, str0m) ◄─UDP or WS tunnel, DTLS-SRTP─► media-sfu (in app-server)
       └─ tp-call-events ─▶ tp-session
 ```
 
-S1 room model (`apps/desktop/src/session.rs`): the first member of a room waits and
-answers, the member who joins later offers. Joining starts the audio engine, leaving
+S1 room model (`apps/desktop/src/session.rs`, ADR 0007): after joining a room each member
+offers one WebRTC session to the server's SFU (`crates/media-sfu`, a thread in
+`app-server`), which forwards RTP between members; media goes over UDP to the server or,
+when UDP does not connect, through the signaling WebSocket. Joining starts the audio engine, leaving
 stops call and engine (devices, threads and socket released). A failed call is restarted
 while the peer is still in the room; a lost signaling connection ends the call and is
 retried with backoff (0.5 → 5 s), then the room is rejoined.

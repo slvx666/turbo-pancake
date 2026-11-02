@@ -18,6 +18,8 @@ param(
   # Playback volume of the other member in percent. Default 0: the full pipeline runs but
   # the speakers play silence (the owner keeps working during trials).
   [int]$Volume = 0,
+  # Extra client arguments for both clients, e.g. "--test-block-udp" (VPN without UDP).
+  [string[]]$ClientArgs = @(),
   [string]$Out = ""
 )
 $ErrorActionPreference = "Stop"
@@ -30,7 +32,7 @@ $srv = Start-Process -FilePath $server -ArgumentList "--bind", "127.0.0.1:7878" 
   -RedirectStandardOutput "$tmp/server.out" -RedirectStandardError "$tmp/server.err"
 Start-Sleep -Milliseconds 800
 $ms = $Seconds * 1000
-$common = @("--smoke-exit-after-ms", "$ms", "--no-activate", "--room", $Room, "--call-log", "--remote-volume", "$Volume")
+$common = @("--smoke-exit-after-ms", "$ms", "--no-activate", "--room", $Room, "--call-log", "--remote-volume", "$Volume") + $ClientArgs
 # B waits in the room first, A joins and calls.
 $b = Start-Process -FilePath $desktop -PassThru -RedirectStandardOutput "$tmp/b.out" -RedirectStandardError "$tmp/b.err" `
   -ArgumentList ($common + @("--window-pos", "2900,100", "--name", "Client-B"))
@@ -43,7 +45,7 @@ foreach ($p in @($a, $b)) { if (-not $p.HasExited) { $p.Kill(); Write-Warning "c
 Stop-Process -Id $srv.Id -ErrorAction SilentlyContinue
 
 $report = @()
-$report += "# voice-trial $(Get-Date -Format s) seconds=$Seconds loss_a=$Loss volume=$Volume room=$Room"
+$report += "# voice-trial $(Get-Date -Format s) seconds=$Seconds loss_a=$Loss volume=$Volume room=$Room client_args=$($ClientArgs -join ' ')"
 $report += "# exit codes: a=$($a.ExitCode) b=$($b.ExitCode)"
 foreach ($n in @("a", "b")) {
   $report += "## client $n"

@@ -4,11 +4,14 @@
 //! Invariants:
 //! * a connection is in at most one room (one active call per user);
 //! * every outbound queue is bounded; a peer that cannot keep up is disconnected;
-//! * the server never inspects or logs SDP/ICE contents;
+//! * the server never inspects or logs SDP/ICE contents or media datagrams;
+//! * media datagrams for a member are dropped, not queued without bound, when its
+//!   connection cannot keep up (like packet loss); they never get it disconnected;
 //! * a peer's own direct response to `JoinRoom` is enqueued before any relayed
 //!   signal from other members can reach it (both happen under the hub lock).
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +21,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Notify, OwnedSemaphorePermit, mpsc};
+use turbo_pancake_media_sfu::{Link, PeerSink};
 use turbo_pancake_protocol::{self as proto, DecodeError, v1};
 use v1::client_envelope::Body as C;
 use v1::server_envelope::Body as S;
@@ -48,6 +52,44 @@ impl PeerHandle {
             self.kill.notify_one();
         }
         // `Closed` means the peer task is already shutting down and will clean up itself.
+    }
+
+    /// Media datagrams: a full queue drops (the receiver conceals), never disconnects.
+    fn send_media(&self, body: S) {
+        let _ = self.tx.try_send(Out::Frame {
+            request_id: 0,
+            body,
+        });
+    }
+}
+
+/// Delivers a member's SFU output through its WebSocket.
+struct WsSink {
+    handle: PeerHandle,
+    request_id: u64,
+    room: String,
+    transport: i32,
+}
+
+impl PeerSink for WsSink {
+    fn answer(&mut self, result: Result<String, String>) {
+        let body = match result {
+            Ok(sdp) => S::MediaAnswer(v1::MediaAnswer {
+                room_id: self.room.clone(),
+                sdp,
+                transport: self.transport,
+            }),
+            Err(e) => {
+                tracing::debug!(error = %e, "media offer rejected");
+                error_body(ErrorCode::BadRequest, &format!("media offer rejected: {e}"))
+            }
+        };
+        self.handle.send(self.request_id, body);
+    }
+
+    fn datagram(&mut self, data: Vec<u8>) {
+        self.handle
+            .send_media(S::MediaDatagram(v1::MediaDatagram { data }));
     }
 }
 
@@ -184,6 +226,8 @@ struct Session {
     peer_id: Option<PeerId>,
     display_name: String,
     room: Option<String>,
+    /// This connection has a media session in the SFU.
+    media: bool,
     me_tx: mpsc::Sender<Out>,
     kill: Arc<Notify>,
 }
@@ -247,6 +291,7 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
         peer_id: None,
         display_name: String::new(),
         room: None,
+        media: false,
         me_tx: tx,
         kill: Arc::new(Notify::new()),
     };
@@ -264,7 +309,7 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
         };
         match msg {
             Message::Binary(bytes) => {
-                if let Flow::Close = handle_frame(&bytes, &mut session, &state.hub, &cfg) {
+                if let Flow::Close = handle_frame(&bytes, &mut session, &state) {
                     break LeaveReason::Disconnected;
                 }
             }
@@ -277,6 +322,9 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
     if let (Some(peer_id), Some(room)) = (&session.peer_id, session.room.take()) {
         state.hub.leave(&room, peer_id, reason);
     }
+    if let (Some(peer_id), true, Some(sfu)) = (&session.peer_id, session.media, &state.sfu) {
+        sfu.leave(peer_id);
+    }
     tracing::debug!(peer = ?session.peer_id, ?reason, "connection closed");
     let _ = session.me_tx.try_send(Out::Close);
     drop(session);
@@ -288,7 +336,22 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
     }
 }
 
-fn handle_frame(bytes: &[u8], s: &mut Session, hub: &Hub, cfg: &Config) -> Flow {
+/// UDP candidate addresses for a member: the address it dialed first (behind a port
+/// forward that is the public one), then configured public addresses, then the LAN one.
+fn candidate_ips(dialed: &str, state: &AppState) -> Vec<IpAddr> {
+    dialed
+        .parse::<IpAddr>()
+        .ok()
+        .filter(|ip| !ip.is_unspecified())
+        .into_iter()
+        .chain(state.config.public_ips.iter().copied())
+        .chain(state.lan_ip)
+        .collect()
+}
+
+fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
+    let hub: &Hub = &state.hub;
+    let cfg: &Config = &state.config;
     let env = match proto::decode_client(bytes) {
         Ok(env) => env,
         Err(DecodeError::UnsupportedVersion(_)) => {
@@ -368,6 +431,10 @@ fn handle_frame(bytes: &[u8], s: &mut Session, hub: &Hub, cfg: &Config) -> Flow 
             } else {
                 hub.leave(&l.room_id, &peer_id, LeaveReason::Left);
                 s.room = None;
+                if let (true, Some(sfu)) = (s.media, &state.sfu) {
+                    sfu.leave(&peer_id);
+                    s.media = false;
+                }
                 s.reply(rid, S::RoomLeft(v1::RoomLeft { room_id: l.room_id }));
             }
         }
@@ -378,6 +445,40 @@ fn handle_frame(bytes: &[u8], s: &mut Session, hub: &Hub, cfg: &Config) -> Flow 
                 s.reply_error(rid, ErrorCode::BadRequest, "cannot signal self");
             } else if let Err(code) = hub.relay(&peer_id, sig) {
                 s.reply_error(rid, code, "signal not delivered");
+            }
+        }
+        C::MediaOffer(m) => {
+            if let Err(e) = proto::validate_media_offer(&m) {
+                s.reply_error(rid, ErrorCode::BadRequest, &e.to_string());
+            } else if s.room.as_deref() != Some(m.room_id.as_str()) {
+                s.reply_error(rid, ErrorCode::NotInRoom, "join the room first");
+            } else if let Some(sfu) = &state.sfu {
+                let transport = m.transport;
+                let link = match m.transport() {
+                    v1::MediaTransport::Websocket => Link::Tunnel,
+                    _ => Link::Udp {
+                        candidate_ips: candidate_ips(&m.dialed_ip, state),
+                    },
+                };
+                let sink = WsSink {
+                    handle: s.handle(),
+                    request_id: rid,
+                    room: m.room_id.clone(),
+                    transport,
+                };
+                if sfu.join(&peer_id, &m.room_id, m.sdp, link, Box::new(sink)) {
+                    s.media = true;
+                } else {
+                    s.reply_error(rid, ErrorCode::Internal, "media server busy");
+                }
+            } else {
+                s.reply_error(rid, ErrorCode::Internal, "media unavailable");
+            }
+        }
+        C::MediaDatagram(d) => {
+            // Invalid or unexpected datagrams are dropped silently, like bad UDP.
+            if let (true, Some(sfu), Ok(())) = (s.media, &state.sfu, proto::validate_datagram(&d)) {
+                sfu.datagram(&peer_id, d.data);
             }
         }
     }

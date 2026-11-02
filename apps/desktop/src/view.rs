@@ -3,7 +3,7 @@
 
 use turbo_pancake_media_transport::call::CallState;
 
-use crate::session::{ServerStatus, Snapshot};
+use crate::session::{MediaTransport, ServerStatus, Snapshot};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CallView {
@@ -28,31 +28,26 @@ pub fn render(s: &Snapshot) -> CallView {
         },
         ServerStatus::Disconnected(why) => format!("Нет связи: {why}"),
     };
-    let (title, detail) = match (&s.room, &s.remote) {
-        (None, _) => (
+    let names = s.members.join(", ");
+    let (title, detail) = match &s.room {
+        None => (
             "Не в звонке".to_string(),
             "Введите id комнаты и нажмите «Войти»; второй участник входит в ту же комнату."
                 .to_string(),
         ),
-        (Some(room), None) if !s.joined => {
-            (format!("Комната «{room}»"), "Вход в комнату…".to_string())
-        }
-        (Some(room), None) => (
-            format!("Комната «{room}»"),
-            "Ожидание собеседника…".to_string(),
-        ),
-        (Some(room), Some(r)) => {
-            let name = if r.name.is_empty() {
-                "собеседник"
-            } else {
-                &r.name
-            };
-            let state = match &r.state {
-                CallState::Negotiating | CallState::Connecting => format!("Соединение с {name}…"),
-                CallState::Connected => format!("В звонке с {name}"),
-                CallState::Reconnecting => format!("Связь с {name} потеряна, восстановление…"),
-                CallState::Closed => "Звонок завершён".to_string(),
-                CallState::Failed(e) => format!("Ошибка звонка: {e}"),
+        Some(room) if !s.joined => (format!("Комната «{room}»"), "Вход в комнату…".to_string()),
+        Some(room) => {
+            let state = match s.media.as_ref().map(|m| &m.state) {
+                None | Some(CallState::Negotiating | CallState::Connecting) => {
+                    "Подключение к медиасерверу…".to_string()
+                }
+                Some(CallState::Connected) if s.members.is_empty() => {
+                    "Ожидание собеседника…".to_string()
+                }
+                Some(CallState::Connected) => format!("В звонке: {names}"),
+                Some(CallState::Reconnecting) => "Связь потеряна, восстановление…".to_string(),
+                Some(CallState::Closed) => "Звонок завершён".to_string(),
+                Some(CallState::Failed(e)) => format!("Ошибка звонка: {e}"),
             };
             (format!("Комната «{room}»"), state)
         }
@@ -68,6 +63,12 @@ pub fn render(s: &Snapshot) -> CallView {
             c.packets_sent,
             c.packets_received,
         );
+        if let Some(m) = &s.media {
+            stats.push_str(match m.transport {
+                MediaTransport::Udp => " · через UDP",
+                MediaTransport::Tunnel => " · через TCP (WebSocket)",
+            });
+        }
     }
     if let Some(p) = s.engine.as_ref().and_then(|e| e.peers.first()) {
         let j = &p.stats.jitter;
@@ -120,8 +121,8 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
         ServerStatus::Connected => "connected",
         ServerStatus::Disconnected(_) => "disconnected",
     };
-    let state = s.remote.as_ref().map_or("none".to_string(), |r| {
-        match &r.state {
+    let state = s.media.as_ref().map_or("none".to_string(), |m| {
+        match &m.state {
             CallState::Failed(_) => "failed",
             CallState::Negotiating => "negotiating",
             CallState::Connecting => "connecting",
@@ -132,15 +133,19 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
         .to_string()
     });
     let mut line = format!(
-        "TURBO_PANCAKE_CALL t_ms={elapsed_ms} server={server} room={} joined={} others={} call={state} calls_started={}",
+        "TURBO_PANCAKE_CALL t_ms={elapsed_ms} server={server} room={} joined={} others={} media={state} transport={} media_sessions={}",
         s.room.as_deref().unwrap_or("-"),
         s.joined,
-        s.others,
-        s.calls_started,
+        s.members.len(),
+        s.media.as_ref().map_or("-", |m| match m.transport {
+            MediaTransport::Udp => "udp",
+            MediaTransport::Tunnel => "websocket",
+        }),
+        s.media_sessions,
     );
     if let Some(c) = &s.call {
         line.push_str(&format!(
-            " rtt_ms={} sent={} recv={} egress_loss={} ingress_loss={} connected_after_ms={} max_loop_gap_ms={:.1}",
+            " rtt_ms={} sent={} recv={} egress_loss={} ingress_loss={} connected_after_ms={} max_loop_gap_ms={:.1} server_addr={}",
             c.rtt_ms.unwrap_or(-1.0),
             c.packets_sent,
             c.packets_received,
@@ -148,6 +153,7 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
             c.ingress_loss.unwrap_or(-1.0),
             c.connected_after_ms.map_or(-1, |m| m as i64),
             c.max_loop_gap_ms,
+            c.remote_addr.map_or("-".to_string(), |a| a.to_string()),
         ));
     }
     if let Some(e) = &s.engine {
@@ -192,8 +198,7 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::RemotePeer;
-    use turbo_pancake_media_transport::call::Role;
+    use crate::session::MediaStatus;
 
     #[test]
     fn titles_follow_the_call_lifecycle() {
@@ -203,21 +208,21 @@ mod tests {
         s.room = Some("r1".into());
         assert_eq!(render(&s).detail, "Вход в комнату…");
         s.joined = true;
-        assert_eq!(render(&s).detail, "Ожидание собеседника…");
-        s.remote = Some(RemotePeer {
-            peer_id: "p".into(),
-            name: "Боб".into(),
-            role: Role::Offerer,
+        assert_eq!(render(&s).detail, "Подключение к медиасерверу…");
+        s.media = Some(MediaStatus {
+            transport: MediaTransport::Tunnel,
             state: CallState::Connected,
         });
+        assert_eq!(render(&s).detail, "Ожидание собеседника…");
+        s.members = vec!["Боб".into()];
         let v = render(&s);
         assert_eq!(v.title, "Комната «r1»");
-        assert_eq!(v.detail, "В звонке с Боб");
+        assert_eq!(v.detail, "В звонке: Боб");
         assert!(v.in_room);
         s.server = ServerStatus::Disconnected("x".into());
         assert_eq!(render(&s).connection, "Нет связи: x");
         let line = log_line(&s, 5);
         assert!(line.starts_with("TURBO_PANCAKE_CALL t_ms=5 server=disconnected room=r1"));
-        assert!(line.contains("call=connected"));
+        assert!(line.contains("media=connected transport=websocket"));
     }
 }

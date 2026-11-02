@@ -29,6 +29,8 @@ message ClientEnvelope {
     LeaveRoom leave_room = 12;
     Signal signal = 13;
     Ping ping = 14;
+    MediaOffer media_offer = 15;
+    MediaDatagram media_datagram = 16;
   }
 }
 
@@ -49,6 +51,8 @@ message ServerEnvelope {
     Pong pong = 15;
     Error error = 16;
     RoomLeft room_left = 17;
+    MediaAnswer media_answer = 18;
+    MediaDatagram media_datagram = 19;
   }
 }
 
@@ -176,4 +180,43 @@ enum ErrorCode {
   ERROR_CODE_PEER_NOT_FOUND = 7;
   ERROR_CODE_ROOM_FULL = 8;
   ERROR_CODE_INTERNAL = 9;
+}
+
+// ---- Media through the server (SFU) ----
+//
+// Every member of a room negotiates one WebRTC session (ICE + DTLS-SRTP, Opus) with the
+// server, which forwards RTP between members without transcoding. The client offers;
+// the server is ICE-lite and answers. Media travels either over UDP to the server or,
+// when UDP is blocked (VPNs, firewalls), as the same encrypted datagrams inside this
+// WebSocket (`MediaDatagram`), so a call works wherever signaling works.
+
+enum MediaTransport {
+  MEDIA_TRANSPORT_UNSPECIFIED = 0;
+  // Datagrams over UDP to the server's media port (same number as the WebSocket port).
+  MEDIA_TRANSPORT_UDP = 1;
+  // Datagrams inside MediaDatagram frames of this connection.
+  MEDIA_TRANSPORT_WEBSOCKET = 2;
+}
+
+// Client -> server, in the joined room. Replaces any previous media session of this
+// connection. Answered by MediaAnswer (same request_id) or Error.
+message MediaOffer {
+  string room_id = 1;
+  string sdp = 2;
+  MediaTransport transport = 3;
+  // IP address the client used to reach the server (the server offers it as its UDP
+  // candidate; behind a port forward it is the public address). May be empty.
+  string dialed_ip = 4;
+}
+
+message MediaAnswer {
+  string room_id = 1;
+  string sdp = 2;
+  MediaTransport transport = 3;
+}
+
+// One media datagram (STUN, DTLS or SRTP/SRTCP) for MEDIA_TRANSPORT_WEBSOCKET,
+// in either direction. The server never inspects its contents.
+message MediaDatagram {
+  bytes data = 1;
 }

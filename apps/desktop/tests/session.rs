@@ -1,9 +1,10 @@
 //! Two desktop sessions (the code the GUI runs, without the window) talk through a real
-//! `app-server` over WebSocket signaling and real UDP media (ICE + DTLS-SRTP), with
-//! simulated audio devices and 5 % loss on one direction (spec S1 acceptance, headless
-//! part). Covers: join → call, continuity under loss, mute, leave releases devices and
-//! threads, the remaining member notices at once (PeerLeft), rejoin calls again, and
-//! a signaling outage ends the call and reconnects.
+//! `app-server` with its SFU: WebSocket signaling, media over real UDP to the server or
+//! tunneled through the WebSocket (ICE + DTLS-SRTP either way), simulated audio devices.
+//! Covers (spec S1 acceptance, headless part): join → call with 5 % loss, mute, leave
+//! releases devices and threads and the other member sees it at once, rejoin; a VPN that
+//! carries no UDP (every UDP datagram dropped) → automatic fallback to the WebSocket; a
+//! server without UDP → WebSocket at once; a signaling outage ends media and reconnects.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -11,10 +12,12 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use turbo_pancake_desktop::session::{Command, ServerStatus, Session, SessionConfig, Snapshot};
+use turbo_pancake_app_server::Config;
+use turbo_pancake_desktop::session::{
+    Command, MediaTransport, ServerStatus, Session, SessionConfig, Snapshot, TransportPref,
+};
 use turbo_pancake_media_audio::DspConfig;
 use turbo_pancake_media_audio::sim::{SimDevice, SimIo, SimState};
-use turbo_pancake_media_transport::call::CallState;
 
 struct Client {
     session: Option<Session>,
@@ -23,14 +26,36 @@ struct Client {
     state: Arc<SimState>,
 }
 
+struct Opts {
+    mic_on: bool,
+    send_loss: f32,
+    transport: TransportPref,
+    block_udp: bool,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Self {
+            mic_on: false,
+            send_loss: 0.0,
+            transport: TransportPref::Auto,
+            block_udp: false,
+        }
+    }
+}
+
 impl Client {
-    fn start(server: SocketAddr, name: &str, mic_on: bool, send_loss: f32) -> Self {
-        let io = SimIo::new(
-            vec![SimDevice::new("mic", 48_000)],
-            vec![SimDevice::new("spk", 48_000)],
-        );
+    fn start(server: SocketAddr, name: &str, o: Opts) -> Self {
+        let devices = || {
+            (
+                vec![SimDevice::new("mic", 48_000)],
+                vec![SimDevice::new("spk", 48_000)],
+            )
+        };
+        let (ins, outs) = devices();
+        let io = SimIo::new(ins, outs);
         let state = io.state();
-        state.muted_inputs.store(!mic_on, Ordering::Relaxed);
+        state.muted_inputs.store(!o.mic_on, Ordering::Relaxed);
         let mut cfg = SessionConfig::new(format!("ws://{server}/v1/signal"), name);
         // The simulated mic is a stationary tone, which noise suppression removes.
         cfg.engine.dsp = DspConfig {
@@ -38,13 +63,12 @@ impl Client {
             echo_cancellation: false,
             auto_gain: false,
         };
-        cfg.send_loss = send_loss;
+        cfg.send_loss = o.send_loss;
+        cfg.transport = o.transport;
+        cfg.block_udp = o.block_udp;
+        cfg.udp_attempt_timeout = Duration::from_secs(2);
         cfg.status_interval = Duration::from_millis(50);
         // Each engine start gets the same simulated devices (shared state).
-        let devices = (
-            vec![SimDevice::new("mic", 48_000)],
-            vec![SimDevice::new("spk", 48_000)],
-        );
         let shared = state.clone();
         let mut first = Some(io);
         let (tx, updates) = channel();
@@ -52,7 +76,8 @@ impl Client {
             cfg,
             move || {
                 first.take().unwrap_or_else(|| {
-                    SimIo::with_state(devices.0.clone(), devices.1.clone(), shared.clone())
+                    let (ins, outs) = devices();
+                    SimIo::with_state(ins, outs, shared.clone())
                 })
             },
             move |s: &Snapshot| {
@@ -87,10 +112,18 @@ impl Client {
         played(&self.last)
     }
 
+    fn transport(&self) -> Option<MediaTransport> {
+        self.last.media.as_ref().map(|m| m.transport)
+    }
+
     fn released(&self) -> bool {
         self.state.open_inputs.load(Ordering::Relaxed) == 0
             && self.state.open_outputs.load(Ordering::Relaxed) == 0
             && self.state.threads.load(Ordering::Relaxed) == 0
+    }
+
+    fn quit(&mut self) {
+        self.session.take().unwrap().stop();
     }
 }
 
@@ -101,14 +134,12 @@ fn played(s: &Snapshot) -> u64 {
         .map_or(0, |p| p.stats.jitter.played)
 }
 
-fn in_call(s: &Snapshot) -> bool {
-    s.remote
-        .as_ref()
-        .is_some_and(|r| r.state == CallState::Connected)
-}
-
-/// Starts an app-server on its own runtime thread; dropping the sender stops it.
-fn server(addr: Option<SocketAddr>) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
+/// Starts an app-server (with its SFU) on its own runtime thread; dropping the sender
+/// stops it.
+fn server(
+    addr: Option<SocketAddr>,
+    config: Config,
+) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (addr_tx, addr_rx) = channel();
     std::thread::spawn(move || {
@@ -121,7 +152,7 @@ fn server(addr: Option<SocketAddr>) -> (SocketAddr, tokio::sync::oneshot::Sender
             let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
             let listener = tokio::net::TcpListener::bind(bind).await.unwrap();
             addr_tx.send(listener.local_addr().unwrap()).unwrap();
-            turbo_pancake_app_server::serve(listener, Default::default(), async {
+            turbo_pancake_app_server::serve(listener, config, async {
                 let _ = stop_rx.await;
             })
             .await
@@ -132,32 +163,47 @@ fn server(addr: Option<SocketAddr>) -> (SocketAddr, tokio::sync::oneshot::Sender
     (addr_rx.recv().unwrap(), stop_tx)
 }
 
+/// B waits in `room`, A joins; both end up in a call.
+fn pair(addr: SocketAddr, room: &str, a: Opts, b: Opts) -> (Client, Client) {
+    let mut a = Client::start(addr, "Алиса", a);
+    let mut b = Client::start(addr, "Боб", b);
+    b.send(Command::Join(room.into()));
+    b.wait("b joined", 10, |s| s.joined && s.engine.is_some());
+    a.send(Command::Join(room.into()));
+    a.wait("a in call", 20, Snapshot::in_call);
+    b.wait("b in call", 20, Snapshot::in_call);
+    (a, b)
+}
+
+fn talking(o: Opts) -> Opts {
+    Opts { mic_on: true, ..o }
+}
+
 #[test]
 fn two_sessions_call_through_the_server() {
-    let (addr, _server) = server(None);
+    let (addr, _server) = server(None, Config::default());
     // A talks (440 Hz tone) and loses 5 % of what it sends; B is silent.
-    let mut a = Client::start(addr, "Алиса", true, 0.05);
-    let mut b = Client::start(addr, "Боб", false, 0.0);
-    a.wait("a online", 10, |s| s.server == ServerStatus::Connected);
-    b.wait("b online", 10, |s| s.server == ServerStatus::Connected);
+    let (mut a, mut b) = pair(
+        addr,
+        "s1-room",
+        talking(Opts {
+            send_loss: 0.05,
+            ..Opts::default()
+        }),
+        Opts::default(),
+    );
+    assert_eq!(b.last.members, vec!["Алиса".to_string()]);
+    assert_eq!(a.last.members, vec!["Боб".to_string()]);
+    assert_eq!(a.transport(), Some(MediaTransport::Udp));
+    assert_eq!(b.transport(), Some(MediaTransport::Udp));
 
-    // B waits in the room, A joins and calls.
-    b.send(Command::Join("s1-room".into()));
-    b.wait("b joined", 10, |s| s.joined && s.engine.is_some());
-    a.send(Command::Join("s1-room".into()));
-    a.wait("a in call", 15, in_call);
-    b.wait("b in call", 15, in_call);
-    assert_eq!(b.last.remote.as_ref().unwrap().name, "Алиса");
-    assert_eq!(a.last.remote.as_ref().unwrap().name, "Боб");
-
-    // 4 s of speech at B.
+    // 4 s of speech at B, relayed by the server.
     b.wait("4 s played at b", 20, |s| played(s) >= 200);
     let rx = b.last.engine.as_ref().unwrap().peers[0].stats;
-    // A's last snapshot is from when it connected; take a current one.
     a.wait("a sent audio", 5, |s| {
         s.call.as_ref().is_some_and(|c| c.packets_sent >= 200)
     });
-    eprintln!("b receiver: {rx:?}\na call: {:?}", a.last.call);
+    eprintln!("b receiver: {rx:?}\na media: {:?}", a.last.call);
     assert_eq!(rx.decode_errors, 0);
     assert!(rx.jitter.late <= 3, "{rx:?}");
     assert!(rx.concealed_ratio() < 0.03, "{rx:?}");
@@ -186,11 +232,11 @@ fn two_sessions_call_through_the_server() {
     });
     a.send(Command::SetMuted(false));
 
-    // A leaves: devices and threads released; B is told at once, not after 3 s silence.
+    // A leaves: devices and threads released; B is told at once and stays connected.
     a.send(Command::Leave);
     let t = Instant::now();
     a.wait("a left", 10, |s| s.room.is_none() && s.engine.is_none());
-    b.wait("b sees a leave", 10, |s| s.joined && s.remote.is_none());
+    b.wait("b sees a leave", 10, |s| s.joined && s.members.is_empty());
     let noticed = t.elapsed();
     assert!(a.released(), "a still holds devices");
     assert!(
@@ -198,38 +244,73 @@ fn two_sessions_call_through_the_server() {
         "b noticed after {noticed:?}"
     );
 
-    // A comes back: a new call, B answers again (engine stayed up at B).
+    // A comes back: a call again, audio reaches B.
     a.send(Command::Join("s1-room".into()));
-    a.wait("a in call again", 15, in_call);
-    b.wait("b in call again", 15, |s| {
-        in_call(s) && s.calls_started == 2
-    });
+    a.wait("a in call again", 20, Snapshot::in_call);
+    b.wait("b in call again", 20, Snapshot::in_call);
     let before = b.played();
     b.wait("audio after rejoin", 10, |s| played(s) >= before + 50);
     assert!(b.state.recent_peak() > 0.2);
 
     // Quit both: everything released.
-    a.session.take().unwrap().stop();
-    b.wait("b alone", 10, |s| s.remote.is_none());
-    b.session.take().unwrap().stop();
+    a.quit();
+    b.wait("b alone", 10, |s| s.members.is_empty());
+    b.quit();
     assert!(a.released() && b.released());
 }
 
 #[test]
-fn signaling_outage_ends_the_call_and_reconnects() {
-    let (addr, server_stop) = server(None);
-    let mut a = Client::start(addr, "a", true, 0.0);
-    let mut b = Client::start(addr, "b", false, 0.0);
-    b.send(Command::Join("outage".into()));
-    b.wait("b joined", 10, |s| s.joined);
-    a.send(Command::Join("outage".into()));
-    a.wait("a in call", 15, in_call);
-    b.wait("b in call", 15, in_call);
+fn vpn_without_udp_falls_back_to_the_websocket() {
+    let (addr, _server) = server(None, Config::default());
+    // Every UDP datagram of both clients is lost: only the tunnel can work.
+    let blocked = || Opts {
+        block_udp: true,
+        ..Opts::default()
+    };
+    let t = Instant::now();
+    let (mut a, mut b) = pair(addr, "vpn", talking(blocked()), blocked());
+    eprintln!("fallback connected after {:?}", t.elapsed());
+    assert_eq!(a.transport(), Some(MediaTransport::Tunnel));
+    assert_eq!(b.transport(), Some(MediaTransport::Tunnel));
+    assert!(a.last.media_sessions >= 2, "UDP tried first");
+    b.wait("3 s played at b over the tunnel", 20, |s| played(s) >= 150);
+    let rx = b.last.engine.as_ref().unwrap().peers[0].stats;
+    eprintln!("b receiver over websocket: {rx:?}");
+    assert_eq!(rx.decode_errors, 0);
+    assert!(rx.concealed_ratio() < 0.03, "{rx:?}");
+    assert!(b.state.recent_peak() > 0.2);
+    a.quit();
+    b.quit();
+    assert!(a.released() && b.released());
+}
 
-    // Server goes away: both see it, the call ends, the room is still wanted.
+#[test]
+fn server_without_udp_uses_the_websocket_at_once() {
+    let config = Config {
+        media_udp: false,
+        ..Config::default()
+    };
+    let (addr, _server) = server(None, config);
+    let t = Instant::now();
+    let (mut a, mut b) = pair(addr, "no-udp", talking(Opts::default()), Opts::default());
+    // The UDP offer is rejected right away, no UDP timeout to wait for.
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    assert_eq!(a.transport(), Some(MediaTransport::Tunnel));
+    b.wait("audio over the websocket", 20, |s| played(s) >= 100);
+    assert!(b.state.recent_peak() > 0.2);
+    a.quit();
+    b.quit();
+}
+
+#[test]
+fn signaling_outage_ends_media_and_reconnects() {
+    let (addr, server_stop) = server(None, Config::default());
+    let (mut a, mut b) = pair(addr, "outage", talking(Opts::default()), Opts::default());
+
+    // Server goes away: both see it, media ends, the room is still wanted.
     drop(server_stop);
     a.wait("a offline", 10, |s| {
-        matches!(s.server, ServerStatus::Disconnected(_)) && s.remote.is_none()
+        matches!(s.server, ServerStatus::Disconnected(_)) && s.media.is_none()
     });
     b.wait("b offline", 10, |s| {
         matches!(s.server, ServerStatus::Disconnected(_))
@@ -240,13 +321,15 @@ fn signaling_outage_ends_the_call_and_reconnects() {
         "engine kept while the room is wanted"
     );
 
-    // Server back on the same port: both reconnect, rejoin and call again.
-    let (_addr, _server) = server(Some(addr));
+    // Server back on the same port: both reconnect, rejoin and talk again.
+    let (_addr, _server) = server(Some(addr), Config::default());
     a.wait("a back in call", 30, |s| {
-        s.server == ServerStatus::Connected && in_call(s)
+        s.server == ServerStatus::Connected && s.in_call()
     });
-    b.wait("b back in call", 30, in_call);
-    a.session.take().unwrap().stop();
-    b.session.take().unwrap().stop();
+    b.wait("b back in call", 30, Snapshot::in_call);
+    let before = b.played();
+    b.wait("audio after reconnect", 10, |s| played(s) >= before + 50);
+    a.quit();
+    b.quit();
     assert!(a.released() && b.released());
 }

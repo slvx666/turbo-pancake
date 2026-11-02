@@ -3,3 +3,5 @@
 /benchmarks/results/*.tmp
 .env
 /.cargo/config.toml
+# Machine-local agent notes (paths, private locations)
+/CLAUDE.local.md

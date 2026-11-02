@@ -135,3 +135,96 @@ fn signal_validation() {
     no_peer.to_peer_id.clear();
     assert_eq!(validate_signal(&no_peer), Err(ValidationError::PeerId));
 }
+
+#[test]
+fn media_field_numbers_are_pinned() {
+    // ClientEnvelope field 16 (len) = MediaDatagram { 1: bytes [0xAB] }
+    let env = client(0, C::MediaDatagram(v1::MediaDatagram { data: vec![0xAB] }));
+    assert_eq!(
+        encode(&env),
+        vec![0x08, 0x01, 0x82, 0x01, 0x03, 0x0A, 0x01, 0xAB]
+    );
+    // ClientEnvelope field 15 (len) = MediaOffer { 1:"r", 2:"s", 3: UDP(1), 4:"i" }
+    let env = client(
+        0,
+        C::MediaOffer(v1::MediaOffer {
+            room_id: "r".into(),
+            sdp: "s".into(),
+            transport: v1::MediaTransport::Udp as i32,
+            dialed_ip: "i".into(),
+        }),
+    );
+    assert_eq!(
+        encode(&env),
+        vec![
+            0x08, 0x01, 0x7A, 0x0B, 0x0A, 0x01, b'r', 0x12, 0x01, b's', 0x18, 0x01, 0x22, 0x01,
+            b'i'
+        ]
+    );
+    // ServerEnvelope field 18 = MediaAnswer, field 19 = MediaDatagram.
+    let answer = v1::ServerEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 0,
+        event_id: 0,
+        body: Some(S::MediaAnswer(v1::MediaAnswer {
+            room_id: String::new(),
+            sdp: String::new(),
+            transport: v1::MediaTransport::Websocket as i32,
+        })),
+    };
+    assert_eq!(
+        encode(&answer),
+        vec![0x08, 0x01, 0x92, 0x01, 0x02, 0x18, 0x02]
+    );
+    let dg = v1::ServerEnvelope {
+        body: Some(S::MediaDatagram(v1::MediaDatagram { data: vec![1, 2] })),
+        ..answer
+    };
+    let bytes = encode(&dg);
+    assert_eq!(
+        bytes,
+        vec![0x08, 0x01, 0x9A, 0x01, 0x04, 0x0A, 0x02, 0x01, 0x02]
+    );
+    assert_eq!(decode_server(&bytes).unwrap(), dg);
+}
+
+#[test]
+fn media_validation() {
+    use turbo_pancake_protocol::{MAX_DATAGRAM_BYTES, validate_datagram, validate_media_offer};
+    let ok = v1::MediaOffer {
+        room_id: "r1".into(),
+        sdp: "v=0".into(),
+        transport: v1::MediaTransport::Udp as i32,
+        dialed_ip: "127.0.0.1".into(),
+    };
+    assert!(validate_media_offer(&ok).is_ok());
+    let no_transport = v1::MediaOffer {
+        transport: 0,
+        ..ok.clone()
+    };
+    assert_eq!(
+        validate_media_offer(&no_transport),
+        Err(ValidationError::MediaOffer)
+    );
+    let empty_sdp = v1::MediaOffer {
+        sdp: String::new(),
+        ..ok.clone()
+    };
+    assert!(validate_media_offer(&empty_sdp).is_err());
+    let bad_room = v1::MediaOffer {
+        room_id: "a b".into(),
+        ..ok
+    };
+    assert_eq!(
+        validate_media_offer(&bad_room),
+        Err(ValidationError::RoomId)
+    );
+    assert!(validate_datagram(&v1::MediaDatagram { data: vec![0; 10] }).is_ok());
+    assert!(validate_datagram(&v1::MediaDatagram { data: vec![] }).is_err());
+    assert!(
+        validate_datagram(&v1::MediaDatagram {
+            data: vec![0; MAX_DATAGRAM_BYTES + 1]
+        })
+        .is_err()
+    );
+}

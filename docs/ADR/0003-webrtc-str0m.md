@@ -73,7 +73,22 @@ This proves transport feasibility only. No encoded speech, no network impairment
   (Reconnecting; back to Connected on the next RTP packet; Failed after
   `reconnect_timeout`, default 10 s).
 * Candidates: host candidate of the bind address, or of the default-route IP when bound
-  to 0.0.0.0 (no packet sent to find it). STUN/TURN: later (S2/S8).
+  to 0.0.0.0 (no packet sent to find it).
+* **Server-reflexive (STUN), added 2026-11-02:** the first real test between two homes
+  (owner ↔ a remote tester, server on the tester's public IP) reached the room but every call
+  ended in `connect timeout`: only private host candidates were offered. Now the call
+  thread asks STUN servers (`CallConfig::stun_servers`, own minimal Binding client in
+  `src/stun.rs`, RFC 8489 without auth; XOR-MAPPED-ADDRESS, MAPPED-ADDRESS fallback)
+  on the media socket *before* creating the SDP and adds the mapped address as a `srflx`
+  candidate (str0m `Candidate::server_reflexive`, base = host candidate). Both sides run
+  full ICE, so their checks punch the NAT holes. Retransmit every 250 ms, wait ≤ 1.5 s;
+  no answer only delays the SDP. Desktop default: public servers
+  `stun.l.google.com:19302`, `stun.cloudflare.com:3478` (they see IP:port only) until
+  the project runs coturn (spec §3); `--stun`/`--no-stun` override. Symmetric NATs/CGNAT
+  still need TURN (relay) — not implemented, must not silently inflate traffic (§6).
+  Evidence: `tests/stun.rs` (fake STUN server: srflx in offer and answer, stats, call
+  connects; silent server/unresolvable name only delay the offer), RFC 5769 vector in
+  `src/stun.rs`.
 * Evidence: `tests/call.rs` (both directions 150/150 across the u16 wrap, 10 % wire loss →
   exactly the dropped packets missing, peer loss → Reconnecting → Failed) and
   `tests/voice_call.rs` (two `AudioEngine`s on simulated devices through two drivers over
