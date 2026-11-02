@@ -1,8 +1,8 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S1 — end-to-end 1:1 voice
-Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02, evidence below; S1 step 1 — audio pipeline crate — done; step 2.1 — AudioEngine — done)
-Last verified commit: bf85c04 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41386258757 green incl. job `apm` on 3 OS)
+Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02; S1: audio pipeline, AudioEngine, APM, call driver done; desktop signaling + call UI next)
+Last verified commit: 6e99420 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41437098838 green incl. job `apm` on 3 OS)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
 
