@@ -6,7 +6,7 @@
 //! threads so tests can prove that the engine releases everything, and lets them make a
 //! device disappear or fail mid-stream.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -52,6 +52,8 @@ pub struct SimState {
     unavailable: Mutex<HashSet<String>>,
     healths: Mutex<Vec<(String, Arc<StreamHealth>)>>,
     pub muted_inputs: AtomicBool,
+    /// Acoustic coupling: what the speakers play reaches the microphones (gain, queue).
+    echo: Mutex<Option<(f32, VecDeque<f32>)>>,
 }
 
 impl SimState {
@@ -67,6 +69,18 @@ impl SimState {
         } else {
             set.remove(id);
         }
+    }
+
+    /// Couples speakers to microphones like a laptop without headphones: played samples
+    /// come back at the microphone `delay_ms` later, scaled by `gain`. Assumes inputs and
+    /// outputs run at the same rate. `None` removes the coupling.
+    pub fn set_acoustic_echo(&self, echo: Option<(f32, u32, u32)>) {
+        *self.echo.lock().unwrap() = echo.map(|(gain, delay_ms, rate)| {
+            (
+                gain,
+                VecDeque::from(vec![0.0; (rate * delay_ms / 1000) as usize]),
+            )
+        });
     }
 
     /// Reports a fatal error on every open stream of `id` (device unplugged mid-call).
@@ -182,12 +196,16 @@ impl AudioIo for SimIo {
         let thread = device_thread(rate, stop.clone(), st.clone(), move |due| {
             h.callbacks.fetch_add(1, Ordering::Relaxed);
             let silent = st.muted_inputs.load(Ordering::Relaxed);
+            let mut echo = st.echo.lock().unwrap();
             for _ in 0..due {
-                let s = if silent {
+                let mut s = if silent {
                     0.0
                 } else {
                     0.3 * (TAU * 440.0 * (n % u64::from(rate)) as f32 / rate as f32).sin()
                 };
+                if let Some((gain, queue)) = echo.as_mut() {
+                    s += *gain * queue.pop_front().unwrap_or(0.0);
+                }
                 n += 1;
                 if producer.push(s).is_err() {
                     h.xruns.fetch_add(1, Ordering::Relaxed);
@@ -226,6 +244,7 @@ impl AudioIo for SimIo {
         let thread = device_thread(dev.rate, stop.clone(), st.clone(), move |due| {
             h.callbacks.fetch_add(1, Ordering::Relaxed);
             let mut loud = 0;
+            let mut echo = st.echo.lock().unwrap();
             for _ in 0..due {
                 let s: f32 = match consumer.pop() {
                     Ok(s) => s,
@@ -236,6 +255,12 @@ impl AudioIo for SimIo {
                 };
                 if s.abs() > 0.01 {
                     loud += 1;
+                }
+                if let Some((_, queue)) = echo.as_mut() {
+                    // Bounded: a stalled microphone must not grow the queue forever.
+                    if queue.len() < 48_000 {
+                        queue.push_back(s);
+                    }
                 }
                 peak = peak.max(s.abs());
                 in_window += 1;

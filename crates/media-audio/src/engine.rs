@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 use rtrb::{Consumer, Producer};
 
 use crate::device::{StreamHealth, open_capture, open_playback};
+use crate::dsp::{DSP_AVAILABLE, DspConfig, DspStats, VoiceDsp};
 use crate::pipeline::{ReceiverStats, VoiceReceiver, VoiceSender};
 use crate::resample::MonoResampler;
 use crate::{AudioError, CODEC_RATE, EncoderConfig, FRAME_MS, FRAME_SAMPLES, JitterConfig};
@@ -163,6 +164,8 @@ pub struct EngineConfig {
     /// Capacity of the outgoing and incoming packet channels (frames).
     pub channel_frames: usize,
     pub muted: bool,
+    /// Echo cancellation / noise suppression on the microphone path.
+    pub dsp: DspConfig,
 }
 
 impl Default for EngineConfig {
@@ -176,6 +179,7 @@ impl Default for EngineConfig {
             // 1 s of audio: a transport stall longer than that drops frames.
             channel_frames: 50,
             muted: false,
+            dsp: DspConfig::default(),
         }
     }
 }
@@ -267,6 +271,10 @@ pub struct EngineStatus {
     pub ticks: u64,
     pub last_error: Option<String>,
     pub peers: Vec<PeerStatus>,
+    /// Requested processing; it only runs when `dsp_available` (build with `apm`).
+    pub dsp: DspConfig,
+    pub dsp_available: bool,
+    pub dsp_stats: DspStats,
 }
 
 enum Command {
@@ -276,6 +284,7 @@ enum Command {
     SetPeerVolume(PeerId, f32),
     RemovePeer(PeerId),
     SetEncoder(EncoderConfig),
+    SetDsp(DspConfig),
     Stop,
 }
 
@@ -300,6 +309,7 @@ impl AudioEngine {
         let status = Arc::new(Mutex::new(EngineStatus::default()));
         let sender = VoiceSender::new(CODEC_RATE, config.encoder)?;
         let out_resampler = MonoResampler::new(CODEC_RATE, CODEC_RATE)?;
+        let dsp = VoiceDsp::new(config.dsp)?;
         let worker_status = status.clone();
         let worker_dropped = dropped.clone();
         let (ready_tx, ready_rx) = sync_channel(1);
@@ -309,6 +319,7 @@ impl AudioEngine {
                 let worker = Worker {
                     io: Box::new(io),
                     sender,
+                    dsp,
                     receivers: HashMap::new(),
                     volumes: HashMap::new(),
                     input: None,
@@ -322,6 +333,8 @@ impl AudioEngine {
                     st: EngineStatus {
                         running: true,
                         muted: config.muted,
+                        dsp: config.dsp,
+                        dsp_available: DSP_AVAILABLE,
                         ..EngineStatus::default()
                     },
                     input_retry: None,
@@ -391,6 +404,11 @@ impl AudioEngine {
         self.send(Command::SetEncoder(config))
     }
 
+    /// Turns noise suppression / echo cancellation / auto gain on or off live.
+    pub fn set_dsp(&self, config: DspConfig) -> Result<(), AudioError> {
+        self.send(Command::SetDsp(config))
+    }
+
     pub fn status(&self) -> EngineStatus {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
@@ -419,6 +437,7 @@ struct Worker {
     io: Box<dyn AudioIo>,
     config: EngineConfig,
     sender: VoiceSender,
+    dsp: VoiceDsp,
     receivers: HashMap<PeerId, VoiceReceiver>,
     /// Volumes survive receiver removal by the transport and apply to new receivers.
     volumes: HashMap<PeerId, f32>,
@@ -449,6 +468,7 @@ struct Worker {
 impl Worker {
     fn run(mut self, ready: SyncSender<()>) {
         self.sender.set_muted(self.config.muted);
+        self.dsp.set_muted(self.config.muted);
         self.open_input();
         self.open_output();
         self.publish();
@@ -489,6 +509,7 @@ impl Worker {
                 Err(std::sync::mpsc::TryRecvError::Empty) => return true,
                 Ok(Command::SetMuted(m)) => {
                     self.sender.set_muted(m);
+                    self.dsp.set_muted(m);
                     self.st.muted = m;
                     if m {
                         self.st.mic_peak = 0.0;
@@ -516,6 +537,10 @@ impl Worker {
                 Ok(Command::RemovePeer(peer)) => {
                     self.receivers.remove(&peer);
                     self.volumes.remove(&peer);
+                }
+                Ok(Command::SetDsp(cfg)) => {
+                    self.dsp.set_config(cfg);
+                    self.st.dsp = cfg;
                 }
                 Ok(Command::SetEncoder(cfg)) => {
                     if let Err(e) = self.sender.encoder().apply(cfg) {
@@ -653,20 +678,25 @@ impl Worker {
         }
         let outgoing = &self.outgoing;
         let st = &mut self.st;
-        self.sender.push_samples(&self.mic_buf, |f| {
-            st.mic_peak = f.peak;
-            let frame = OutgoingFrame {
-                seq: f.seq,
-                timestamp: f.timestamp,
-                payload: f.payload.to_vec(),
-                peak: f.peak,
-            };
-            // A disconnected receiver means no transport is attached: drop silently.
-            match outgoing.try_send(frame) {
-                Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-                Err(TrySendError::Full(_)) => st.frames_dropped += 1,
-            }
-        })?;
+        let dsp = &mut self.dsp;
+        self.sender.push_samples_with(
+            &self.mic_buf,
+            |f| dsp.process_capture(f),
+            |f| {
+                st.mic_peak = f.peak;
+                let frame = OutgoingFrame {
+                    seq: f.seq,
+                    timestamp: f.timestamp,
+                    payload: f.payload.to_vec(),
+                    peak: f.peak,
+                };
+                // A disconnected receiver means no transport is attached: drop silently.
+                match outgoing.try_send(frame) {
+                    Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+                    Err(TrySendError::Full(_)) => st.frames_dropped += 1,
+                }
+            },
+        )?;
         self.st.frames_sent = self.sender.frames_sent();
         Ok(())
     }
@@ -696,8 +726,9 @@ impl Worker {
         }
     }
 
-    /// Mixes every peer for one 20 ms tick at 48 kHz into `self.mix`.
-    fn mix_tick(&mut self) -> Result<(), AudioError> {
+    /// Mixes every peer for one 20 ms tick at 48 kHz into `self.mix`. `to_speaker`: the mix
+    /// is played, so it is also the echo canceller's far-end reference.
+    fn mix_tick(&mut self, to_speaker: bool) -> Result<(), AudioError> {
         self.mix.fill(0.0);
         for rx in self.receivers.values_mut() {
             self.peer_pcm.clear();
@@ -708,6 +739,9 @@ impl Worker {
         }
         for m in &mut self.mix {
             *m = m.clamp(-1.0, 1.0);
+        }
+        if to_speaker {
+            self.dsp.analyze_render(&self.mix)?;
         }
         self.st.ticks += 1;
         Ok(())
@@ -722,7 +756,7 @@ impl Worker {
             while next <= now {
                 next += tick;
                 self.wall_tick = Some(next);
-                self.mix_tick()?;
+                self.mix_tick(false)?;
             }
             return Ok(());
         }
@@ -735,7 +769,7 @@ impl Worker {
             if queued >= target {
                 return Ok(());
             }
-            self.mix_tick()?;
+            self.mix_tick(true)?;
             self.device_pcm.clear();
             self.out_resampler
                 .process(&self.mix, &mut self.device_pcm)?;
@@ -757,6 +791,7 @@ impl Worker {
     }
 
     fn publish(&mut self) {
+        self.st.dsp_stats = self.dsp.stats();
         self.st.packets_dropped = self.incoming_dropped.load(Ordering::Relaxed);
         self.st.input_xruns = self.past_input_xruns
             + self

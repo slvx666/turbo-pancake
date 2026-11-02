@@ -82,6 +82,17 @@ impl VoiceSender {
     pub fn push_samples(
         &mut self,
         mono: &[f32],
+        emit: impl FnMut(EncodedFrame<'_>),
+    ) -> Result<(), AudioError> {
+        self.push_samples_with(mono, |_| Ok(()), emit)
+    }
+
+    /// Like [`Self::push_samples`], but runs `process` (echo/noise processing) on every
+    /// 48 kHz frame before muting, level metering and encoding.
+    pub fn push_samples_with(
+        &mut self,
+        mono: &[f32],
+        mut process: impl FnMut(&mut [f32]) -> Result<(), AudioError>,
         mut emit: impl FnMut(EncodedFrame<'_>),
     ) -> Result<(), AudioError> {
         self.resampler.process(mono, &mut self.resampled)?;
@@ -91,6 +102,9 @@ impl VoiceSender {
             self.frame
                 .extend_from_slice(&self.resampled[used..used + take]);
             used += take;
+            // Processed even while muted: AEC3 needs a continuous capture stream next to
+            // the render reference, otherwise its render queue overruns and it resets.
+            process(&mut self.frame)?;
             let peak = if self.muted {
                 self.frame.fill(0.0);
                 0.0

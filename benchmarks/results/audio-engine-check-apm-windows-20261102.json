@@ -1,0 +1,38 @@
+{
+ "note": "engine_check --features apm, 20 s, real fifine 192 kHz mic + Realtek 192 kHz output, DSP default (NS+AEC3), receiver volume 0. 4 more alternating runs with/without apm: output_xruns 0-8064 samples without apm, 4224 with apm, 0 concealed in all runs (variance from concurrent load on the machine)",
+ "seconds": 20,
+ "start_ms": 196.5,
+ "stop_ms": 22.4,
+ "input": {
+  "name": "Микрофон (fifine Microphone)",
+  "rate": 192000,
+  "fallback": false
+ },
+ "output": {
+  "name": "Realtek HD Audio 2nd output (Realtek(R) Audio)",
+  "rate": 192000,
+  "fallback": false
+ },
+ "frames_sent": 983,
+ "frames_looped": 985,
+ "frames_dropped": 0,
+ "packets_dropped": 0,
+ "ticks": 938,
+ "reopens": 2,
+ "input_xruns": 0,
+ "output_xruns": 22272,
+ "backend_xruns": 20,
+ "peer_played": 935,
+ "peer_fec": 0,
+ "peer_concealed": 0,
+ "peer_underruns": 0,
+ "peer_resets": 0,
+ "decode_errors": 0,
+ "target_delay_ms": 60,
+ "dsp_available": true,
+ "dsp": "NS+AEC3",
+ "dsp_capture_frames": 1966,
+ "dsp_render_frames": 1876,
+ "last_error": "",
+ "reopen_after_stop": true
+}

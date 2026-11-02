@@ -44,6 +44,7 @@ apps are visible at the edges).
 | Benchmark harness (startup + memory, signaling latency + idle connections), child stderr/exit diagnostics | `benchmarks/harness` | JSON reports in `benchmarks/results/`, CI artifacts `bench-<os>` |
 | Audio device probe (cpal) | `tools/media-probe` | Windows report in `benchmarks/results/` |
 | **Voice pipeline** (S1): cpal capture/playback on lock-free `rtrb` rings with xrun/failure counters, device listing/selection by id, rubato FFT resampler (any rate ↔ 48 kHz), Opus 48 kHz mono 20 ms (libopus 1.6.1 static, FEC/DTX/complexity/bitrate at runtime), adaptive jitter buffer with FEC→PLC, `VoiceSender` (mute = encoded silence, peak level) / `VoiceReceiver` (per-peer volume, stats) | `crates/media-audio` | 11 unit + 2 impairment tests (3 OS in CI); `examples/device_check` on real Windows devices; `examples/codec_cost` |
+| **Voice DSP** (S1): WebRTC APM 2.1.0 (vendored patched sys crate), NS + AEC3 (+HPF, optional AGC2) on the capture path, mix as render reference, live config; feature `apm` | `crates/media-audio/src/dsp.rs`, `third_party/webrtc-audio-processing-sys/` | 3 unit + 2 engine tests; CI job `apm` |
 | **Audio engine** (S1): worker thread owning both streams, mic → `VoiceSender` → bounded outgoing channel; non-blocking `PacketSink` → per-peer `VoiceReceiver` (≤ 100 peers) → 48 kHz mix → output resample, speaker-paced playout with 40 ms prefill (wall clock without speaker), bounded command channel (mute, device switch, per-peer volume, remove peer, encoder config), status snapshot every 50 ms, failed stream → reopen selected → default → retry 1 s; `SimIo` simulated devices | `crates/media-audio/src/{engine,sim}.rs` | 5 integration tests `tests/engine.rs`; `examples/engine_check` on real Windows devices |
 | ADRs 0001–0005, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
@@ -80,10 +81,10 @@ performance results for the target hardware (RTX 4070 Super / M4).
 |---|---|---|---|
 | Two real desktop clients talk through the server (signaling + WebRTC) | two `turbo-pancake-desktop` instances + `app-server` | **UNVERIFIED** — audio ↔ transport ↔ desktop wiring not implemented yet | — |
 | Speech continuity under moderate packet loss | `cargo test -p turbo-pancake-media-audio --test impairment` (in-process network model) | **PASS (pipeline level)**: loss ≤ 10 % × jitter ≤ 50 ms → 0 decode errors, 0 late, PLC-only ≤ 1.4 % of frames, FEC repairs ≈ 90 % of losses, level ratio ≥ 0.91; end-to-end over real UDP between clients still **UNVERIFIED** | `benchmarks/results/audio-impairment-windows-20261102.json` |
-| No audio loop | AEC + mute; two clients on one machine | **UNVERIFIED** — no AEC yet (APM pending) | — |
+| No audio loop | `tests/engine.rs::echo_canceller_breaks_the_audio_loop` (`--features apm`, simulated speaker→mic coupling) | **PASS (engine level, Windows; Linux/macOS via CI job `apm`)**: remote voice comes back at −67.6 dB with AEC3 + NS vs −7.3 dB without; two real clients **UNVERIFIED** | ADR 0006 |
 | Resources released after leave | `AudioEngine::stop`/drop: `tests/engine.rs` (simulated: 0 open streams, 0 device threads, engine thread joined); `examples/engine_check` (real Windows devices reopen right after stop, stop 15 ms) | **PASS (engine level)**; call-level leave (transport + signaling) **UNVERIFIED** | `benchmarks/results/audio-engine-check-windows-20261102.json` |
 | Opus in/out, mute, device selection | unit tests + `examples/device_check` + `tests/engine.rs` + `examples/engine_check` | **PASS (Windows, engine level)**: 192 kHz mic → Opus → 192 kHz stereo out, 0 overflows, ≈ 50 frames/s, 0 concealed; live input/output switch by id without sequence gaps (simulated + real), unplug fallback (simulated); UI device pickers not implemented | `benchmarks/results/audio-device-check-windows-20261102.json` |
-| Basic DSP (NS/AEC) | `tools/apm-eval` (WebRTC APM 2.1.0, synthetic signals) | **UNVERIFIED** — evaluated only (Windows: AEC3+NS 63 µs/10 ms, echo −45.9 dB, NS −10.6 dB floor); not integrated into the engine; Linux/macOS builds not tried; vendoring decision pending | `benchmarks/results/audio-apm-eval-windows-20261102.json`, ADR 0006 |
+| Basic DSP (NS/AEC) | `src/dsp.rs` unit tests + engine loop test (`--features apm`); `tools/apm-eval` | **PASS (Windows, engine level)**: NS default on + live toggle, AEC3 with the mix as reference, echo and NS tests pass; ≈ 60 µs/10 ms; Linux/macOS **pending CI job `apm`**; not yet in the default (desktop) build | ADR 0006, `benchmarks/results/audio-apm-eval-windows-20261102.json` |
 | Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
 | Planned platforms | CI on Windows/Ubuntu/macOS (unit + impairment tests) | build/tests in CI; device I/O on macOS/Linux **UNVERIFIED** | CI run (see session log) |
 
@@ -196,15 +197,22 @@ Git `cp`, `rustup component add llvm-tools` (**+383 MB on C:**, remove with
 `third_party/webrtc-audio-processing-sys/2.1.0-windows.patch`,
 `benchmarks/results/audio-apm-eval-windows-20261102.json`, ADR 0006, this file.
 
+## Session log 2026-11-02 (S1, step 2.3 — APM in the engine)
+
+Owner left the choice to us → vendored the patched sys crate (ADR 0006 decision).
+Files: `third_party/webrtc-audio-processing-sys/**`, `Cargo.toml` (`exclude`,
+`[patch.crates-io]`), `Cargo.lock`, `crates/media-audio/{Cargo.toml,src/dsp.rs,
+src/engine.rs,src/pipeline.rs,src/sim.rs,src/lib.rs,tests/engine.rs,examples/engine_check.rs}`,
+`benchmarks/scripts/apm-env.ps1` (Windows build environment), `.github/workflows/ci.yml`
+(job `apm`), docs. Local: default fmt/clippy/test OK (43 tests); `--features apm`
+clippy OK and tests OK (media-audio 14 unit + 7 engine + 2 impairment).
+
 ## Exact next task — S1 step 2/3 (plan in `docs/STAGES.md` → "S1 plan")
 
 1. ~~AudioEngine~~ — done (see session log above).
-2. APM: Windows evaluation done (ADR 0006). **Owner decision needed:** vendor the patched
-   `webrtc-audio-processing-sys` under `third_party/` (recommended) or fork it on GitHub.
-   Then: `media-audio` feature `apm`, CI job building it on Windows (clang-cl, meson,
-   ninja, llvm-tools) / Ubuntu / macOS, engine integration (10 ms capture frames at
-   48 kHz before the encoder; mixed 48 kHz output as render reference; NS on by default
-   with toggle; AEC toggle), tests with the echo/NS scenarios of `tools/apm-eval`.
+2. APM: integrated behind feature `apm` (done). Check the CI job `apm` on all three OS
+   and fix what breaks; once green, enable `apm` for the desktop build and move the
+   meson/ninja/llvm-tools/clang-cl setup into the main CI job.
 3. `crates/media-transport`: async call driver — `UdpPeer` on its own thread, Opus audio
    track (str0m `Media` API, PT 111, 48 kHz), RTP seq/timestamp from `EncodedFrame`,
    bounded channels to/from the audio engine; loopback test: two drivers exchange encoded

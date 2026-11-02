@@ -76,7 +76,7 @@ fn main() {
 \"frames_dropped\":{},\"packets_dropped\":{},\"ticks\":{},\"reopens\":{},\
 \"input_xruns\":{},\"output_xruns\":{},\"backend_xruns\":{},\"peer_played\":{},\"peer_fec\":{},\
 \"peer_concealed\":{},\"peer_underruns\":{},\"peer_resets\":{},\"decode_errors\":{},\
-\"target_delay_ms\":{},\"last_error\":{:?},\"reopen_after_stop\":{reopen_ok}}}",
+\"target_delay_ms\":{},\"dsp_available\":{},\"dsp\":\"{:?}\",\"dsp_capture_frames\":{},\"dsp_render_frames\":{},\"last_error\":{:?},\"reopen_after_stop\":{reopen_ok}}}",
         dev(&st.input),
         dev(&st.output),
         st.frames_sent,
@@ -94,6 +94,10 @@ fn main() {
         peer.jitter.resets,
         peer.decode_errors,
         peer.jitter.target_delay_ms,
+        st.dsp_available,
+        st.dsp,
+        st.dsp_stats.capture_frames,
+        st.dsp_stats.render_frames,
         st.last_error.unwrap_or_default(),
     );
 }

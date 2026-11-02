@@ -9,11 +9,18 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use turbo_pancake_media_audio::sim::{SimDevice, SimIo, SimState};
+use turbo_pancake_media_audio::testsignal::{rms, speech_like};
 use turbo_pancake_media_audio::{
-    AudioEngine, EngineConfig, EngineStatus, IncomingPacket, OutgoingFrame, VoiceLink,
+    AudioEngine, DspConfig, EncoderConfig, EngineConfig, EngineStatus, FRAME_SAMPLES,
+    IncomingPacket, OutgoingFrame, VoiceDecoder, VoiceLink, VoiceSender,
 };
 
 const PEER: u64 = 7;
+const DSP_OFF: DspConfig = DspConfig {
+    noise_suppression: false,
+    echo_cancellation: false,
+    auto_gain: false,
+};
 
 fn sim() -> (SimIo, Arc<SimState>) {
     let io = SimIo::new(
@@ -100,7 +107,13 @@ fn start_stop_releases_devices_and_threads() {
 #[test]
 fn loopback_audio_reaches_the_speaker_with_volume_and_mute() {
     let (io, state) = sim();
-    let (engine, link) = AudioEngine::start(io, EngineConfig::default()).unwrap();
+    // The simulated microphone plays a stationary tone, which noise suppression rightly
+    // removes as noise; this test checks the transport path only.
+    let config = EngineConfig {
+        dsp: DSP_OFF,
+        ..EngineConfig::default()
+    };
+    let (engine, link) = AudioEngine::start(io, config).unwrap();
     let looper = loop_back(link);
 
     // Tone peak 0.3 → Opus → jitter buffer → mix → speaker.
@@ -231,4 +244,82 @@ fn unknown_device_at_start_falls_back_to_default() {
     assert_eq!(st.output.unwrap().name, "spk-48k");
     engine.remove_peer(1).unwrap();
     engine.stop();
+}
+
+/// Speaker → microphone coupling (30 ms, −6 dB, silent near end): a remote talker is
+/// played, and the returned decoded outgoing stream shows how much of them leaks back.
+/// Returns outgoing level relative to the remote speech over the last 3 s, dB.
+fn echo_leak_db(dsp: DspConfig) -> f32 {
+    let io = SimIo::new(
+        vec![SimDevice::new("mic", 48_000)],
+        vec![SimDevice::new("spk", 48_000)],
+    );
+    let state = io.state();
+    state.muted_inputs.store(true, Ordering::Relaxed);
+    state.set_acoustic_echo(Some((0.5, 30, 48_000)));
+    let config = EngineConfig {
+        dsp,
+        ..EngineConfig::default()
+    };
+    let (engine, link) = AudioEngine::start(io, config).unwrap();
+    let secs = 8.0;
+    let speech = speech_like(48_000, secs, 5);
+    let incoming = link.incoming.clone();
+    let remote_speech = speech.clone();
+    let remote = std::thread::spawn(move || {
+        let mut tx = VoiceSender::new(48_000, EncoderConfig::default()).unwrap();
+        let start = Instant::now();
+        for (i, chunk) in remote_speech.chunks(FRAME_SAMPLES).enumerate() {
+            let due = start + Duration::from_millis(20 * i as u64);
+            if let Some(wait) = due.checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
+            tx.push_samples(chunk, |f| {
+                incoming.push(IncomingPacket {
+                    peer: PEER,
+                    seq: f.seq,
+                    payload: f.payload.to_vec(),
+                    arrival: Instant::now(),
+                });
+            })
+            .unwrap();
+        }
+    });
+    let collector = std::thread::spawn(move || {
+        let mut dec = VoiceDecoder::new().unwrap();
+        let mut pcm = Vec::new();
+        let mut frame = vec![0.0; FRAME_SAMPLES];
+        while let Ok(f) = link.outgoing.recv() {
+            let n = dec.decode(&f.payload, &mut frame).unwrap();
+            pcm.extend_from_slice(&frame[..n]);
+        }
+        pcm
+    });
+    remote.join().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let st = engine.status();
+    engine.stop();
+    let out = collector.join().unwrap();
+    let tail = 48_000 * 3;
+    assert!(out.len() > tail, "only {} samples sent", out.len());
+    eprintln!("dsp {dsp:?}: {:?}", st.dsp_stats);
+    let leak = rms(&out[out.len() - tail..]) / rms(&speech[speech.len() - tail..]);
+    20.0 * leak.log10()
+}
+
+#[test]
+fn acoustic_echo_loops_back_without_dsp() {
+    let leak = echo_leak_db(DSP_OFF);
+    eprintln!("echo leak without DSP: {leak:.1} dB");
+    // The simulated room returns the remote voice at about −6 dB.
+    assert!(leak > -12.0, "{leak:.1} dB");
+}
+
+/// Spec S1 "no audio loop": with AEC the remote voice does not come back.
+#[cfg(feature = "apm")]
+#[test]
+fn echo_canceller_breaks_the_audio_loop() {
+    let leak = echo_leak_db(DspConfig::default());
+    eprintln!("echo leak with AEC3 + NS: {leak:.1} dB");
+    assert!(leak < -25.0, "{leak:.1} dB");
 }

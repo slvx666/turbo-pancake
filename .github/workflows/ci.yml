@@ -95,6 +95,73 @@ jobs:
           path: target/bench/*.json
           if-no-files-found: ignore
 
+  # WebRTC APM (echo cancellation, noise suppression) is behind the media-audio `apm`
+  # feature until this job is green on all three OS; the bundled C++ build needs meson,
+  # ninja and llvm-tools, on Windows also clang-cl (ADR 0006).
+  apm:
+    name: apm ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain + llvm-tools (rust-objcopy)
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add llvm-tools
+
+      - name: Linux system packages (ALSA, libclang for bindgen)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config libclang-dev
+
+      - name: meson + ninja
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tp-tools/venv" || python -m venv "$RUNNER_TEMP/tp-tools/venv"
+          if [ "$RUNNER_OS" = Windows ]; then bin="$RUNNER_TEMP/tp-tools/venv/Scripts"; else bin="$RUNNER_TEMP/tp-tools/venv/bin"; fi
+          "$bin/python" -m pip install --quiet meson ninja
+          echo "$bin" >> "$GITHUB_PATH"
+          echo "TURBO_PANCAKE_TOOLS=$RUNNER_TEMP/tp-tools" >> "$GITHUB_ENV"
+
+      - name: Windows tools (nm, CMake generator)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          vs=$("$vswhere" -latest -property installationPath)
+          llvm="$(cygpath "$vs")/VC/Tools/Llvm/x64/bin"
+          [ -x "$llvm/llvm-nm.exe" ] || llvm="/c/Program Files/LLVM/bin"
+          mkdir -p "$RUNNER_TEMP/tp-tools/bin"
+          cp "$llvm/llvm-nm.exe" "$RUNNER_TEMP/tp-tools/bin/nm.exe"
+          major=$("$vswhere" -latest -property installationVersion | cut -d. -f1)
+          case "$major" in 16) year=2019 ;; 17) year=2022 ;; 18) year=2026 ;; *) echo "unknown VS $major"; exit 1 ;; esac
+          echo "CMAKE_GENERATOR=Visual Studio $major $year" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: apm
+
+      - name: clippy + test (Windows, clang-cl in the VS environment)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./benchmarks/scripts/apm-env.ps1 cargo clippy -p turbo-pancake-media-audio --features apm --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./benchmarks/scripts/apm-env.ps1 cargo test -p turbo-pancake-media-audio --features apm --locked -- --nocapture
+          exit $LASTEXITCODE
+
+      - name: clippy + test
+        if: runner.os != 'Windows'
+        run: |
+          cargo clippy -p turbo-pancake-media-audio --features apm --all-targets --locked -- -D warnings
+          cargo test -p turbo-pancake-media-audio --features apm --locked -- --nocapture
+
   audit:
     runs-on: ubuntu-latest
     permissions:

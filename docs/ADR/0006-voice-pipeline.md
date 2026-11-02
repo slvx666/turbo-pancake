@@ -94,18 +94,34 @@ more than target + 2 frames buffered → drop one frame per tick (also absorbs c
   2.1.0-windows.patch`: AVX2 lookup macro under clang-cl, `cc` `std()` instead of
   `-std=c++17`, no objcopy symbol prefixing on MSVC). Build time ≈ 2.5 min. Linux/macOS
   CI builds are not tried yet.
-* **Proposal (pending owner decision):** integrate APM behind a `media-audio` cargo
-  feature `apm` with the patched sys crate vendored under `third_party/` (≈ 5.5 MB of
-  BSD-licensed WebRTC sources) via `[patch.crates-io]`, a CI job per OS building with
-  the feature, then make it the default once green on all three. Alternatives: a fork on
-  GitHub (keeps the repo small) or a pure-Rust NS (`nnnoiseless`) + no AEC (fails the
-  spec's echo-cancellation MUST).
+* **Decision (owner left it to us, 2026-11-02):** the patched sys crate is vendored in
+  `third_party/webrtc-audio-processing-sys/crate` (≈ 5.5 MB, BSD-3-Clause) and used via
+  `[patch.crates-io]`; abseil is fetched by meson with a pinned SHA-256. APM sits behind
+  the `media-audio` feature `apm` with CI job `apm` on all three OS; it becomes the
+  default (desktop build) once that job is green. Rejected: GitHub fork (separate repo
+  to maintain), pure-Rust NS without AEC (fails the echo-cancellation MUST).
+* **Engine integration** (`src/dsp.rs`): `VoiceDsp` runs on every 20 ms capture frame as
+  two 10 ms APM frames after resampling and before mute/metering/encoding (also while
+  muted, so AEC3's capture stream stays continuous), and gets every mixed 48 kHz tick that
+  goes to the speaker as the far-end reference (not while ticking without a speaker).
+  `DspConfig` default: NS on, AEC3 on (+ high-pass), AGC2 off; switchable live with
+  `AudioEngine::set_dsp`; `EngineStatus::{dsp, dsp_available, dsp_stats}`. Without the
+  feature it is a pass-through and `dsp_available = false`.
+* **Audio loop test** (`tests/engine.rs`, simulated room: speaker → mic at 30 ms /
+  −6 dB, silent near end, real-time remote talker): the remote voice returns in the
+  outgoing stream at **−7.3 dB without DSP** and **−67.6 dB with AEC3 + NS** (Windows).
+  NS turns a stationary test tone into silence, so tone-based transport tests run with
+  DSP off.
+* Real devices with APM (`engine_check --features apm`, 20 s): 0 concealed, DSP 1966
+  capture / 1876 render frames; output xruns vary 0–22 k samples between runs with and
+  without APM (machine in concurrent use), not attributable to APM.
+  `benchmarks/results/audio-engine-check-apm-windows-20261102.json`.
 
 ## Open / UNVERIFIED
 
-* AEC / NS / AGC / VAD: APM evaluated on Windows (above); integration into the engine (48 kHz,
-  10 ms frames between resampler and encoder, render reference = mixed output) and the
-  Linux/macOS builds are pending.
+* APM on Linux/macOS: CI job `apm` (first run pending at the time of writing).
+* Voice activation (VAD threshold + indicator) is S2; AEC with real acoustics and
+  double-talk by ear on real hardware are UNVERIFIED.
 * Device hot-unplug: the engine reopens failed streams with fallback (tested on simulated
   devices, `tests/engine.rs`); a physical unplug and sleep/wake are untested.
 * Engine thread priority is the OS default (no real-time promotion yet).

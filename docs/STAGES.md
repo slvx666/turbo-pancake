@@ -20,7 +20,7 @@ verbatim-in-meaning so each session can check them.
 1. `crates/media-audio`: cpal capture/playback on dedicated RT callbacks with lock-free
    SPSC rings; resampler to 48 kHz (device here is 192 kHz); Opus 48 kHz 20 ms frames;
    adaptive jitter buffer with PLC/FEC; mute; device selection + hot-unplug handling.
-2. APM (AEC + NS default on, toggle) — evaluated on Windows (ADR 0006); vendoring decision + CI on 3 OS + engine integration pending.
+2. APM (AEC + NS default on, toggle) — integrated behind feature `apm` (vendored patched sys crate); CI job `apm` on 3 OS; default-on after green CI.
 3. Desktop: signaling client (Tokio thread) using `/v1/signal`, call UI (join room by id
    for the S1 milestone since accounts are S5), device pickers, mute, connection state.
 4. Transport: `UdpPeer` → async driver per call; ICE host + server-reflexive; reconnect.

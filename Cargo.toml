@@ -9,6 +9,8 @@ members = [
     "benchmarks/harness",
     "tools/media-probe",
 ]
+# Vendored third-party crates and stand-alone tools are not workspace members.
+exclude = ["third_party", "tools/apm-eval"]
 
 [workspace.package]
 version = "0.1.0"
@@ -33,6 +35,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
+
+# WebRTC APM build fixes for Windows/MSVC (third_party/webrtc-audio-processing-sys/README.md).
+[patch.crates-io]
+webrtc-audio-processing-sys = { path = "third_party/webrtc-audio-processing-sys/crate" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

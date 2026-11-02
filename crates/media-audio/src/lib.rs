@@ -16,6 +16,7 @@
 
 pub mod codec;
 pub mod device;
+pub mod dsp;
 pub mod engine;
 pub mod jitter;
 pub mod pipeline;
@@ -24,6 +25,7 @@ pub mod sim;
 pub mod testsignal;
 
 pub use codec::{DecodeKind, EncoderConfig, VoiceDecoder, VoiceEncoder};
+pub use dsp::{DSP_AVAILABLE, DspConfig, DspStats, VoiceDsp};
 pub use engine::{
     AudioEngine, AudioIo, CpalIo, EngineConfig, EngineStatus, IncomingPacket, OutgoingFrame,
     PacketSink, PeerId, VoiceLink,
@@ -51,6 +53,8 @@ pub enum AudioError {
     Device(String),
     #[error("no such device: {0}")]
     NoDevice(String),
+    #[error("voice processing: {0}")]
+    Dsp(String),
     #[error("audio engine: {0}")]
     Engine(String),
 }
