@@ -74,10 +74,38 @@ more than target + 2 frames buffered → drop one frame per tick (also absorbs c
   start 55 ms, stop 15 ms, devices reopen after stop.
   `benchmarks/results/audio-engine-check-windows-20261102.json`.
 
+* **WebRTC APM evaluation** (`tools/apm-eval`, `webrtc-audio-processing` 2.1.0 bundled,
+  48 kHz mono, 10 ms frames, Windows dev machine):
+  * CPU, median of 5 × 20 s: NS only **16.5 µs/frame** (0.17 % of a core); AEC3 + NS +
+    HPF **63 µs** (0.63 %); + AGC2 61 µs (same within noise). First cold runs were up to
+    4× slower (266 µs), so only medians of repeated runs are quoted.
+  * Single talk (echo 40 ms, −6 dB, second reflection): output **−45.9 dB** below the
+    echo after convergence.
+  * Double talk (uncorrelated second talker, echo −4 dB below near speech): output level
+    vs near −1.4 dB while both talk and −0.9 dB while only the near end talks → the near
+    end is not ducked. A waveform (projection) metric was inconclusive under AEC3's
+    non-linear suppression; perceptual double-talk quality is **UNVERIFIED**.
+  * NS at ≈ 10 dB SNR: noise floor in speech pauses −10.6 dB, speech level −0.6 dB.
+  * `benchmarks/results/audio-apm-eval-windows-20261102.json`.
+* **APM build on Windows** needs clang-cl (MSVC `cl` fails on `rtc_base/checks.h`
+  templates and C++20 designated initializers), meson + ninja, `nm`, `cp`,
+  `rust-objcopy` (llvm-tools) and the VS environment, plus a 3-hunk patch to
+  `webrtc-audio-processing-sys` 2.1.0 (`third_party/webrtc-audio-processing-sys/
+  2.1.0-windows.patch`: AVX2 lookup macro under clang-cl, `cc` `std()` instead of
+  `-std=c++17`, no objcopy symbol prefixing on MSVC). Build time ≈ 2.5 min. Linux/macOS
+  CI builds are not tried yet.
+* **Proposal (pending owner decision):** integrate APM behind a `media-audio` cargo
+  feature `apm` with the patched sys crate vendored under `third_party/` (≈ 5.5 MB of
+  BSD-licensed WebRTC sources) via `[patch.crates-io]`, a CI job per OS building with
+  the feature, then make it the default once green on all three. Alternatives: a fork on
+  GitHub (keeps the repo small) or a pure-Rust NS (`nnnoiseless`) + no AEC (fails the
+  spec's echo-cancellation MUST).
+
 ## Open / UNVERIFIED
 
-* AEC / NS / AGC / VAD: WebRTC APM binding (`webrtc-audio-processing` 2.x) to be evaluated
-  next; it must run at 48 kHz on 10 ms frames between resampler and encoder.
+* AEC / NS / AGC / VAD: APM evaluated on Windows (above); integration into the engine (48 kHz,
+  10 ms frames between resampler and encoder, render reference = mixed output) and the
+  Linux/macOS builds are pending.
 * Device hot-unplug: the engine reopens failed streams with fallback (tested on simulated
   devices, `tests/engine.rs`); a physical unplug and sleep/wake are untested.
 * Engine thread priority is the OS default (no real-time promotion yet).

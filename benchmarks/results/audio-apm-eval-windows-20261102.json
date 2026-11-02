@@ -1,0 +1,59 @@
+{
+ "tool": "tools/apm-eval",
+ "crate": "webrtc-audio-processing 2.1.0 (bundled, clang-cl 19.1.5, patched for MSVC)",
+ "machine": "Windows 11 dev, Ryzen 5 5500",
+ "date": "2026-11-02",
+ "rate_hz": 48000,
+ "frame_ms": 10,
+ "results": [
+  {
+   "far_near_correlation": 0.007
+  },
+  {
+   "cpu": "ns",
+   "us_per_10ms_median": 16.5,
+   "min": 16.2,
+   "max": 19.6,
+   "core_pct": 0.17
+  },
+  {
+   "cpu": "aec3+ns+hpf",
+   "us_per_10ms_median": 63.2,
+   "min": 59.2,
+   "max": 67.6,
+   "core_pct": 0.63
+  },
+  {
+   "cpu": "aec3+ns+hpf+agc2",
+   "us_per_10ms_median": 61.0,
+   "min": 60.1,
+   "max": 61.6,
+   "core_pct": 0.61
+  },
+  {
+   "single_talk": true,
+   "echo_in_db": -31.8,
+   "out_vs_in_db": -45.9,
+   "erle_stat": 0.17551203072071075,
+   "delay_ms": 16
+  },
+  {
+   "double_talk": true,
+   "near_gain": 0.134,
+   "lag_ms": 8.12,
+   "residual_vs_near_db": -1.4,
+   "out_vs_near_level_db": -1.4,
+   "echo_vs_near_in_db": -4.0
+  },
+  {
+   "double_talk_levels": true,
+   "out_vs_near_when_far_silent_db": -0.9,
+   "out_vs_near_when_both_talk_db": -1.4
+  },
+  {
+   "ns": true,
+   "noise_floor_reduction_db": -10.6,
+   "speech_level_change_db": -0.6
+  }
+ ]
+}

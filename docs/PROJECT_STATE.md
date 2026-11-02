@@ -83,7 +83,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | No audio loop | AEC + mute; two clients on one machine | **UNVERIFIED** — no AEC yet (APM pending) | — |
 | Resources released after leave | `AudioEngine::stop`/drop: `tests/engine.rs` (simulated: 0 open streams, 0 device threads, engine thread joined); `examples/engine_check` (real Windows devices reopen right after stop, stop 15 ms) | **PASS (engine level)**; call-level leave (transport + signaling) **UNVERIFIED** | `benchmarks/results/audio-engine-check-windows-20261102.json` |
 | Opus in/out, mute, device selection | unit tests + `examples/device_check` + `tests/engine.rs` + `examples/engine_check` | **PASS (Windows, engine level)**: 192 kHz mic → Opus → 192 kHz stereo out, 0 overflows, ≈ 50 frames/s, 0 concealed; live input/output switch by id without sequence gaps (simulated + real), unplug fallback (simulated); UI device pickers not implemented | `benchmarks/results/audio-device-check-windows-20261102.json` |
-| Basic DSP (NS/AEC) | — | **UNVERIFIED** (not started) | — |
+| Basic DSP (NS/AEC) | `tools/apm-eval` (WebRTC APM 2.1.0, synthetic signals) | **UNVERIFIED** — evaluated only (Windows: AEC3+NS 63 µs/10 ms, echo −45.9 dB, NS −10.6 dB floor); not integrated into the engine; Linux/macOS builds not tried; vendoring decision pending | `benchmarks/results/audio-apm-eval-windows-20261102.json`, ADR 0006 |
 | Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
 | Planned platforms | CI on Windows/Ubuntu/macOS (unit + impairment tests) | build/tests in CI; device I/O on macOS/Linux **UNVERIFIED** | CI run (see session log) |
 
@@ -111,9 +111,8 @@ performance results for the target hardware (RTX 4070 Super / M4).
     `vswhere`. A fresh checkout on this machine must recreate both entries.
 11. Dev microphone delivered peak level 0.000 during `device_check` (muted in Windows or a
     silent room); audible voice quality on real hardware is UNVERIFIED.
-12. Output startup underrun ≈ 22 ms before the first decoded frame (expected; prefill
-    silence when wiring the engine). Device hot-unplug rebuild and sleep/wake not
-    implemented (errors only flag `StreamHealth::failed`).
+12. Output startup underrun ≈ 22 ms before the first decoded frame in `device_check`; the
+    engine now prefills 40 ms of silence, remaining output xruns ≈ 7 ms per stream open.
 13. **cpal reports non-fatal events through the error callback** (WASAPI capture discontinuity → `ErrorKind::Xrun`). Treating them as fatal caused a reopen storm (213 reopens / 10 s). Fixed in `device.rs`; only device/stream-level kinds mark a stream failed.
 14. Physical unplug and sleep/wake are not tested on real hardware (only simulated devices); engine thread runs at default OS priority.
 
@@ -184,11 +183,28 @@ fifine 192 kHz mic + Realtek 192 kHz output: 999 frames sent/looped/played, 0 co
 0 underruns, 0 dropped, 2 reopens (deliberate switches), output xruns 4224 samples
 (≈ 22 ms over 3 output opens: startup/switch), start 55 ms, stop 15 ms, reopen after stop OK.
 
+## Session log 2026-11-02 (S1, step 2.2 — APM evaluation)
+
+CI run 41378979777 (commit 23ce9dd, AudioEngine): **all jobs success** (Windows, Ubuntu,
+macOS, audit); engine tests pass on all three with simulated devices.
+
+APM (`webrtc-audio-processing` 2.1.0 `bundled`) built on Windows only after: meson+ninja
+(venv `D:/turbo-pancake-tools/venv`), clang-cl, `nm` (= `llvm-nm`, `D:/turbo-pancake-tools/bin`),
+Git `cp`, `rustup component add llvm-tools` (**+383 MB on C:**, remove with
+`rustup component remove llvm-tools` if C: runs out), `vcvars64.bat`, and the patch in
+`third_party/webrtc-audio-processing-sys/`. Numbers in ADR 0006. Files: `tools/apm-eval/**`,
+`third_party/webrtc-audio-processing-sys/2.1.0-windows.patch`,
+`benchmarks/results/audio-apm-eval-windows-20261102.json`, ADR 0006, this file.
+
 ## Exact next task — S1 step 2/3 (plan in `docs/STAGES.md` → "S1 plan")
 
 1. ~~AudioEngine~~ — done (see session log above).
-2. Evaluate WebRTC APM (`webrtc-audio-processing` 2.x): build on 3 OS in CI, NS default on
-   + toggle, AEC with playback reference, CPU per 10 ms frame; record in ADR 0006.
+2. APM: Windows evaluation done (ADR 0006). **Owner decision needed:** vendor the patched
+   `webrtc-audio-processing-sys` under `third_party/` (recommended) or fork it on GitHub.
+   Then: `media-audio` feature `apm`, CI job building it on Windows (clang-cl, meson,
+   ninja, llvm-tools) / Ubuntu / macOS, engine integration (10 ms capture frames at
+   48 kHz before the encoder; mixed 48 kHz output as render reference; NS on by default
+   with toggle; AEC toggle), tests with the echo/NS scenarios of `tools/apm-eval`.
 3. `crates/media-transport`: async call driver — `UdpPeer` on its own thread, Opus audio
    track (str0m `Media` API, PT 111, 48 kHz), RTP seq/timestamp from `EncodedFrame`,
    bounded channels to/from the audio engine; loopback test: two drivers exchange encoded

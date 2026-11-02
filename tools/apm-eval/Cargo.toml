@@ -1,0 +1,17 @@
+# Stand-alone evaluation of WebRTC APM (not a workspace member: the bundled build needs
+# meson/ninja and, on Windows, a patched webrtc-audio-processing-sys). See README.md.
+[workspace]
+
+[package]
+name = "turbo-pancake-apm-eval"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+turbo-pancake-media-audio = { path = "../../crates/media-audio" }
+webrtc-audio-processing = { version = "=2.1.0", features = ["bundled"] }
+webrtc-audio-processing-config = "=2.1.0"
+
+[profile.release]
+opt-level = 3

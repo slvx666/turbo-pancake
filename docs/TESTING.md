@@ -34,6 +34,8 @@ $T/release/turbo-pancake-media-probe > benchmarks/results/media-probe-<os>-<ts>.
 cargo run --release -p turbo-pancake-media-audio --example codec_cost
 cargo run --release -p turbo-pancake-media-audio --example device_check -- 5
 cargo run --release -p turbo-pancake-media-audio --example engine_check -- 20
+# WebRTC APM evaluation (stand-alone crate; Windows needs the steps in tools/apm-eval/README.md)
+(cd tools/apm-eval && cargo run --release)
 ```
 
 Windows note: libopus is built by CMake. Without an explicit `CMAKE_GENERATOR` the
