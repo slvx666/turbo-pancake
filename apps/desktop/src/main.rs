@@ -5,6 +5,7 @@
 //!   `--name <display name>` — shown to the other member (default: OS user name).
 //!   `--room <id>` — join this room right after start (scripted trials without input).
 //!   `--mute` — start with the microphone muted.
+//!   `--remote-volume <0..200>` — playback volume of the other member in percent.
 //!   `--call-log` — print a `TURBO_PANCAKE_CALL key=value …` status line every second.
 //!   `--test-send-loss <0..1>` — test impairment: drop this share of outgoing media.
 //!   `--smoke-exit-after-ms <N>` — benchmark/smoke mode: print machine-readable
@@ -44,6 +45,8 @@ struct Args {
     name: Option<String>,
     room: Option<String>,
     mute: bool,
+    /// Percent, 0–200.
+    remote_volume: Option<f32>,
     call_log: bool,
     send_loss: f32,
 }
@@ -67,6 +70,9 @@ fn parse_args() -> Args {
             "--name" => out.name = args.next(),
             "--room" => out.room = args.next(),
             "--mute" => out.mute = true,
+            "--remote-volume" => {
+                out.remote_volume = args.next().and_then(|v| v.parse().ok());
+            }
             "--call-log" => out.call_log = true,
             "--test-send-loss" => {
                 out.send_loss = args
@@ -247,6 +253,11 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
             });
         });
 
+    if let Some(v) = args.remote_volume {
+        let v = v.clamp(0.0, 200.0);
+        window.set_remote_volume(v);
+        session.send(Command::SetRemoteVolume(v / 100.0));
+    }
     if let Some(room) = &args.room {
         window.set_room_text(room.as_str().into());
         session.send(Command::Join(room.clone()));
