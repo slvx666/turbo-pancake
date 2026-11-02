@@ -17,7 +17,7 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-dsmini-protocol = { path = "crates/protocol" }
+turbo-pancake-protocol = { path = "crates/protocol" }
 anyhow = "1"
 thiserror = "2"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "process", "io-util"] }

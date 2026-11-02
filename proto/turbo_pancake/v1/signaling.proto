@@ -1,4 +1,4 @@
-// DsMini realtime signaling protocol, version 1.
+// turbo-pancake realtime signaling protocol, version 1.
 //
 // Transport: WebSocket, one binary frame == one protobuf-encoded envelope.
 // Client -> server frames are `ClientEnvelope`, server -> client are `ServerEnvelope`.
@@ -6,7 +6,7 @@
 // Compatibility rules (see docs/API.md):
 //   * field numbers are never reused; removed fields are `reserved`;
 //   * new optional fields / oneof variants may be added within v1;
-//   * an incompatible change requires a new package (`dsmini.v2`) and a
+//   * an incompatible change requires a new package (`turbo_pancake.v2`) and a
 //     new PROTOCOL_VERSION; the server answers an unsupported version with
 //     Error{code = ERROR_CODE_UNSUPPORTED_VERSION} and closes the socket.
 //
@@ -15,7 +15,7 @@
 // reserved for the session token).
 syntax = "proto3";
 
-package dsmini.v1;
+package turbo_pancake.v1;
 
 message ClientEnvelope {
   // Must equal the protocol version the client speaks (currently 1).
@@ -54,7 +54,7 @@ message ServerEnvelope {
 
 // First message on every connection.
 message Hello {
-  // Free-form client build identifier, e.g. "dsmini-desktop/0.1.0 (windows)".
+  // Free-form client build identifier, e.g. "turbo-pancake-desktop/0.1.0 (windows)".
   string client_version = 1;
   // Display name shown to other room members (1..=64 chars).
   string display_name = 2;

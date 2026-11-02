@@ -1,4 +1,4 @@
-//! DsMini application server.
+//! turbo-pancake application server.
 //!
 //! S0 provides health/readiness/version endpoints and a development signaling
 //! relay (`/v1/signal`). Authentication, PostgreSQL and the messenger domain are
@@ -86,7 +86,7 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 async fn version() -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "server_version": SERVER_VERSION,
-        "protocol_version": dsmini_protocol::PROTOCOL_VERSION,
+        "protocol_version": turbo_pancake_protocol::PROTOCOL_VERSION,
     }))
 }
 

@@ -1,10 +1,10 @@
-//! DsMini desktop client (S0: native window shell).
+//! turbo-pancake desktop client (S0: native window shell).
 //!
 //! Command line (all optional):
 //!   `--smoke-exit-after-ms <N>` — benchmark/smoke mode: print machine-readable
 //!       markers on stdout and quit after N ms:
-//!       `DSMINI_FIRST_FRAME <ms since main> <renderer>` — after the first painted frame;
-//!       `DSMINI_EXIT` — right before the process exits.
+//!       `TURBO_PANCAKE_FIRST_FRAME <ms since main> <renderer>` — after the first painted frame;
+//!       `TURBO_PANCAKE_EXIT` — right before the process exits.
 //!   `--window-pos <X>,<Y>` — initial outer position in physical pixels
 //!       (e.g. place the window on a secondary monitor during tests).
 //!   `--no-activate` — create the window without activating it, so it does not
@@ -82,7 +82,7 @@ impl CustomApplicationHandler for FirstFrameProbe {
         if self.redraw_seen && !self.reported {
             self.reported = true;
             println!(
-                "DSMINI_FIRST_FRAME {} {}",
+                "TURBO_PANCAKE_FIRST_FRAME {} {}",
                 self.started.elapsed().as_millis(),
                 self.renderer.get()
             );
@@ -123,7 +123,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
     window.set_build_info(
         format!(
-            "dsmini-desktop {} · {} · S0",
+            "turbo-pancake-desktop {} · {} · S0",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS
         )
@@ -148,7 +148,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     window.run()?;
     if smoke.is_some() {
-        println!("DSMINI_EXIT");
+        println!("TURBO_PANCAKE_EXIT");
     }
     Ok(())
 }

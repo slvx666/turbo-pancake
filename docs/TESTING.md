@@ -1,7 +1,7 @@
 # Testing
 
 All commands run from the repository root. On the primary dev machine the build directory
-is `D:/dsmini-target` (set in the gitignored `.cargo/config.toml`, because drive C: is
+is `D:/turbo-pancake-target` (set in the gitignored `.cargo/config.toml`, because drive C: is
 nearly full); elsewhere it is `target/`. Below `$T` means that directory.
 
 ## Automated (CI: `.github/workflows/ci.yml`, Windows / Ubuntu / macOS arm64)
@@ -22,11 +22,11 @@ cargo test --workspace --locked
 ## Benchmarks (`benchmarks/README.md`)
 
 ```bash
-cargo build --release -p dsmini-desktop -p dsmini-app-server -p dsmini-bench -p dsmini-media-probe
-$T/release/dsmini-bench desktop-startup --exe $T/release/dsmini-desktop --runs 7 --settle-ms 3000 --label femtovg \
+cargo build --release -p turbo-pancake-desktop -p turbo-pancake-app-server -p turbo-pancake-bench -p turbo-pancake-media-probe
+$T/release/turbo-pancake-bench desktop-startup --exe $T/release/turbo-pancake-desktop --runs 7 --settle-ms 3000 --label femtovg \
   --client-arg=--window-pos --client-arg=2020,100 --client-arg=--no-activate
-$T/release/dsmini-bench signaling --server-exe $T/release/dsmini-app-server --messages 2000 --idle-connections 500
-$T/release/dsmini-media-probe > benchmarks/results/media-probe-<os>-<ts>.json
+$T/release/turbo-pancake-bench signaling --server-exe $T/release/turbo-pancake-app-server --messages 2000 --idle-connections 500
+$T/release/turbo-pancake-media-probe > benchmarks/results/media-probe-<os>-<ts>.json
 ```
 
 ## Desktop window smoke without disturbing the user (Windows)
@@ -36,7 +36,7 @@ The owner works on the same machine during tests. Rules: windows under test open
 moves the mouse or sends keyboard input.
 
 ```powershell
-powershell -File benchmarks/scripts/window-check.ps1 -Exe D:/dsmini-target/release/dsmini-desktop.exe [-Backend winit-software] [-Screenshot out.png]
+powershell -File benchmarks/scripts/window-check.ps1 -Exe D:/turbo-pancake-target/release/turbo-pancake-desktop.exe [-Backend winit-software] [-Screenshot out.png]
 ```
 
 Checks: window appears at the requested position, foreground window never belongs to the
@@ -45,9 +45,9 @@ primary 1920×1080 at (0,0), DISPLAY2 1920×1080 at (1920,0).
 
 ## Manual acceptance (S0)
 
-1. `cargo run --release -p dsmini-app-server` → prints `DSMINI_LISTENING 127.0.0.1:7878`;
+1. `cargo run --release -p turbo-pancake-app-server` → prints `TURBO_PANCAKE_LISTENING 127.0.0.1:7878`;
    `curl http://127.0.0.1:7878/v1/version` returns protocol_version 1.
-2. `cargo run --release -p dsmini-desktop -- --window-pos 2020,100 --no-activate` → a dark
+2. `cargo run --release -p turbo-pancake-desktop -- --window-pos 2020,100 --no-activate` → a dark
    Discord-style window with empty DM list; the ☀/☾ button toggles light/dark theme;
    closing the window ends the process.
 

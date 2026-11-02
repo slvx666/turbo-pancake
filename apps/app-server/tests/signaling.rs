@@ -3,17 +3,17 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dsmini_app_server::Config;
-use dsmini_protocol::v1::{
-    self, ErrorCode, LeaveReason, client_envelope::Body as C, server_envelope::Body as S,
-};
-use dsmini_protocol::{PROTOCOL_VERSION, client, decode_server, encode};
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use turbo_pancake_app_server::Config;
+use turbo_pancake_protocol::v1::{
+    self, ErrorCode, LeaveReason, client_envelope::Body as C, server_envelope::Body as S,
+};
+use turbo_pancake_protocol::{PROTOCOL_VERSION, client, decode_server, encode};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -22,7 +22,7 @@ const STEP: Duration = Duration::from_secs(5);
 async fn start(config: Config) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(dsmini_app_server::serve(
+    tokio::spawn(turbo_pancake_app_server::serve(
         listener,
         config,
         std::future::pending(),
@@ -283,7 +283,7 @@ async fn oversized_frame_closes_connection() {
     let mut c = Client::hello(addr, "x").await;
     let _ =
         c.ws.send(Message::Binary(
-            vec![0u8; dsmini_protocol::MAX_FRAME_BYTES + 1].into(),
+            vec![0u8; turbo_pancake_protocol::MAX_FRAME_BYTES + 1].into(),
         ))
         .await;
     c.expect_closed().await;

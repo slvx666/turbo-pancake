@@ -15,7 +15,7 @@ but **no** sockets, threads, jitter buffer, audio processing, codecs or SFU rout
 `crates/media-transport` (`UdpPeer`: one `UdpSocket` + one `Rtc`, poll loop) and
 `crates/media-transport/tests/loopback_spike.rs`:
 
-* offer (audio m-line + data channel) → serialized into the real `dsmini.v1.SessionDescription`
+* offer (audio m-line + data channel) → serialized into the real `turbo_pancake.v1.SessionDescription`
   protobuf → answer, same path back;
 * ICE + DTLS + SRTP over **real loopback UDP sockets** on Windows: connected in **17 ms**
   (rust-crypto), **27 ms** (aws-lc-rs, current);

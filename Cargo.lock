@@ -1573,77 +1573,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsmini-app-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "dsmini-protocol",
- "futures-util",
- "prost",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "dsmini-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dsmini-protocol",
- "futures-util",
- "serde",
- "serde_json",
- "sysinfo",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "dsmini-desktop"
-version = "0.1.0"
-dependencies = [
- "slint",
- "slint-build",
-]
-
-[[package]]
-name = "dsmini-media-probe"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpal",
- "serde_json",
-]
-
-[[package]]
-name = "dsmini-media-transport"
-version = "0.1.0"
-dependencies = [
- "dsmini-protocol",
- "prost",
- "str0m",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "dsmini-protocol"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
- "protox",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "dtor"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6090,6 +6019,77 @@ dependencies = [
  "log",
  "rand 0.10.3",
  "sha1 0.11.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "turbo-pancake-app-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "futures-util",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+ "tracing-subscriber",
+ "turbo-pancake-protocol",
+]
+
+[[package]]
+name = "turbo-pancake-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "turbo-pancake-protocol",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "turbo-pancake-desktop"
+version = "0.1.0"
+dependencies = [
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "turbo-pancake-media-probe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "serde_json",
+]
+
+[[package]]
+name = "turbo-pancake-media-transport"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "str0m",
+ "thiserror 2.0.21",
+ "turbo-pancake-protocol",
+]
+
+[[package]]
+name = "turbo-pancake-protocol"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "protox",
  "thiserror 2.0.21",
 ]
 

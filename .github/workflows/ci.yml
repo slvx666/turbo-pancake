@@ -49,29 +49,29 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: release build (size tracking)
-        run: cargo build --release --locked -p dsmini-desktop -p dsmini-app-server
+        run: cargo build --release --locked -p turbo-pancake-desktop -p turbo-pancake-app-server
 
       - name: desktop smoke (macOS, runner GUI session)
         if: runner.os == 'macOS'
         run: |
-          cargo run --release --locked -p dsmini-bench -- \
-            --out-dir target/bench desktop-startup --exe target/release/dsmini-desktop \
+          cargo run --release --locked -p turbo-pancake-bench -- \
+            --out-dir target/bench desktop-startup --exe target/release/turbo-pancake-desktop \
             --runs 2 --settle-ms 1000 --label ci-macos
 
       - name: desktop smoke (Linux, Xvfb)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y --no-install-recommends xvfb
-          xvfb-run -a cargo run --release --locked -p dsmini-bench -- \
-            --out-dir target/bench desktop-startup --exe target/release/dsmini-desktop \
+          xvfb-run -a cargo run --release --locked -p turbo-pancake-bench -- \
+            --out-dir target/bench desktop-startup --exe target/release/turbo-pancake-desktop \
             --runs 2 --settle-ms 1000 --label ci-xvfb --env SLINT_BACKEND=winit-software
 
       - name: signaling benchmark smoke
         shell: bash
         run: |
-          exe=target/release/dsmini-app-server
+          exe=target/release/turbo-pancake-app-server
           [ "$RUNNER_OS" = "Windows" ] && exe="$exe.exe"
-          cargo run --release --locked -p dsmini-bench -- --out-dir target/bench \
+          cargo run --release --locked -p turbo-pancake-bench -- --out-dir target/bench \
             signaling --server-exe "$exe" --messages 200 --idle-connections 100
 
       - uses: actions/upload-artifact@v5

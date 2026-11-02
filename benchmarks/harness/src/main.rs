@@ -1,4 +1,4 @@
-//! DsMini benchmark harness.
+//! turbo-pancake benchmark harness.
 //!
 //! Every scenario writes a self-describing JSON report (host, parameters, raw
 //! samples, summary) into `benchmarks/results/`. See `benchmarks/README.md`.
@@ -14,14 +14,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use dsmini_protocol::v1::{self, client_envelope::Body as C, server_envelope::Body as S};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
+use turbo_pancake_protocol::v1::{self, client_envelope::Body as C, server_envelope::Body as S};
 
 #[derive(Parser)]
-#[command(about = "DsMini benchmark harness")]
+#[command(about = "turbo-pancake benchmark harness")]
 struct Cli {
     /// Directory for JSON reports.
     #[arg(long, default_value = "benchmarks/results")]
@@ -258,7 +258,7 @@ fn desktop_startup(
     let exe_bytes = std::fs::metadata(exe)
         .with_context(|| {
             format!(
-                "{} not found; build with `cargo build --release -p dsmini-desktop`",
+                "{} not found; build with `cargo build --release -p turbo-pancake-desktop`",
                 exe.display()
             )
         })?
@@ -272,7 +272,7 @@ fn desktop_startup(
             .envs(envs.iter().cloned());
         let t0 = Instant::now();
         let (mut child, rx, tail) = spawn_lines(cmd)?;
-        let line = match wait_line(&rx, "DSMINI_FIRST_FRAME", Duration::from_secs(30)) {
+        let line = match wait_line(&rx, "TURBO_PANCAKE_FIRST_FRAME", Duration::from_secs(30)) {
             Ok(l) => l,
             Err(e) => {
                 let err = with_child_diag(e, &mut child, &tail);
@@ -290,7 +290,7 @@ fn desktop_startup(
 
         std::thread::sleep(Duration::from_millis(settle_ms));
         let m = mem::sample(child.id())?;
-        let exit_seen = wait_line(&rx, "DSMINI_EXIT", Duration::from_secs(15)).is_ok();
+        let exit_seen = wait_line(&rx, "TURBO_PANCAKE_EXIT", Duration::from_secs(15)).is_ok();
         let status = child.wait()?;
         println!(
             "run {run}: first_frame={first_frame_ms:.0}ms (in-app {in_app_ms:.0}ms, {renderer}) ws={:.1}MiB private={}",
@@ -334,7 +334,7 @@ type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn ws_send(ws: &mut Ws, rid: u64, body: C) -> anyhow::Result<()> {
-    let bytes = dsmini_protocol::encode(&dsmini_protocol::client(rid, body));
+    let bytes = turbo_pancake_protocol::encode(&turbo_pancake_protocol::client(rid, body));
     ws.send(Message::Binary(bytes.into())).await?;
     Ok(())
 }
@@ -346,7 +346,7 @@ async fn ws_recv(ws: &mut Ws) -> anyhow::Result<S> {
             .context("timeout")?
             .context("closed")??;
         if let Message::Binary(b) = msg {
-            return dsmini_protocol::decode_server(&b)?
+            return turbo_pancake_protocol::decode_server(&b)?
                 .body
                 .context("empty body");
         }
@@ -359,7 +359,7 @@ async fn ws_hello(addr: &str, name: &str) -> anyhow::Result<(Ws, String)> {
         &mut ws,
         1,
         C::Hello(v1::Hello {
-            client_version: "dsmini-bench".into(),
+            client_version: "turbo-pancake-bench".into(),
             display_name: name.into(),
         }),
     )
@@ -399,7 +399,7 @@ async fn signaling_inner(
     messages: u32,
     idle_connections: u32,
 ) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
-    let line = wait_line(rx, "DSMINI_LISTENING", Duration::from_secs(10))?;
+    let line = wait_line(rx, "TURBO_PANCAKE_LISTENING", Duration::from_secs(10))?;
     let addr = line
         .split_whitespace()
         .nth(1)

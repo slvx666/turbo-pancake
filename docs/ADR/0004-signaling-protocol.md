@@ -6,7 +6,7 @@
 ## Decision
 
 * One WebSocket per client at `/v1/signal`; each binary frame carries one protobuf
-  `ClientEnvelope` / `ServerEnvelope` (`proto/dsmini/v1/signaling.proto`).
+  `ClientEnvelope` / `ServerEnvelope` (`proto/turbo_pancake/v1/signaling.proto`).
 * Envelopes carry `protocol_version`, `request_id` (correlation) and server `event_id`
   (per-connection, gap-free) as required by §11. Later stages add domain events
   (`message.*`, `presence.*`, `call.*`, `media.*`) as new oneof variants in v1.
@@ -28,4 +28,4 @@
 ## Consequences
 
 * Contract tests pin the byte encoding of representative messages.
-* Any breaking change → `dsmini.v2` package (see docs/API.md compatibility policy).
+* Any breaking change → `turbo_pancake.v2` package (see docs/API.md compatibility policy).

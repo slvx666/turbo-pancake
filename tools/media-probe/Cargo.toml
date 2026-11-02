@@ -1,5 +1,5 @@
 [package]
-name = "dsmini-media-probe"
+name = "turbo-pancake-media-probe"
 description = "Prints audio host/device capabilities of this machine (S0 research tool)."
 version.workspace = true
 edition.workspace = true

@@ -27,7 +27,7 @@ monitor, created inactive, memory sampled 3 s after the first frame:
 | FemtoVG / OpenGL (default) | ≈ 0.40 s | ≈ 71.5 MiB | ≈ 76.7 MiB |
 | Software (`SLINT_BACKEND=winit-software`) | ≈ 0.07 s | ≈ 21.8 MiB | ≈ 6.2 MiB |
 
-Release executable: 9.1 MiB uncompressed (`dsmini-desktop.exe`, both renderers + accessibility).
+Release executable: 9.1 MiB uncompressed (`turbo-pancake-desktop.exe`, both renderers + accessibility).
 
 Findings:
 * The **OpenGL path alone exceeds the 50 MiB idle target**; the extra ~50 MiB is the NVIDIA

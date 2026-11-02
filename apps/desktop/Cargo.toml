@@ -1,6 +1,6 @@
 [package]
-name = "dsmini-desktop"
-description = "DsMini native desktop client."
+name = "turbo-pancake-desktop"
+description = "turbo-pancake native desktop client."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "dsmini-desktop"
+name = "turbo-pancake-desktop"
 path = "src/main.rs"
 
 [dependencies]

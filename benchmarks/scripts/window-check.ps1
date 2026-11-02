@@ -4,7 +4,7 @@
 # Verifies: window appears at the requested position, never becomes the
 # foreground window, exits cleanly. Optionally saves a screenshot of the window.
 #
-#   powershell -File benchmarks/scripts/window-check.ps1 -Exe D:/dsmini-target/release/dsmini-desktop.exe `
+#   powershell -File benchmarks/scripts/window-check.ps1 -Exe D:/turbo-pancake-target/release/turbo-pancake-desktop.exe `
 #     [-Backend winit-software] [-X 2020 -Y 100] [-Screenshot out.png]
 param([string]$Exe, [string]$Backend = "", [int]$X = 2020, [int]$Y = 100, [string]$Screenshot = "")
 Add-Type @"

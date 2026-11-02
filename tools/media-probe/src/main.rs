@@ -2,7 +2,7 @@
 //! opens the default input and output for one second to prove the device can
 //! actually be driven (callback count is reported). Output is JSON.
 //!
-//! Usage: `cargo run -p dsmini-media-probe [-- --no-open]`
+//! Usage: `cargo run -p turbo-pancake-media-probe [-- --no-open]`
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

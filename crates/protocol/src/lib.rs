@@ -1,17 +1,17 @@
-//! DsMini wire protocol.
+//! turbo-pancake wire protocol.
 //!
-//! The canonical schema lives in `proto/dsmini/v1/*.proto`; Rust types are
+//! The canonical schema lives in `proto/turbo_pancake/v1/*.proto`; Rust types are
 //! generated at build time. This crate adds version constants, limits shared by
 //! client and server, framing helpers and input validation.
 
 pub mod v1 {
     #![allow(clippy::all)]
-    include!(concat!(env!("OUT_DIR"), "/dsmini.v1.rs"));
+    include!(concat!(env!("OUT_DIR"), "/turbo_pancake.v1.rs"));
 }
 
 use prost::Message;
 
-/// Protocol version spoken by this build (`dsmini.v1`).
+/// Protocol version spoken by this build (`turbo_pancake.v1`).
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Hard upper bound for one encoded envelope (one WebSocket frame).

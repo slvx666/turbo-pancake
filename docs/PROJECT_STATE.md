@@ -14,9 +14,9 @@ Last session: 2026-11-02
 * Toolchain: **rustc/cargo 1.99.1** (pinned in `rust-toolchain.toml`, installed by rustup into
   `%USERPROFILE%\.cargo`; PATH `$HOME/.cargo/bin`), MSVC 14.44 (VS 2022 Community),
   Windows SDK 10.0.28000. No system protoc (protox), no cmake/NASM needed (aws-lc-rs builds).
-* **Drive C: is ~98 % full.** Build directory is `D:/dsmini-target` via the gitignored
+* **Drive C: is ~98 % full.** Build directory is `D:/turbo-pancake-target` via the gitignored
   `.cargo/config.toml`; on a fresh checkout of this machine recreate it:
-  `[build]` / `target-dir = "D:/dsmini-target"`.
+  `[build]` / `target-dir = "D:/turbo-pancake-target"`.
 * Docker Desktop engine does not start here (likely the full C: drive); Linux/macOS are
   verified through GitHub Actions instead.
 * GitHub: remote `origin` = `https://github.com/slvx666/turbo-pancake` (public). `gh` is
@@ -37,7 +37,7 @@ apps are visible at the edges).
 |---|---|---|
 | Cargo workspace, profiles, lints | `Cargo.toml`, `rust-toolchain.toml` | fmt/clippy/test clean on 3 OS |
 | CI: Windows / Ubuntu / macOS arm64 — fmt, clippy -D warnings, tests, release build, desktop window smoke (macOS GUI session, Linux Xvfb), signaling bench smoke, `cargo audit` | `.github/workflows/ci.yml` | run 41364362270: all jobs success |
-| Protocol v1 schema + Rust types + validation + limits | `proto/dsmini/v1/signaling.proto`, `crates/protocol` | 2 unit + 7 contract tests |
+| Protocol v1 schema + Rust types + validation + limits | `proto/turbo_pancake/v1/signaling.proto`, `crates/protocol` | 2 unit + 7 contract tests |
 | Signaling server: `/healthz`, `/readyz`, `/v1/version`, `/v1/signal` (hello, rooms, SDP/ICE relay, heartbeat eviction, bounded queues, connection limit, 64 KiB frames, 8 KiB WS buffers) | `apps/app-server` | 13 integration tests over real TCP/WS |
 | Desktop native window (Slint 1.18.1, winit, FemtoVG/OpenGL + software), Discord-like empty shell, dark/light toggle, smoke mode, `--window-pos`, `--no-activate` | `apps/desktop` | Windows: bench + `window-check.ps1` + visual screenshot; Linux/macOS: CI smoke |
 | str0m WebRTC spike, **aws-lc-rs** crypto: ICE+DTLS+SRTP+data channel over real loopback UDP, SDP via protobuf | `crates/media-transport` | `loopback_spike` on 3 OS (Windows: handshake 27 ms, 100/100 RTP) |
@@ -53,7 +53,7 @@ apps are visible at the edges).
 | fmt / clippy clean | `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` | **PASS** (3 OS) | same run |
 | Tests | `cargo test --workspace --locked` | **PASS** 23/23 on each OS | same run + local Windows |
 | No known vulnerable dependencies | `rustsec/audit-check` | **PASS** (5 *unmaintained* warnings: bincode, ttf-parser, zbus_names, zvariant, zvariant_derive — transitive via Slint/accesskit, informational) | same run, job `audit` |
-| App opens an empty but real native window | Windows: `window-check.ps1`; CI: `dsmini-bench desktop-startup` | **PASS** Windows (OpenGL + software), Linux X11/Xvfb (software), macOS runner (OpenGL) | local log; CI logs `desktop smoke` steps |
+| App opens an empty but real native window | Windows: `window-check.ps1`; CI: `turbo-pancake-bench desktop-startup` | **PASS** Windows (OpenGL + software), Linux X11/Xvfb (software), macOS runner (OpenGL) | local log; CI logs `desktop smoke` steps |
 | Toolchain/versions recorded | this file, `rust-toolchain.toml`, `Cargo.lock` | **PASS** | |
 | Reproducible benchmark harness | `benchmarks/README.md` | **PASS** | `benchmarks/results/*.json`, CI artifacts |
 | Research + ADRs (UI, HW codecs, GPU textures, str0m, capture, audio) | `docs/ADR/0002`, `0003`, `0005` | **PASS** as research records; platform-specific items stay **UNVERIFIED** and are scheduled in S1/S3 | |
@@ -101,6 +101,15 @@ performance results for the target hardware (RTX 4070 Super / M4).
 
 ## Session log 2026-11-02
 
+**Rename (owner request):** project, crates, binaries and protocol were renamed from the
+working title "DsMini" to **turbo-pancake**: crates/binaries `turbo-pancake-*`, Rust crates
+`turbo_pancake_*`, protobuf package `turbo_pancake.v1` (`proto/turbo_pancake/v1/`; wire
+encoding unchanged, contract tests pass), stdout markers/env vars `TURBO_PANCAKE_*`
+(e.g. `TURBO_PANCAKE_BIND`), build dir `D:/turbo-pancake-target`, project folder
+`C:\Users\burger\Desktop\clavdiy\turbo-pancake`. JSON reports in `benchmarks/results/`
+created before the rename still mention `dsmini-*` executables (historical evidence, left
+as is).
+
 Commits: `4217f64` (S0 skeleton), `5cbd68b` (state), `9dd3118` (aws-lc-rs, audit
 permissions, harness diagnostics), `12bbbef` (libxkbcommon-x11 in CI), `d45e850` (macOS
 window smoke), `910a23d` (macOS RSS via `ps`). CI runs: 41360886590 (audit + Linux smoke
@@ -109,9 +118,9 @@ failed), 41362565545 (Linux smoke failed: missing libxkbcommon-x11), 41363307819
 
 Local commands (Windows): `cargo fmt --all -- --check`, `cargo clippy --workspace
 --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (23 passed),
-release build, `dsmini-bench desktop-startup` (femtovg/software, second monitor,
-`--no-activate`), `dsmini-bench signaling --messages 2000 --idle-connections 500`,
-`dsmini-media-probe`, `benchmarks/scripts/window-check.ps1`.
+release build, `turbo-pancake-bench desktop-startup` (femtovg/software, second monitor,
+`--no-activate`), `turbo-pancake-bench signaling --messages 2000 --idle-connections 500`,
+`turbo-pancake-media-probe`, `benchmarks/scripts/window-check.ps1`.
 
 ## Exact next task — start S1 (plan in `docs/STAGES.md` → "S1 plan")
 

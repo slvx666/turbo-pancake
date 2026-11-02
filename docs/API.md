@@ -1,6 +1,6 @@
-# DsMini API
+# turbo-pancake API
 
-Canonical schemas: [`proto/dsmini/v1/`](../proto/dsmini/v1). This document describes
+Canonical schemas: [`proto/turbo_pancake/v1/`](../proto/turbo_pancake/v1). This document describes
 transport, semantics and error handling. Contract tests:
 `crates/protocol/tests/contract.rs`, behaviour tests: `apps/app-server/tests/signaling.rs`.
 
@@ -75,6 +75,6 @@ token-authenticated handshake (Hello field 3 is reserved for it).
 
 * Field numbers are never reused; removed fields become `reserved`.
 * Adding fields / oneof variants is allowed within v1; clients must ignore unknown ones.
-* Breaking changes → new package `dsmini.v2`, new `PROTOCOL_VERSION`, server supports
+* Breaking changes → new package `turbo_pancake.v2`, new `PROTOCOL_VERSION`, server supports
   both for one release cycle.
 * Binary encodings of representative messages are pinned in contract tests.

@@ -1,6 +1,6 @@
 # Benchmarks
 
-`dsmini-bench` (`benchmarks/harness`) writes one JSON report per run into
+`turbo-pancake-bench` (`benchmarks/harness`) writes one JSON report per run into
 `benchmarks/results/` containing host info (OS version, CPU, RAM, git commit), parameters,
 raw samples and a summary (min/p50/p95/p99/max). Reports are committed so that numbers
 in ADRs and `docs/PROJECT_STATE.md` can be traced to evidence.
@@ -10,7 +10,7 @@ in ADRs and `docs/PROJECT_STATE.md` can be traced to evidence.
 ### `desktop-startup`
 
 Spawns the release client with `--smoke-exit-after-ms`, measures spawn → first painted
-frame (client prints `DSMINI_FIRST_FRAME` from a winit `about_to_wait` hook after the first
+frame (client prints `TURBO_PANCAKE_FIRST_FRAME` from a winit `about_to_wait` hook after the first
 `RedrawRequested`), waits `--settle-ms`, samples memory of the process, verifies clean exit.
 
 * Memory: Windows working set / peak / private bytes (`GetProcessMemoryInfo`); Linux
@@ -34,6 +34,8 @@ Loopback numbers measure server overhead only, not network latency.
 
 JSON dump of audio hosts/devices/default configs plus a 1 s open test of the default input
 and output (output writes silence).
+
+Reports dated before the 2026-11-02 rename reference the old `dsmini-*` executable names.
 
 ## Result index (Windows dev machine, see JSON for details)
 

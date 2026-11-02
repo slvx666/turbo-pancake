@@ -1,5 +1,5 @@
 [package]
-name = "dsmini-media-transport"
+name = "turbo-pancake-media-transport"
 description = "WebRTC transport layer (str0m). S0: feasibility spike over real UDP."
 version.workspace = true
 edition.workspace = true
@@ -14,7 +14,7 @@ str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 thiserror.workspace = true
 
 [dev-dependencies]
-dsmini-protocol.workspace = true
+turbo-pancake-protocol.workspace = true
 prost.workspace = true
 
 [lints]

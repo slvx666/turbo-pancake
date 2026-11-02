@@ -4,13 +4,13 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "DsMini application server")]
+#[command(version, about = "turbo-pancake application server")]
 struct Args {
     /// Listen address. Defaults to loopback: S0 has no authentication.
-    #[arg(long, env = "DSMINI_BIND", default_value = "127.0.0.1:7878")]
+    #[arg(long, env = "TURBO_PANCAKE_BIND", default_value = "127.0.0.1:7878")]
     bind: SocketAddr,
     /// Emit logs as JSON lines (for systemd/journald collection).
-    #[arg(long, env = "DSMINI_LOG_JSON")]
+    #[arg(long, env = "TURBO_PANCAKE_LOG_JSON")]
     log_json: bool,
 }
 
@@ -36,10 +36,10 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     // Machine-readable line used by the benchmark harness and tests.
-    println!("DSMINI_LISTENING {}", listener.local_addr()?);
-    tracing::info!(addr = %listener.local_addr()?, version = dsmini_app_server::SERVER_VERSION, "listening");
+    println!("TURBO_PANCAKE_LISTENING {}", listener.local_addr()?);
+    tracing::info!(addr = %listener.local_addr()?, version = turbo_pancake_app_server::SERVER_VERSION, "listening");
 
-    dsmini_app_server::serve(listener, Default::default(), async {
+    turbo_pancake_app_server::serve(listener, Default::default(), async {
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!("shutdown requested");
     })

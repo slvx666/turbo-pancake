@@ -1,6 +1,6 @@
 //! S0 feasibility spike: two str0m endpoints over real loopback UDP sockets.
 //!
-//! The SDP offer/answer travels through the real `dsmini.v1` protobuf
+//! The SDP offer/answer travels through the real `turbo_pancake.v1` protobuf
 //! `SessionDescription` encoding (as the signaling server would relay it), then
 //! ICE + DTLS + SRTP must come up and both an audio RTP stream and a data
 //! channel message must arrive. The RTP payload is opaque test bytes, not
@@ -9,13 +9,13 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
-use dsmini_media_transport::UdpPeer;
-use dsmini_media_transport::str0m::change::{SdpAnswer, SdpOffer};
-use dsmini_media_transport::str0m::format::Codec;
-use dsmini_media_transport::str0m::media::{Direction, MediaKind, MediaTime};
-use dsmini_media_transport::str0m::{Event, IceConnectionState};
-use dsmini_protocol::v1;
 use prost::Message;
+use turbo_pancake_media_transport::UdpPeer;
+use turbo_pancake_media_transport::str0m::change::{SdpAnswer, SdpOffer};
+use turbo_pancake_media_transport::str0m::format::Codec;
+use turbo_pancake_media_transport::str0m::media::{Direction, MediaKind, MediaTime};
+use turbo_pancake_media_transport::str0m::{Event, IceConnectionState};
+use turbo_pancake_protocol::v1;
 
 fn loopback() -> SocketAddr {
     (Ipv4Addr::LOCALHOST, 0).into()
@@ -28,7 +28,7 @@ fn via_wire(sdp_type: v1::SdpType, sdp: String) -> String {
         sdp,
     }
     .encode_to_vec();
-    assert!(bytes.len() < dsmini_protocol::MAX_SDP_BYTES);
+    assert!(bytes.len() < turbo_pancake_protocol::MAX_SDP_BYTES);
     v1::SessionDescription::decode(bytes.as_slice())
         .unwrap()
         .sdp
@@ -138,6 +138,6 @@ fn ice_dtls_srtp_audio_and_datachannel_over_udp() {
     assert!(!a.rtc.is_alive());
 }
 
-fn opus_clock() -> dsmini_media_transport::str0m::media::Frequency {
-    dsmini_media_transport::str0m::media::Frequency::FORTY_EIGHT_KHZ
+fn opus_clock() -> turbo_pancake_media_transport::str0m::media::Frequency {
+    turbo_pancake_media_transport::str0m::media::Frequency::FORTY_EIGHT_KHZ
 }

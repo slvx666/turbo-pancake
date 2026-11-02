@@ -7,7 +7,7 @@ the planned pieces will go.
 ## Workspace layout (actual)
 
 ```text
-DsMini/
+turbo-pancake/
 ├─ Cargo.toml                 workspace, shared deps, release profile
 ├─ rust-toolchain.toml        pinned toolchain (1.99.1)
 ├─ apps/
@@ -16,9 +16,9 @@ DsMini/
 ├─ crates/
 │  ├─ protocol/               prost types generated from proto/ + validation + limits
 │  └─ media-transport/        str0m wrapper (S0: UDP peer used by the feasibility spike)
-├─ proto/dsmini/v1/           protobuf schemas (source of truth for the wire format)
+├─ proto/turbo_pancake/v1/           protobuf schemas (source of truth for the wire format)
 ├─ benchmarks/
-│  ├─ harness/                dsmini-bench: startup/memory/signaling scenarios → JSON
+│  ├─ harness/                turbo-pancake-bench: startup/memory/signaling scenarios → JSON
 │  └─ results/                committed reports
 ├─ tools/media-probe/         audio host/device enumeration + open test
 ├─ docs/                      this file, API, TESTING, STAGES, PROJECT_STATE, ADR/
@@ -48,7 +48,7 @@ server is bounded (see signaling outbound queue).
 ## Wire protocol
 
 WebSocket + protobuf envelopes (`ClientEnvelope`/`ServerEnvelope`), versioned by package
-(`dsmini.v1`) and `protocol_version`. See [API.md](API.md) and
+(`turbo_pancake.v1`) and `protocol_version`. See [API.md](API.md) and
 [ADR 0004](ADR/0004-signaling-protocol.md).
 
 ## Decisions

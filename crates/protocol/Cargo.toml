@@ -1,6 +1,6 @@
 [package]
-name = "dsmini-protocol"
-description = "Versioned wire protocol (protobuf) shared by DsMini client and server."
+name = "turbo-pancake-protocol"
+description = "Versioned wire protocol (protobuf) shared by turbo-pancake client and server."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

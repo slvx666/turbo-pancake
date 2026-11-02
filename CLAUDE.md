@@ -1,4 +1,4 @@
-# DsMini — instructions for every session
+# turbo-pancake — instructions for every session
 
 Native desktop messenger (Rust workspace: Slint UI, Axum server, str0m WebRTC).
 Talk to the owner in Russian.
@@ -22,8 +22,8 @@ Talk to the owner in Russian.
   working while tests run. Launch the client with `--window-pos 2020,100 --no-activate`;
   smoke-check with `benchmarks/scripts/window-check.ps1`. Never move the mouse or send
   input; screenshot only our own window and do not commit screenshots that show other apps.
-* **Drive C: is almost full.** The build goes to `D:/dsmini-target` via the gitignored
-  `.cargo/config.toml` (`[build]` / `target-dir = "D:/dsmini-target"`); recreate it if it
+* **Drive C: is almost full.** The build goes to `D:/turbo-pancake-target` via the gitignored
+  `.cargo/config.toml` (`[build]` / `target-dir = "D:/turbo-pancake-target"`); recreate it if it
   is missing. Do not put large files on C:.
 * Rust 1.99.1 is in `%USERPROFILE%\.cargo\bin`; in Bash run
   `export PATH="$HOME/.cargo/bin:$PATH"` before cargo.

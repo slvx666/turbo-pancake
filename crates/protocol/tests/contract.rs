@@ -2,12 +2,12 @@
 //! accidental field renumbering or type change fails CI instead of silently
 //! breaking deployed clients.
 
-use dsmini_protocol::v1::{self, client_envelope::Body as C, server_envelope::Body as S};
-use dsmini_protocol::{
+use prost::Message;
+use turbo_pancake_protocol::v1::{self, client_envelope::Body as C, server_envelope::Body as S};
+use turbo_pancake_protocol::{
     DecodeError, MAX_FRAME_BYTES, PROTOCOL_VERSION, ValidationError, client, decode_client,
     decode_server, encode, validate_signal,
 };
-use prost::Message;
 
 #[test]
 fn ping_encoding_is_pinned() {
