@@ -65,9 +65,14 @@ jobs:
           major=$("$vswhere" -latest -property installationVersion | cut -d. -f1)
           case "$major" in 16) year=2019 ;; 17) year=2022 ;; 18) year=2026 ;; *) echo "unknown VS $major"; exit 1 ;; esac
           echo "CMAKE_GENERATOR=Visual Studio $major $year" >> "$GITHUB_ENV"
+          # Short target dir: the APM meson build's object paths under
+          # target/release/build/.../out exceed MAX_PATH (LNK1181 on CI run 41454787623).
+          echo "CARGO_TARGET_DIR=D:/t" >> "$GITHUB_ENV"
           echo "CMAKE_GENERATOR=Visual Studio $major $year"
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> ${{ runner.os == 'Windows' && 'D:/t' || 'target' }}"
 
       - name: fmt
         run: cargo fmt --all -- --check
@@ -119,7 +124,7 @@ jobs:
       - name: signaling benchmark smoke
         shell: bash
         run: |
-          exe=target/release/turbo-pancake-app-server
+          exe="${CARGO_TARGET_DIR:-target}/release/turbo-pancake-app-server"
           [ "$RUNNER_OS" = "Windows" ] && exe="$exe.exe"
           cargo run --release --locked -p turbo-pancake-bench -- --out-dir target/bench \
             signaling --server-exe "$exe" --messages 200 --idle-connections 100

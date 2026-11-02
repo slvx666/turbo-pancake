@@ -121,6 +121,10 @@ performance results for the target hardware (RTX 4070 Super / M4).
 15. Desktop release exe grew 9.1 → 17.9 MiB (APM, str0m/aws-lc, Tokio, Slint std-widgets); installer ≤ 30 MB target to be measured in S7.
 16. Media uses host candidates only (no STUN/TURN yet): clients must reach each other directly (same LAN). In the trial `rx_peak` stayed 0.000 with remote volume 0 although B's mic peak was 0.05 — the peak is measured after the volume; audible quality needs an owner-assisted trial.
 17. The S1 room is joined by id without authentication (accounts in S5); a third member in a room is ignored (1:1 only).
+18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
+    cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
+    debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
+    works. A packaging/build-from-source note is needed for S7.
 
 ## Design decisions / ADR links
 
