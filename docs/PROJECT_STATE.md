@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S1 — end-to-end 1:1 voice
 Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02, evidence below; S1 step 1 — audio pipeline crate — done)
-Last verified commit: 910a23d (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41364362270 green)
+Last verified commit: e00ff86 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41369109162 green)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
 
@@ -160,6 +160,12 @@ step), `docs/ADR/0006-voice-pipeline.md`, `docs/{ARCHITECTURE,TESTING,STAGES}.md
 Local (Windows): `cargo fmt --all -- --check` OK; `cargo clippy --workspace --all-targets
 --locked -- -D warnings` OK; `cargo test --workspace --locked` 36 passed; codec cost:
 encode 243 µs/frame (complexity 9), decode 29 µs, resample 192→48 kHz 22 µs per 20 ms frame.
+
+CI run 41369109162 (commit e00ff86): **all jobs success** (Windows, Ubuntu, macOS, audit);
+media-audio unit + impairment tests pass on all three. Codec cost on runners (complexity 9,
+µs/frame encode / decode): Linux 176 / 20, macOS 278 / 31, Windows 308 / 38. Windows
+runner has VS 18 (2026); the generator step printed a wrong year ("Visual Studio 18 18"),
+fixed in the next commit with an explicit version→year map.
 
 ## Exact next task — S1 step 2/3 (plan in `docs/STAGES.md` → "S1 plan")
 
