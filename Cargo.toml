@@ -5,6 +5,7 @@ members = [
     "apps/app-server",
     "crates/protocol",
     "crates/media-transport",
+    "crates/media-audio",
     "benchmarks/harness",
     "tools/media-probe",
 ]
@@ -45,6 +46,23 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Real-time DSP is unusable unoptimised (debug builds of the client and the audio tests).
+# media-audio itself is included because rubato's generics are instantiated there.
+[profile.dev.package.turbo-pancake-media-audio]
+opt-level = 3
+[profile.dev.package.audioadapter]
+opt-level = 3
+[profile.dev.package.audioadapter-buffers]
+opt-level = 3
+[profile.dev.package.rubato]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3
+[profile.dev.package.opusic-sys]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

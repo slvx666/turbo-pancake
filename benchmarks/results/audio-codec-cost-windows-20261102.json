@@ -1,0 +1,1 @@
+{"frames":1000,"encode":[{"complexity":0,"us_per_frame":67.8,"kbps":31.6},{"complexity":5,"us_per_frame":138.9,"kbps":30.0},{"complexity":9,"us_per_frame":241.4,"kbps":30.3},{"complexity":10,"us_per_frame":244.7,"kbps":30.3}],"decode_us_per_frame":27.9,"resample_192k_to_48k_us_per_frame":23.5}

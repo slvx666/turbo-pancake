@@ -15,7 +15,8 @@ turbo-pancake/
 │  └─ app-server/             Axum server (S0: health/version + signaling relay)
 ├─ crates/
 │  ├─ protocol/               prost types generated from proto/ + validation + limits
-│  └─ media-transport/        str0m wrapper (S0: UDP peer used by the feasibility spike)
+│  ├─ media-transport/        str0m wrapper (S0: UDP peer used by the feasibility spike)
+│  └─ media-audio/            voice pipeline: cpal I/O + SPSC rings, rubato, Opus, jitter buffer
 ├─ proto/turbo_pancake/v1/           protobuf schemas (source of truth for the wire format)
 ├─ benchmarks/
 │  ├─ harness/                turbo-pancake-bench: startup/memory/signaling scenarios → JSON
@@ -26,7 +27,7 @@ turbo-pancake/
 ```
 
 Planned additions (created when the owning stage starts, not before, to avoid empty
-crates): `apps/media-sfu` (S2), `crates/media-audio` (S1), `crates/media-capture` and
+crates): `apps/media-sfu` (S2), `crates/media-capture` and
 `crates/media-codec` (S3), `crates/storage`, `crates/auth`, `crates/chat`, `migrations/`
 (S5), `deploy/` contents (S5/S8).
 
@@ -59,6 +60,7 @@ See `docs/ADR/`. Summary:
 |---|---|---|
 | 0001 | Rust workspace, pinned toolchain, prost+protox (no system protoc) | accepted |
 | 0002 | Slint (winit + FemtoVG/OpenGL, software fallback) as UI | provisional — license + GPU-texture checks pending |
-| 0003 | str0m for WebRTC in client and SFU; rust-crypto backend for now | provisional — backend benchmark in S1 |
+| 0003 | str0m for WebRTC in client and SFU; aws-lc-rs crypto backend | provisional — backend benchmark in S1 |
 | 0004 | Signaling over WebSocket + protobuf binary frames | accepted |
 | 0005 | Media/OS API research plan (audio, capture, codecs, system-audio exclusion) | research, most items UNVERIFIED |
+| 0006 | Voice pipeline: cpal + rtrb + rubato + libopus 1.6.1 (static), own jitter buffer | accepted for S1; APM open |

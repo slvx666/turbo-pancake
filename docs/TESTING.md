@@ -18,6 +18,8 @@ cargo test --workspace --locked
 | protocol contract | `crates/protocol/tests/contract.rs` | pinned binary encoding, version check, oversize/garbage rejection, forward-compat unknown fields, signal validation |
 | signaling integration | `apps/app-server/tests/signaling.rs` | real TCP+WS: hello/welcome, join/leave, offer/answer/ICE relay, error codes, heartbeat eviction, room capacity, connection limit, oversize close, 20-peer join/relay/leave, gap-free `event_id`, health/ready/version |
 | WebRTC spike | `crates/media-transport/tests/loopback_spike.rs` | str0m ICE+DTLS+SRTP over real loopback UDP, SDP via protobuf, 100/100 RTP packets, data channel |
+| audio unit | `crates/media-audio/src/{resample,codec,jitter}.rs` | 16/44.1/48/96/192 kHz ↔ 48 kHz (tone + level preserved), Opus round trip level/bitrate, FEC beats PLC on lost frames, DTX, jitter buffer order/reorder/dup/late/FEC/PLC/wrap-around/adaptation/stall+burst |
+| audio impairment | `crates/media-audio/tests/impairment.rs` | 192 kHz mic → Opus → simulated network (loss 0/1/3/5/10 % × jitter 0/20/50 ms, 2 s outage) → 44.1 kHz output: no decode errors, bounded late/underruns, concealment ≤ loss, loudness kept, bounded delay. `TURBO_PANCAKE_REPORT_DIR=<dir>` writes the table as JSON |
 
 ## Benchmarks (`benchmarks/README.md`)
 
@@ -27,7 +29,15 @@ $T/release/turbo-pancake-bench desktop-startup --exe $T/release/turbo-pancake-de
   --client-arg=--window-pos --client-arg=2020,100 --client-arg=--no-activate
 $T/release/turbo-pancake-bench signaling --server-exe $T/release/turbo-pancake-app-server --messages 2000 --idle-connections 500
 $T/release/turbo-pancake-media-probe > benchmarks/results/media-probe-<os>-<ts>.json
+# voice pipeline CPU cost and real-device run (receiver volume 0: the speaker plays silence)
+cargo run --release -p turbo-pancake-media-audio --example codec_cost
+cargo run --release -p turbo-pancake-media-audio --example device_check -- 5
 ```
+
+Windows note: libopus is built by CMake. Without an explicit `CMAKE_GENERATOR` the
+`cmake` crate drops `/O2` (≈ 3.5× slower encoder). Set
+`CMAKE_GENERATOR = "Visual Studio 17 2022"` under `[env]` in `.cargo/config.toml`
+(CI derives it via `vswhere`) and `cargo clean -p opusic-sys` once.
 
 ## Desktop window smoke without disturbing the user (Windows)
 
@@ -53,5 +63,5 @@ primary 1920×1080 at (0,0), DISPLAY2 1920×1080 at (1920,0).
 
 ## Not yet covered (tracked in PROJECT_STATE.md)
 
-netem/impairment tests, E2E between two desktop clients, PostgreSQL integration, security
+OS-level netem (in-process impairment exists for audio), E2E between two desktop clients, PostgreSQL integration, security
 negative tests for auth (no auth yet), cross-platform smoke on macOS/Linux hardware.

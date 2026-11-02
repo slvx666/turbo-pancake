@@ -1,7 +1,7 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S1 — end-to-end 1:1 voice
-Stage status: NOT_STARTED (S0 = DONE on 2026-11-02, evidence below)
+Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02, evidence below; S1 step 1 — audio pipeline crate — done)
 Last verified commit: 910a23d (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41364362270 green)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
@@ -43,6 +43,7 @@ apps are visible at the edges).
 | str0m WebRTC spike, **aws-lc-rs** crypto: ICE+DTLS+SRTP+data channel over real loopback UDP, SDP via protobuf | `crates/media-transport` | `loopback_spike` on 3 OS (Windows: handshake 27 ms, 100/100 RTP) |
 | Benchmark harness (startup + memory, signaling latency + idle connections), child stderr/exit diagnostics | `benchmarks/harness` | JSON reports in `benchmarks/results/`, CI artifacts `bench-<os>` |
 | Audio device probe (cpal) | `tools/media-probe` | Windows report in `benchmarks/results/` |
+| **Voice pipeline** (S1): cpal capture/playback on lock-free `rtrb` rings with xrun/failure counters, device listing/selection by id, rubato FFT resampler (any rate ↔ 48 kHz), Opus 48 kHz mono 20 ms (libopus 1.6.1 static, FEC/DTX/complexity/bitrate at runtime), adaptive jitter buffer with FEC→PLC, `VoiceSender` (mute = encoded silence, peak level) / `VoiceReceiver` (per-peer volume, stats) | `crates/media-audio` | 11 unit + 2 impairment tests (3 OS in CI); `examples/device_check` on real Windows devices; `examples/codec_cost` |
 | ADRs 0001–0005, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
@@ -72,6 +73,19 @@ apps are visible at the edges).
 CI runners are shared VMs without real GPUs; their numbers are smoke evidence, not
 performance results for the target hardware (RTX 4070 Super / M4).
 
+## Acceptance checks — S1 (IN_PROGRESS)
+
+| Criterion | Command / procedure | Result | Evidence |
+|---|---|---|---|
+| Two real desktop clients talk through the server (signaling + WebRTC) | two `turbo-pancake-desktop` instances + `app-server` | **UNVERIFIED** — audio ↔ transport ↔ desktop wiring not implemented yet | — |
+| Speech continuity under moderate packet loss | `cargo test -p turbo-pancake-media-audio --test impairment` (in-process network model) | **PASS (pipeline level)**: loss ≤ 10 % × jitter ≤ 50 ms → 0 decode errors, 0 late, PLC-only ≤ 1.4 % of frames, FEC repairs ≈ 90 % of losses, level ratio ≥ 0.91; end-to-end over real UDP between clients still **UNVERIFIED** | `benchmarks/results/audio-impairment-windows-20261102.json` |
+| No audio loop | AEC + mute; two clients on one machine | **UNVERIFIED** — no AEC yet (APM pending) | — |
+| Resources released after leave | drop of `Capture`/`Playback` stops streams; call-level check pending | **UNVERIFIED** | — |
+| Opus in/out, mute, device selection | unit tests + `examples/device_check` | **PASS (Windows, library level)**: 192 kHz mic → Opus → 192 kHz stereo out, 0 overflows, ≈ 50 frames/s, 0 concealed; mute path unit-covered; UI device pickers not implemented | `benchmarks/results/audio-device-check-windows-20261102.json` |
+| Basic DSP (NS/AEC) | — | **UNVERIFIED** (not started) | — |
+| Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
+| Planned platforms | CI on Windows/Ubuntu/macOS (unit + impairment tests) | build/tests in CI; device I/O on macOS/Linux **UNVERIFIED** | CI run (see session log) |
+
 ## Known issues and blockers
 
 1. **Owner decision: Slint license** (GPL-3.0 vs Royalty-free 2.0 with attribution) — ADR 0002.
@@ -89,6 +103,16 @@ performance results for the target hardware (RTX 4070 Super / M4).
 8. Dev GPU (RTX 2060 SUPER) lacks AV1 encode; target-hardware results must come from the
    owner's RTX 4070 Super and M4 machines.
 9. CI warns that macOS arm64 runners may queue longer; a full CI run takes ~15 min.
+10. **Windows libopus build pitfall:** the `cmake` crate with the autodetected Visual Studio
+    generator overrides `CMAKE_C_FLAGS_RELEASE` without `/O2` → unoptimised libopus
+    (845 vs 243 µs/frame). Fixed by `CMAKE_GENERATOR` in the local `.cargo/config.toml`
+    `[env]` (also `CMAKE` = VS-bundled cmake.exe, not on PATH here) and a CI step using
+    `vswhere`. A fresh checkout on this machine must recreate both entries.
+11. Dev microphone delivered peak level 0.000 during `device_check` (muted in Windows or a
+    silent room); audible voice quality on real hardware is UNVERIFIED.
+12. Output startup underrun ≈ 22 ms before the first decoded frame (expected; prefill
+    silence when wiring the engine). Device hot-unplug rebuild and sleep/wake not
+    implemented (errors only flag `StreamHealth::failed`).
 
 ## Design decisions / ADR links
 
@@ -98,6 +122,8 @@ performance results for the target hardware (RTX 4070 Super / M4).
   aws-lc-rs after `cargo audit` flagged RUSTSEC-2026-0387 in the rust-crypto path
 * [0004 Signaling protocol](ADR/0004-signaling-protocol.md) — accepted
 * [0005 Media/OS research](ADR/0005-media-platform-research.md) — research
+* [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
+  libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
 ## Session log 2026-11-02
 
@@ -122,17 +148,33 @@ release build, `turbo-pancake-bench desktop-startup` (femtovg/software, second m
 `--no-activate`), `turbo-pancake-bench signaling --messages 2000 --idle-connections 500`,
 `turbo-pancake-media-probe`, `benchmarks/scripts/window-check.ps1`.
 
-## Exact next task — start S1 (plan in `docs/STAGES.md` → "S1 plan")
+## Session log 2026-11-02 (S1, step 1)
 
-1. Create `crates/media-audio`:
-   * capture/playback via cpal on the RT callbacks, lock-free SPSC rings
-     (e.g. `rtrb`), no allocation/locks in callbacks;
-   * resampler device rate → 48 kHz (dev mic is 192 kHz mono; handle 44.1/48/96/192 kHz,
-     mono/stereo);
-   * Opus 48 kHz, 20 ms frames, FEC + DTX configurable (choose binding per ADR 0005 —
-     write ADR 0006 with the choice and license check);
-   * adaptive jitter buffer with PLC; unit tests with synthetic sine/speech-like signals,
-     loss/jitter injection and continuity metrics (concealed %, underruns).
-2. Benchmark the DTLS backends (aws-lc-rs vs wincrypto) in the spike and record in ADR 0003.
-3. Then wire audio ↔ `UdpPeer` ↔ signaling client in the desktop app (call by room id until
-   accounts exist in S5) and run two clients on this machine (second monitor, inactive).
+Files: `crates/media-audio/**` (new: `lib.rs`, `device.rs`, `resample.rs`, `codec.rs`,
+`jitter.rs`, `pipeline.rs`, `testsignal.rs`, `tests/impairment.rs`,
+`examples/{codec_cost,device_check}.rs`), `Cargo.toml` (member + dev opt-level for DSP
+crates), `Cargo.lock`, `.github/workflows/ci.yml` (Windows `CMAKE_GENERATOR`, codec cost
+step), `docs/ADR/0006-voice-pipeline.md`, `docs/{ARCHITECTURE,TESTING,STAGES}.md`,
+`benchmarks/results/audio-*-windows-20261102.json`.
+
+Local (Windows): `cargo fmt --all -- --check` OK; `cargo clippy --workspace --all-targets
+--locked -- -D warnings` OK; `cargo test --workspace --locked` 36 passed; codec cost:
+encode 243 µs/frame (complexity 9), decode 29 µs, resample 192→48 kHz 22 µs per 20 ms frame.
+
+## Exact next task — S1 step 2/3 (plan in `docs/STAGES.md` → "S1 plan")
+
+1. `crates/media-audio`: an `AudioEngine` worker thread that owns `Capture`/`Playback`,
+   moves samples ring → `VoiceSender` and `VoiceReceiver` → ring (output-paced, prefill
+   ~40 ms), exposes mute/volume/device switch through a bounded command channel, rebuilds
+   a stream when `StreamHealth::failed` (fallback to default device), and reports levels/
+   stats. Test: engine start/stop releases devices (no thread left), device switch.
+2. Evaluate WebRTC APM (`webrtc-audio-processing` 2.x): build on 3 OS in CI, NS default on
+   + toggle, AEC with playback reference, CPU per 10 ms frame; record in ADR 0006.
+3. `crates/media-transport`: async call driver — `UdpPeer` on its own thread, Opus audio
+   track (str0m `Media` API, PT 111, 48 kHz), RTP seq/timestamp from `EncodedFrame`,
+   bounded channels to/from the audio engine; loopback test: two drivers exchange encoded
+   speech over real UDP with in-process loss, continuity checked as in `impairment.rs`.
+4. Desktop: signaling client (Tokio thread, `/v1/signal`), "join room by id" call UI,
+   mute, device pickers, connection state; then two clients on this machine (second
+   monitor, `--no-activate`) through `app-server`, results recorded here.
+5. DTLS backend benchmark (aws-lc-rs vs wincrypto) in the spike → ADR 0003.
