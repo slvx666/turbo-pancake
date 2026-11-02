@@ -23,7 +23,8 @@ verbatim-in-meaning so each session can check them.
 2. APM (AEC + NS default on, toggle) — integrated behind feature `apm` (vendored patched sys crate); CI job `apm` on 3 OS; default-on after green CI.
 3. Desktop: signaling client (Tokio thread) using `/v1/signal`, call UI (join room by id
    for the S1 milestone since accounts are S5), device pickers, mute, connection state.
-4. Transport: `UdpPeer` → async driver per call; ICE host + server-reflexive; reconnect.
+4. Transport: `UdpPeer` → driver per call (done: `CallDriver`, host candidates, loss
+   detection/reconnecting state); server-reflexive (STUN) later.
 5. Tests: two headless clients with file/synthetic audio over real UDP through the
    server signaling; netem-like impairment in-process (loss 1/3/5/10 %, jitter 20/50 ms);
    PESQ-free continuity metrics (concealed frames %, underruns); resource release check.

@@ -44,6 +44,7 @@ apps are visible at the edges).
 | Benchmark harness (startup + memory, signaling latency + idle connections), child stderr/exit diagnostics | `benchmarks/harness` | JSON reports in `benchmarks/results/`, CI artifacts `bench-<os>` |
 | Audio device probe (cpal) | `tools/media-probe` | Windows report in `benchmarks/results/` |
 | **Voice pipeline** (S1): cpal capture/playback on lock-free `rtrb` rings with xrun/failure counters, device listing/selection by id, rubato FFT resampler (any rate ↔ 48 kHz), Opus 48 kHz mono 20 ms (libopus 1.6.1 static, FEC/DTX/complexity/bitrate at runtime), adaptive jitter buffer with FEC→PLC, `VoiceSender` (mute = encoded silence, peak level) / `VoiceReceiver` (per-peer volume, stats) | `crates/media-audio` | 11 unit + 2 impairment tests (3 OS in CI); `examples/device_check` on real Windows devices; `examples/codec_cost` |
+| **Call driver** (S1): one thread per call, `UdpPeer` (non-blocking socket, ≤ 1 ms idle sleep), RTP-mode Opus track, extended seq/SRTP ROC, SDP offer/answer + candidate commands, states incl. Reconnecting (ICE + 3 s silence), stats (RTT, loss, loop gap), test wire loss | `crates/media-transport/src/{lib,call}.rs` | 1 unit + 3 UDP tests (`tests/call.rs`) + 2-client test (`tests/voice_call.rs`) |
 | **Voice DSP** (S1): WebRTC APM 2.1.0 (vendored patched sys crate), NS + AEC3 (+HPF, optional AGC2) on the capture path, mix as render reference, live config; feature `apm` | `crates/media-audio/src/dsp.rs`, `third_party/webrtc-audio-processing-sys/` | 3 unit + 2 engine tests; CI job `apm` |
 | **Audio engine** (S1): worker thread owning both streams, mic → `VoiceSender` → bounded outgoing channel; non-blocking `PacketSink` → per-peer `VoiceReceiver` (≤ 100 peers) → 48 kHz mix → output resample, speaker-paced playout with 40 ms prefill (wall clock without speaker), bounded command channel (mute, device switch, per-peer volume, remove peer, encoder config), status snapshot every 50 ms, failed stream → reopen selected → default → retry 1 s; `SimIo` simulated devices | `crates/media-audio/src/{engine,sim}.rs` | 5 integration tests `tests/engine.rs`; `examples/engine_check` on real Windows devices |
 | ADRs 0001–0005, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
@@ -79,10 +80,10 @@ performance results for the target hardware (RTX 4070 Super / M4).
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
-| Two real desktop clients talk through the server (signaling + WebRTC) | two `turbo-pancake-desktop` instances + `app-server` | **UNVERIFIED** — audio ↔ transport ↔ desktop wiring not implemented yet | — |
-| Speech continuity under moderate packet loss | `cargo test -p turbo-pancake-media-audio --test impairment` (in-process network model) | **PASS (pipeline level)**: loss ≤ 10 % × jitter ≤ 50 ms → 0 decode errors, 0 late, PLC-only ≤ 1.4 % of frames, FEC repairs ≈ 90 % of losses, level ratio ≥ 0.91; end-to-end over real UDP between clients still **UNVERIFIED** | `benchmarks/results/audio-impairment-windows-20261102.json` |
+| Two real desktop clients talk through the server (signaling + WebRTC) | two `turbo-pancake-desktop` instances + `app-server` | **UNVERIFIED** — engine ↔ transport works headless (`tests/voice_call.rs`); desktop signaling client and call UI not implemented yet | — |
+| Speech continuity under moderate packet loss | `cargo test -p turbo-pancake-media-audio --test impairment` (in-process network model) | **PASS (pipeline level)**: loss ≤ 10 % × jitter ≤ 50 ms → 0 decode errors, 0 late, PLC-only ≤ 1.4 % of frames, FEC repairs ≈ 90 % of losses, level ratio ≥ 0.91; **PASS (headless, real UDP)**: two engines + call drivers, 5 % wire loss → 301 played, 17 FEC, 1 concealed, 0 late, 0 decode errors (`cargo test -p turbo-pancake-media-transport --test voice_call`); desktop clients **UNVERIFIED** | `benchmarks/results/audio-impairment-windows-20261102.json` |
 | No audio loop | `tests/engine.rs::echo_canceller_breaks_the_audio_loop` (`--features apm`, simulated speaker→mic coupling) | **PASS (engine level, 3 OS)**: remote voice comes back with AEC3 + NS at −67.6 dB (Windows CI), −67.8 dB (Ubuntu), −44.1 dB (macOS VM) vs ≈ −7 dB without (CI run 41386258757); two real clients **UNVERIFIED** | ADR 0006 |
-| Resources released after leave | `AudioEngine::stop`/drop: `tests/engine.rs` (simulated: 0 open streams, 0 device threads, engine thread joined); `examples/engine_check` (real Windows devices reopen right after stop, stop 15 ms) | **PASS (engine level)**; call-level leave (transport + signaling) **UNVERIFIED** | `benchmarks/results/audio-engine-check-windows-20261102.json` |
+| Resources released after leave | `AudioEngine::stop`/drop: `tests/engine.rs` (simulated: 0 open streams, 0 device threads, engine thread joined); `examples/engine_check` (real Windows devices reopen right after stop, stop 15 ms) | **PASS (engine + call level, headless)**: `tests/voice_call.rs` hang-up → 0 streams, 0 device threads, call thread joined, socket closed; leave via signaling in the desktop **UNVERIFIED** | `benchmarks/results/audio-engine-check-windows-20261102.json` |
 | Opus in/out, mute, device selection | unit tests + `examples/device_check` + `tests/engine.rs` + `examples/engine_check` | **PASS (Windows, engine level)**: 192 kHz mic → Opus → 192 kHz stereo out, 0 overflows, ≈ 50 frames/s, 0 concealed; live input/output switch by id without sequence gaps (simulated + real), unplug fallback (simulated); UI device pickers not implemented | `benchmarks/results/audio-device-check-windows-20261102.json` |
 | Basic DSP (NS/AEC) | `src/dsp.rs` unit tests + engine loop test (`--features apm`); `tools/apm-eval` | **PASS (Windows, engine level)**: NS default on + live toggle, AEC3 with the mix as reference, echo and NS tests pass; ≈ 60 µs/10 ms; builds and tests pass on Windows/Ubuntu/macOS (CI job `apm`, run 41386258757); not yet in the desktop build (desktop has no audio yet) | ADR 0006, `benchmarks/results/audio-apm-eval-windows-20261102.json` |
 | Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
@@ -213,17 +214,27 @@ is on PATH whose clang-cl/libclang do not match the VS clang headers that vcvars
 INCLUDE → CC/CXX by full path and `LIBCLANG_PATH` to the VS LLVM; macOS VM reached only
 −24.6 dB once in the simulated room (device-thread jitter) → loop test 10 s, bound −20 dB.
 
+## Session log 2026-11-02 (S1, step 3 — call driver)
+
+Files: `crates/media-transport/{Cargo.toml,src/lib.rs,src/call.rs,tests/call.rs,
+tests/voice_call.rs}`, `Cargo.lock`, docs (ADR 0003, ARCHITECTURE, TESTING, STAGES, this
+file). Found and fixed on the way (ADR 0003): extended sequence numbers / SRTP ROC,
+Windows 16 ms socket-timeout granularity (loss under load, +16 ms send latency), answerer
+not noticing a vanished offerer. Local: fmt/clippy OK, `cargo test --workspace --locked`
+48 passed; transport suite repeated 3× without failures.
+
 ## Exact next task — S1 step 2/3 (plan in `docs/STAGES.md` → "S1 plan")
 
 1. ~~AudioEngine~~ — done (see session log above).
 2. ~~APM~~ — done, green on 3 OS. When the desktop starts using `media-audio` (item 4),
    depend on it with `features = ["apm"]` and move the meson/ninja/llvm-tools/clang-cl
    setup from job `apm` into the main CI job.
-3. `crates/media-transport`: async call driver — `UdpPeer` on its own thread, Opus audio
-   track (str0m `Media` API, PT 111, 48 kHz), RTP seq/timestamp from `EncodedFrame`,
-   bounded channels to/from the audio engine; loopback test: two drivers exchange encoded
-   speech over real UDP with in-process loss, continuity checked as in `impairment.rs`.
-4. Desktop: signaling client (Tokio thread, `/v1/signal`), "join room by id" call UI,
-   mute, device pickers, connection state; then two clients on this machine (second
-   monitor, `--no-activate`) through `app-server`, results recorded here.
+3. ~~Call driver~~ — done (`CallDriver`, see session log).
+4. **Next:** desktop signaling client (Tokio thread, `/v1/signal`: hello, join room by id,
+   relay offer/answer/candidates; the first peer in a room is the answerer, the joiner
+   offers), a `call` module wiring `AudioEngine` (feature `apm`) + `CallDriver` exactly as
+   `tests/voice_call.rs`, call UI (room id, join/leave, mute, NS/AEC toggles, input/output
+   pickers, state + RTT/loss line); move the APM build setup into the main CI job; then
+   two desktop clients on this machine (second monitor, `--no-activate`) through
+   `app-server`, results recorded here.
 5. DTLS backend benchmark (aws-lc-rs vs wincrypto) in the spike → ADR 0003.

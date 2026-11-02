@@ -14,6 +14,7 @@ str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+turbo-pancake-media-audio = { path = "../media-audio" }
 turbo-pancake-protocol.workspace = true
 prost.workspace = true
 

@@ -15,7 +15,7 @@ turbo-pancake/
 │  └─ app-server/             Axum server (S0: health/version + signaling relay)
 ├─ crates/
 │  ├─ protocol/               prost types generated from proto/ + validation + limits
-│  ├─ media-transport/        str0m wrapper (S0: UDP peer used by the feasibility spike)
+│  ├─ media-transport/        str0m: UdpPeer + CallDriver (1:1 call thread, RTP-mode Opus, state machine)
 │  └─ media-audio/            voice pipeline: cpal I/O + SPSC rings, rubato, Opus, jitter buffer, AudioEngine thread
 ├─ proto/turbo_pancake/v1/           protobuf schemas (source of truth for the wire format)
 ├─ benchmarks/

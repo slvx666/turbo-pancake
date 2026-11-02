@@ -6232,6 +6232,7 @@ dependencies = [
  "prost",
  "str0m",
  "thiserror 2.0.21",
+ "turbo-pancake-media-audio",
  "turbo-pancake-protocol",
 ]
 
