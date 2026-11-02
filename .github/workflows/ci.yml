@@ -151,9 +151,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          ./benchmarks/scripts/apm-env.ps1 cargo clippy -p turbo-pancake-media-audio --features apm --all-targets --locked -- -D warnings
+          pwsh -NoProfile -File ./benchmarks/scripts/apm-env.ps1 cargo clippy -p turbo-pancake-media-audio --features apm --all-targets --locked -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./benchmarks/scripts/apm-env.ps1 cargo test -p turbo-pancake-media-audio --features apm --locked -- --nocapture
+          pwsh -NoProfile -File ./benchmarks/scripts/apm-env.ps1 cargo test -p turbo-pancake-media-audio --features apm --locked -- --nocapture
           exit $LASTEXITCODE
 
       - name: clippy + test

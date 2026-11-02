@@ -7,7 +7,8 @@
 # TURBO_PANCAKE_TOOLS (default D:\turbo-pancake-tools): folder with venv\Scripts (meson,
 # ninja) and bin\nm.exe (a copy of llvm-nm.exe). Also needs
 # `rustup component add llvm-tools` (rust-objcopy). All arguments form the command (no
-# param block, so cargo flags such as -p pass through untouched).
+# param block, so cargo flags such as -p pass through untouched). Call it with
+# `-File`: invoked directly, PowerShell drops a literal `--` from the arguments.
 $ToolsDir = if ($env:TURBO_PANCAKE_TOOLS) { $env:TURBO_PANCAKE_TOOLS } else { "D:\turbo-pancake-tools" }
 $Command = $args
 $ErrorActionPreference = "Stop"
