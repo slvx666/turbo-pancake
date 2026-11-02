@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S1 — end-to-end 1:1 voice
 Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02; S1: audio pipeline, AudioEngine, APM, call driver, desktop session + voice room UI done; audible/cross-platform trials open)
-Last verified commit: 6e99420 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41437098838 green incl. job `apm` on 3 OS)
+Last verified commit: c28fd19 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41457062573 green on Windows/Ubuntu/macOS + audit; APM now built and tested in the main job)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
 
@@ -239,7 +239,9 @@ the main job, job `apm` removed — the workspace build enables `media-audio/apm
 desktop), `benchmarks/scripts/voice-trial.ps1`, `benchmarks/results/voice-trial-windows-20261102.log`,
 `docs/{ARCHITECTURE,TESTING,PROJECT_STATE}.md`. Local (Windows, through `apm-env.ps1`): fmt OK,
 clippy `-D warnings` OK, `cargo test --workspace --locked` 56 passed (session suite 3× without
-failures); release build OK; voice trial as in the S1 table. Commit f258e45 (+ follow-up).
+failures); release build OK; voice trial as in the S1 table. Commits f258e45, ea298db, c28fd19.
+CI run 41454787623: macOS/Ubuntu green, Windows clippy + all tests green but the APM release
+build failed (MAX_PATH, issue 18); fixed by a short target dir → **CI run 41457062573 all green**.
 
 ## Exact next task — S1 (plan in `docs/STAGES.md` → "S1 plan")
 
