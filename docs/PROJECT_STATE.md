@@ -266,6 +266,18 @@ on both** — switched to the WebSocket (2nd media session), B played 711, FEC 3
 Local: clippy OK, `cargo test --workspace --locked` 62 passed. The real two-homes call is
 **UNVERIFIED** until the owner and the tester run the new server and client.
 
+## Session log 2026-11-02 (S1 — first call between two homes works)
+
+Owner and a remote tester (both Windows, different home networks, server on the tester's
+machine) ran the SFU build: **the call worked, both heard each other clearly** (owner's
+report: "всё слышно и вроде всё хорошо"). Transport used (UDP or WebSocket), VPN on/off,
+RTT/loss and echo behaviour were **not recorded** — no `--call-log` was captured.
+CI run 41472046421 (commit 6edbda7): Windows green; Ubuntu failed in `tests/stun.rs` —
+Linux returns EINVAL for a datagram from a loopback-bound socket to a public srflx
+address and `UdpPeer` treated it as fatal; now EINVAL/EADDRNOTAVAIL/EPERM on one send are
+ignored like unreachable errors (ICE consent decides). macOS jobs in runs 41459625029 and
+41472046421: runner not acquired / cancelled (GitHub capacity), not a test failure.
+
 ## Exact next task — S1 (plan in `docs/STAGES.md` → "S1 plan")
 
 1. ~~AudioEngine~~ — done (see session log above).
@@ -274,7 +286,9 @@ Local: clippy OK, `cargo test --workspace --locked` 62 passed. The real two-home
    setup from job `apm` into the main CI job.
 3. ~~Call driver~~ — done (`CallDriver`, see session log).
 4. ~~Desktop signaling client + call UI + two clients on this machine~~ — done (see log).
-5. **Next:** the call between two homes with the SFU build (the tester runs the new
+5. ~~Call between two homes~~ — works by ear (owner + tester, 2026-11-02); a measured run
+   with `--call-log` on both sides (with and without VPN) is still to be recorded.
+   Was: the call between two homes with the SFU build (the tester runs the new
    `turbo-pancake-app-server --bind 0.0.0.0:7878`, TCP 7878 forwarded, UDP 7878 optional;
    both run the new client, with and without VPN; record transport, RTT, loss, played/FEC/
    concealed from `--call-log`), then the owner-assisted audible trial — two machines on one LAN (or headphones on one

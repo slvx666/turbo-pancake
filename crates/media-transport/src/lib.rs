@@ -328,7 +328,9 @@ impl UdpPeer {
                     match socket.send_to(&t.contents, t.destination) {
                         Ok(_) => {}
                         // Unreachable/no route: ICE consent checks will notice; a call
-                        // must not die on one failed datagram.
+                        // must not die on one failed datagram. Linux answers a candidate
+                        // pair the socket cannot use (loopback-bound socket → public
+                        // address) with EINVAL, a firewall with EPERM: same treatment.
                         Err(e)
                             if matches!(
                                 e.kind(),
@@ -336,6 +338,9 @@ impl UdpPeer {
                                     | ErrorKind::NetworkUnreachable
                                     | ErrorKind::HostUnreachable
                                     | ErrorKind::WouldBlock
+                                    | ErrorKind::InvalidInput
+                                    | ErrorKind::AddrNotAvailable
+                                    | ErrorKind::PermissionDenied
                             ) => {}
                         Err(e) => return Err(e.into()),
                     }
