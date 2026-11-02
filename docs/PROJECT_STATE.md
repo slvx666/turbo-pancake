@@ -4,7 +4,7 @@ Current stage: S2 — group audio + SFU
 Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
 Last verified commit: 9af5491 (branch `main`, CI run 41503469373: Windows, Ubuntu, audit green; macOS job cancelled — no macOS arm64 runner acquired in 15 min (0 steps), as in runs 41480272959/41500008299; last green macOS: run 41457062573)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
-Last session: 2026-11-02
+Last session: 2026-11-03
 
 ## Environment (dev machine, Windows)
 
@@ -34,6 +34,7 @@ Last session: 2026-11-02
 | **Audio engine** (S1): worker thread owning both streams, mic → `VoiceSender` → bounded outgoing channel; non-blocking `PacketSink` → per-peer `VoiceReceiver` (≤ 100 peers) → 48 kHz mix → output resample, speaker-paced playout with 40 ms prefill (wall clock without speaker), bounded command channel (mute, device switch, per-peer volume, remove peer, encoder config), status snapshot every 50 ms, failed stream → reopen selected → default → retry 1 s; `SimIo` simulated devices | `crates/media-audio/src/{engine,sim}.rs` | 5 integration tests `tests/engine.rs`; `examples/engine_check` on real Windows devices |
 | **Desktop session + voice room** (S1): `Session` thread (Tokio current-thread) — `/v1/signal` hello/join/leave/relay/ping, reconnect with backoff 0.5→5 s and rejoin; engine (APM on by default) started on join, `CallDriver` per remote (later joiner offers), restart after `Failed`, `PeerLeft` ends the call, leave releases everything; Slint panel (room id, join/leave, mute, NS/AEC, input/output pickers, remote volume, mic level, state + RTT/loss/jitter stats); CLI `--server --name --room --mute --remote-volume --call-log --test-send-loss` | `apps/desktop/src/{lib,session,view,main}.rs`, `ui/main.slint` | 1 unit + 2 integration tests (`tests/session.rs`, real app-server + WS + UDP, simulated devices); `benchmarks/scripts/voice-trial.ps1` with real devices |
 | **Per-member audio** (S2): SFU assigns an SSRC per member session and forwards every member to every other member (no transcoding, no renegotiation); `TrackPublished`/`TrackUnpublished`; client `CallDriver::expect_source`, engine peer per SSRC | `crates/media-sfu`, `proto/…/signaling.proto`, `crates/media-transport/src/call.rs`, `apps/desktop/src/session.rs` | `tests/session.rs::three_members_each_hear_both_others`, contract test, ADR 0008 |
+| **Group call client** (S2 step 3): member list (peer id → SSRC → engine stream) with a speaking indicator and a volume slider per member (`Command::SetMemberVolume`, on top of the call volume); voice activation with an adjustable threshold (`Command::SetVoiceGate`, dBFS, 300 ms hangover; the sequence number pauses, the RTP timestamp runs on); own speaking indicator and a dB microphone meter with the threshold mark; jitter buffer measures transit by RTP timestamp and starts a talkspurt after a pause instead of discarding it as late | `crates/media-audio/src/{pipeline,jitter,engine}.rs`, `apps/desktop/src/{session,view,main}.rs`, `apps/desktop/ui/main.slint` | unit tests `pipeline::tests::*`, `jitter::tests::{talkspurt_*,short_pause_*}`, `tests/engine.rs::voice_activation_pauses_sending_and_drives_the_indicators`, `tests/session.rs::speaking_indicators_member_volume_and_voice_activation` |
 | ADRs 0001–0008, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
@@ -86,7 +87,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Reconnection | signaling outage test (2 members) | **PASS (2 members, headless)**; group reconnect **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects` |
 | New call closes the previous one | — | **UNVERIFIED** (S2 step 4) | |
 | No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008) | **PASS (by design)**; CPU/bandwidth for 20 members **UNVERIFIED** (S2 step 6) | `crates/media-sfu/src/lib.rs` |
-| Per-member volume, speaking indicator, voice activation, AEC/NS toggle | — | volume per stream in the engine; UI per member, VAD **UNVERIFIED** (S2 step 3); AEC/NS toggle from S1 | |
+| Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
 
 ## Known issues and blockers
 
@@ -127,6 +128,20 @@ performance results for the target hardware (RTX 4070 Super / M4).
     real-time simulated clients in parallel debug builds starved each other (≈ 4 %
     concealed frames, failing the < 3 % bound); serial runs: 0 concealed. One serial run in
     ~10 still failed while the dev machine was busy with other work.
+21. **`window-check.ps1` saw the window in the foreground** (2026-11-03: 109 of 110 samples)
+    although it was created with `--no-activate`. No window code changed in this step and
+    Slint only calls `focus_window` on an explicit `bring_to_front`; the likely cause is
+    Windows granting foreground to a process started by the foreground app (the script was
+    launched from the active coding tool). Earlier runs did not show it. GUI checks on the
+    dev machine are paused until the launch path keeps the window inactive (investigate:
+    winit `with_active(false)` on Windows, `WS_EX_NOACTIVATE`, launching via a
+    non-foreground process).
+22. Per-member volumes are keyed by the connection's peer id and reset on reconnect or
+    rejoin (accounts with stable ids arrive in S5).
+23. With voice activation the receiver conceals ~200 ms after each talkspurt (counted as
+    concealed/underrun ticks) before it rebuffers; Opus PLC fades out, so it is quiet, but
+    `concealed_ratio` overstates loss for gated senders. A comfort-noise / end-of-talkspurt
+    marker would remove it.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -306,6 +321,27 @@ run `voice-trial` (or two clients against one server) and record. Still open on 
 and doable any time: a measured two-homes run with `--call-log` (with/without VPN), the
 DTLS backend benchmark (ADR 0003).
 
+## Session log 2026-11-03 (S2, step 3 — group call client)
+
+Engine: `VoiceSender::set_voice_gate` (dBFS threshold, 15-frame hangover; below it frames
+are not encoded or sent, the sequence number pauses and the RTP timestamp keeps running);
+own `speaking`, `mic_db`, `frames_gated` in `EngineStatus`; `ReceiverStats::speaking`
+(decoded speech above −45 dBFS before the local volume, 300 ms hangover). Jitter buffer:
+transit by extended RTP timestamp (a pause is not jitter) and talkspurt detection
+(timestamp − seq·frame grew) — found while designing: with contiguous sequence numbers the
+old buffer would have dropped the next talkspurt as late and raised the target delay by the
+pause length. `IncomingPacket` carries the RTP timestamp. Session: `Snapshot.members` is
+`Vec<Member>` (peer id, name, SSRC, own volume, engine stream), `Command::SetMemberVolume`,
+`Command::SetVoiceGate`; engine gain = call volume × member volume. UI: member list with a
+speaking ring and a volume slider per member (updated in place so a dragged slider is not
+rebuilt), voice activation checkbox + threshold slider, dB meter with the threshold mark;
+`--voice-gate <dB>`; `--call-log` gains `streams`, `speaking`, `vad_db`, `frames_gated`,
+`speaking_members`.
+Local (Windows, through `apm-env.ps1`): fmt OK, clippy `-D warnings` OK,
+`cargo test --workspace --locked` 71 passed (new: 3 pipeline, 2 jitter, 1 engine, 1 session).
+GUI: `window-check.ps1` — window at the requested position, exit 0, UI renders the new
+controls; but the window was foreground (known issue 21), so no further GUI runs.
+
 ## Session log 2026-11-02 (S2, step 1 — per-member audio)
 
 Decision ADR 0008: one m-line, one SSRC per member, mapping by `TrackPublished`. Found in
@@ -330,13 +366,17 @@ session suite 4× green.
 CI run 41503469373 (commit 9af5491): Windows, Ubuntu (incl. the 3-member and outage tests),
 audit green; macOS runner not acquired (cancelled, 0 steps).
 
-## Exact next task — S2 step 3 (plan in `docs/STAGES.md` → "S2 plan")
+## Exact next task — S2 step 4, then step 5 (plan in `docs/STAGES.md` → "S2 plan")
 
-Client side of group calls: `Snapshot` lists members with their stream (peer id → SSRC →
-engine `PeerStatus`), Slint member list with a volume slider and a speaking indicator per
-member (`Command::SetMemberVolume(peer_id, v)`), and voice activation with an adjustable
-threshold in the engine (stop sending below the threshold with a hangover; indicator for
-the own mic). Then step 5: automated 20-member headless scenario.
+1. Step 4, call lifecycle: one active call per user — joining another room leaves the
+   previous one (server side, by session/user once accounts exist; for now by connection),
+   both sessions notified; idempotent join/leave; group reconnect (3 members, one loses
+   signaling and returns) as a headless test.
+2. Step 5: automated 20-member headless scenario (real app-server, simulated devices,
+   serial run; a few talking, the rest with voice activation): everyone hears every
+   talker, join/leave/reconnect, CPU of the test process recorded. Watch the session-test
+   CPU starvation (known issue 20) — may need a release-mode run or a lighter engine tick.
+3. Before any GUI run: resolve known issue 21 (window took the foreground).
 
 ## Previous next-task list — S1 (plan in `docs/STAGES.md` → "S1 plan")
 

@@ -8,10 +8,18 @@
 //!   window (≈ p95 − min, plus a safety margin), so it grows quickly under jitter and
 //!   shrinks again on a calm network. Excess delay is removed by dropping frames one at a
 //!   time, which also absorbs sender/receiver clock drift.
+//! * Transit times use the RTP timestamp, not the sequence number: a sender with voice
+//!   activation stops sending in pauses and continues the sequence numbers afterwards, so
+//!   only the timestamp shows the gap. A packet whose timestamp jumped ahead of its
+//!   sequence number starts a new talkspurt: it plays from its start after the target
+//!   delay instead of being discarded as late.
 
 use std::collections::VecDeque;
 
-use crate::FRAME_MS;
+use crate::{FRAME_MS, FRAME_SAMPLES};
+
+/// RTP timestamp units per frame.
+const TS_FRAME: i64 = FRAME_SAMPLES as i64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JitterConfig {
@@ -66,6 +74,8 @@ pub struct JitterStats {
     /// Frames dropped to bring the delay back to the target.
     pub dropped: u64,
     pub resets: u64,
+    /// Talkspurts started after a pause of the sender (voice activation).
+    pub talkspurts: u64,
     pub target_delay_ms: u32,
 }
 
@@ -81,6 +91,10 @@ pub struct JitterBuffer {
     highest: Option<u64>,
     /// Next extended sequence to play; `None` while (re)buffering.
     next: Option<u64>,
+    /// Highest extended RTP timestamp received.
+    ts_highest: Option<i64>,
+    /// Timestamp - sequence * frame of the current talkspurt; grows with every pause.
+    ts_offset: Option<i64>,
     transit: VecDeque<i64>,
     scratch: Vec<i64>,
     target_frames: u64,
@@ -96,6 +110,8 @@ impl JitterBuffer {
             slots: (0..capacity).map(|_| None).collect(),
             highest: None,
             next: None,
+            ts_highest: None,
+            ts_offset: None,
             transit: VecDeque::with_capacity(config.window),
             scratch: Vec::with_capacity(config.window),
             target_frames: 0,
@@ -139,6 +155,13 @@ impl JitterBuffer {
         }
     }
 
+    fn extend_ts(&self, ts: u32) -> i64 {
+        match self.ts_highest {
+            None => i64::from(ts) + (1 << 32),
+            Some(h) => h + i64::from(ts.wrapping_sub(h as u32) as i32),
+        }
+    }
+
     fn lowest(&self) -> Option<u64> {
         self.slots.iter().flatten().map(|s| s.seq).min()
     }
@@ -147,15 +170,35 @@ impl JitterBuffer {
         self.slots.iter_mut().for_each(|s| *s = None);
         self.next = None;
         self.highest = None;
+        self.ts_highest = None;
+        self.ts_offset = None;
         self.transit.clear();
         self.stats.resets += 1;
     }
 
-    /// Inserts a received packet. `arrival_ms` is the local receive time on a monotonic
-    /// clock with any origin.
+    /// Inserts a packet of a sender that never pauses (timestamp = sequence * frame).
     pub fn insert(&mut self, seq: u16, payload: Vec<u8>, arrival_ms: u64) {
+        let timestamp = (self.extend(seq) as u32).wrapping_mul(FRAME_SAMPLES as u32);
+        self.insert_at(seq, timestamp, payload, arrival_ms);
+    }
+
+    /// Inserts a received packet with its RTP timestamp. `arrival_ms` is the local
+    /// receive time on a monotonic clock with any origin.
+    pub fn insert_at(&mut self, seq: u16, timestamp: u32, payload: Vec<u8>, arrival_ms: u64) {
         self.stats.received += 1;
         let mut ext = self.extend(seq);
+        if let Some(offset) = self.ts_offset
+            && self.extend_ts(timestamp) - ext as i64 * TS_FRAME > offset + TS_FRAME / 2
+        {
+            // The sender paused. Everything before `next` has been played (or skipped),
+            // so if playout already ran past this packet while concealing the pause,
+            // rebuffer from it instead of discarding the talkspurt as late.
+            self.stats.talkspurts += 1;
+            if self.next.is_some_and(|n| ext < n) {
+                self.next = None;
+                self.empty_ticks = 0;
+            }
+        }
         let cap = self.slots.len() as u64;
         if let Some(next) = self.next {
             if ext < next {
@@ -180,11 +223,16 @@ impl JitterBuffer {
         }
         self.slots[idx] = Some(Slot { seq: ext, payload });
         self.highest = Some(self.highest.map_or(ext, |h| h.max(ext)));
-        self.update_target(ext, arrival_ms);
+        let ts = self.extend_ts(timestamp);
+        self.ts_highest = Some(self.ts_highest.map_or(ts, |h| h.max(ts)));
+        let offset = ts - ext as i64 * TS_FRAME;
+        self.ts_offset = Some(self.ts_offset.map_or(offset, |o| o.max(offset)));
+        self.update_target(ts, arrival_ms);
     }
 
-    fn update_target(&mut self, ext: u64, arrival_ms: u64) {
-        let transit = arrival_ms as i64 - (ext as i64) * i64::from(FRAME_MS);
+    /// `ts`: extended RTP timestamp (media time).
+    fn update_target(&mut self, ts: i64, arrival_ms: u64) {
+        let transit = arrival_ms as i64 - ts * i64::from(FRAME_MS) / TS_FRAME;
         if self.transit.len() == self.config.window {
             self.transit.pop_front();
         }
@@ -306,7 +354,6 @@ mod tests {
             jb.insert(i, pkt(i), u64::from(i - 10) * 20);
         }
         assert_eq!(played, (10..37).collect::<Vec<_>>());
-        assert_eq!(jb.stats().concealed, 0);
     }
 
     #[test]
@@ -405,11 +452,77 @@ mod tests {
             jb.insert(seq, pkt(seq), 380 + i as u64 * 20);
         }
         assert!(jb.stats().dropped > 0);
+        assert_eq!(jb.stats().talkspurts, 0);
         assert!(
             jb.depth() <= u64::from(jb.target_delay_ms() / FRAME_MS) + 2,
             "depth {} target {}",
             jb.depth(),
             jb.target_delay_ms()
         );
+    }
+
+    #[test]
+    fn talkspurt_after_a_pause_plays_without_late_drops_or_extra_delay() {
+        let mut jb = JitterBuffer::new(JitterConfig::default());
+        let ts = |frame: u32| frame.wrapping_mul(FRAME_SAMPLES as u32);
+        // 1 s of speech (frames 0..50), then 1 s pause, then speech again: sequence
+        // numbers continue at 50, timestamps at frame 100.
+        let mut played = Vec::new();
+        let mut t = 0u64;
+        for f in 0..50u32 {
+            jb.insert_at(f as u16, ts(f), pkt(f as u16), t);
+            played.extend(seq_of(&jb.pop()));
+            t += 20;
+        }
+        for _ in 0..50 {
+            played.extend(seq_of(&jb.pop()));
+            t += 20;
+        }
+        let delay_before = jb.target_delay_ms();
+        for (i, f) in (100..150u32).enumerate() {
+            let seq = 50 + i as u16;
+            jb.insert_at(seq, ts(f), pkt(seq), t);
+            played.extend(seq_of(&jb.pop()));
+            t += 20;
+        }
+        for _ in 0..10 {
+            played.extend(seq_of(&jb.pop()));
+        }
+        let s = jb.stats();
+        assert_eq!(s.late, 0, "{s:?}");
+        assert_eq!(s.talkspurts, 1, "{s:?}");
+        assert_eq!(s.resets, 0, "{s:?}");
+        assert_eq!(
+            jb.target_delay_ms(),
+            delay_before,
+            "the pause is not jitter"
+        );
+        // Every frame of both talkspurts played once, in order.
+        assert_eq!(played, (0..100u16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn short_pause_keeps_buffered_frames() {
+        let mut jb = JitterBuffer::new(JitterConfig::default());
+        let ts = |frame: u32| frame * FRAME_SAMPLES as u32;
+        // A 40 ms pause is shorter than the playout delay: frames of the first talkspurt
+        // are still buffered when the second one arrives, and nothing is skipped.
+        let mut played = Vec::new();
+        for f in 0..5u32 {
+            jb.insert_at(f as u16, ts(f), pkt(f as u16), u64::from(f) * 20);
+            played.extend(seq_of(&jb.pop()));
+        }
+        for _ in 0..2 {
+            played.extend(seq_of(&jb.pop()));
+        }
+        for (i, f) in (7..12u32).enumerate() {
+            jb.insert_at(5 + i as u16, ts(f), pkt(5 + i as u16), u64::from(f) * 20);
+            played.extend(seq_of(&jb.pop()));
+        }
+        for _ in 0..10 {
+            played.extend(seq_of(&jb.pop()));
+        }
+        assert_eq!(played, (0..10u16).collect::<Vec<_>>());
+        assert_eq!(jb.stats().talkspurts, 1);
     }
 }

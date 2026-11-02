@@ -27,6 +27,7 @@ fn main() {
             link.incoming.push(IncomingPacket {
                 peer: 1,
                 seq: f.seq,
+                timestamp: f.timestamp,
                 payload: f.payload,
                 arrival: Instant::now(),
             });

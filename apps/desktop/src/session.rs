@@ -1,4 +1,4 @@
-//! Client session (S1): signaling connection, audio engine and the room's media session
+//! Client session (S1/S2): signaling connection, audio engine and the room's media session
 //! with the server's SFU.
 //!
 //! ```text
@@ -41,7 +41,7 @@ use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::Message;
 use turbo_pancake_media_audio::{
     AudioEngine, AudioError, AudioIo, DspConfig, EngineConfig, EngineStatus, IncomingPacket,
-    PacketSink, PeerId, VoiceLink,
+    PacketSink, PeerId, PeerStatus, VoiceLink,
 };
 use turbo_pancake_media_transport::call::{
     AudioOut, CallConfig, CallDriver, CallEvent, CallState, CallStats, LocalSignal, MediaLink, Role,
@@ -127,8 +127,12 @@ pub enum Command {
     /// Device id from `device::list_devices` (`None` = system default).
     SetInput(Option<String>),
     SetOutput(Option<String>),
-    /// Local playback gain of the other member, 0.0–4.0.
+    /// Local playback gain of the whole call (every member), 0.0–4.0.
     SetRemoteVolume(f32),
+    /// Local playback gain of one member (by peer id), 0.0–4.0, on top of the call volume.
+    SetMemberVolume(String, f32),
+    /// Voice activation threshold in dBFS; `None` = always send.
+    SetVoiceGate(Option<f32>),
     Quit,
 }
 
@@ -148,6 +152,26 @@ pub struct MediaStatus {
     pub state: CallState,
 }
 
+/// Another member of the room.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Member {
+    pub peer_id: String,
+    pub name: String,
+    /// Their stream on our media session (ADR 0008), once the server announced it.
+    pub ssrc: Option<u32>,
+    /// Local playback gain set for them (before the call volume), 0.0–4.0.
+    pub volume: f32,
+    /// Their audio in the engine (jitter buffer, decoder, speaking) while it plays.
+    pub stream: Option<PeerStatus>,
+}
+
+impl Member {
+    /// Speaking indicator: their audio is above the speech level right now.
+    pub fn speaking(&self) -> bool {
+        self.stream.as_ref().is_some_and(|p| p.stats.speaking)
+    }
+}
+
 /// Everything the UI shows, published by the session thread.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -158,8 +182,8 @@ pub struct Snapshot {
     pub room: Option<String>,
     /// The server confirmed membership of `room`.
     pub joined: bool,
-    /// Display names of the other members, in join order.
-    pub members: Vec<String>,
+    /// The other members, in join order.
+    pub members: Vec<Member>,
     pub media: Option<MediaStatus>,
     pub engine: Option<EngineStatus>,
     pub call: Option<CallStats>,
@@ -170,6 +194,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    pub fn member_names(&self) -> Vec<String> {
+        self.members.iter().map(|m| m.name.clone()).collect()
+    }
+
     /// Media is up and somebody else is in the room.
     pub fn in_call(&self) -> bool {
         !self.members.is_empty()
@@ -303,6 +331,8 @@ struct Core {
     member_order: u64,
     /// Other members' streams on our media session: peer id → SSRC (= engine peer id).
     tracks: HashMap<String, u32>,
+    /// Per-member playback gain set by the user: peer id → gain.
+    member_volumes: HashMap<String, f32>,
     audio: Option<Audio>,
     media: Option<Media>,
     /// Transport of the next media session.
@@ -344,6 +374,7 @@ impl Core {
             members: BTreeMap::new(),
             member_order: 0,
             tracks: HashMap::new(),
+            member_volumes: HashMap::new(),
             audio: None,
             media: None,
             next_transport,
@@ -524,6 +555,8 @@ impl Core {
         self.joined = None;
         self.members.clear();
         self.tracks.clear();
+        // Peer ids are per connection (accounts arrive in S5): the volumes cannot follow.
+        self.member_volumes.clear();
         self.outbox.clear();
         self.snap.peer_id = None;
         self.snap.signaling_rtt_ms = None;
@@ -590,9 +623,27 @@ impl Core {
             }
             Command::SetRemoteVolume(v) => {
                 self.remote_volume = v.clamp(0.0, 4.0);
-                let v = self.remote_volume;
-                let peers: Vec<PeerId> = self.tracks.values().map(|s| PeerId::from(*s)).collect();
-                self.with_engine(|e| peers.iter().try_for_each(|p| e.set_peer_volume(*p, v)));
+                let peers: Vec<(PeerId, f32)> = self
+                    .tracks
+                    .iter()
+                    .map(|(peer, ssrc)| (PeerId::from(*ssrc), self.gain(peer)))
+                    .collect();
+                self.with_engine(|e| {
+                    peers
+                        .iter()
+                        .try_for_each(|(p, v)| e.set_peer_volume(*p, *v))
+                });
+            }
+            Command::SetMemberVolume(peer, v) => {
+                self.member_volumes.insert(peer.clone(), v.clamp(0.0, 4.0));
+                if let Some(ssrc) = self.tracks.get(&peer).copied() {
+                    let v = self.gain(&peer);
+                    self.with_engine(|e| e.set_peer_volume(PeerId::from(ssrc), v));
+                }
+            }
+            Command::SetVoiceGate(g) => {
+                self.cfg.engine.voice_gate = g;
+                self.with_engine(|e| e.set_voice_gate(g));
             }
             Command::Quit => {
                 self.leave_room();
@@ -600,6 +651,12 @@ impl Core {
                 self.quit = true;
             }
         }
+    }
+
+    /// Engine gain of a member's stream: call volume × their own volume.
+    fn gain(&self, peer: &str) -> f32 {
+        let own = self.member_volumes.get(peer).copied().unwrap_or(1.0);
+        (self.remote_volume * own).clamp(0.0, 4.0)
     }
 
     fn with_engine(&mut self, f: impl FnOnce(&AudioEngine) -> Result<(), AudioError>) {
@@ -615,6 +672,7 @@ impl Core {
         self.end_media();
         self.members.clear();
         self.tracks.clear();
+        self.member_volumes.clear();
         let room = self.joined.take().or_else(|| self.want_room.clone());
         if let (Some(room), true) = (room, self.online) {
             self.push(C::LeaveRoom(v1::LeaveRoom { room_id: room }));
@@ -657,17 +715,18 @@ impl Core {
             S::PeerLeft(l) => {
                 // Its stream ends with TrackUnpublished.
                 self.members.remove(&l.peer_id);
+                self.member_volumes.remove(&l.peer_id);
             }
             S::TrackPublished(t) => {
                 if self.joined.as_deref() != Some(t.room_id.as_str()) {
                     return;
                 }
-                if let Some(old) = self.tracks.insert(t.peer_id, t.ssrc)
+                if let Some(old) = self.tracks.insert(t.peer_id.clone(), t.ssrc)
                     && old != t.ssrc
                 {
                     self.drop_source(old);
                 }
-                self.add_source(t.ssrc);
+                self.add_source(&t.peer_id, t.ssrc);
             }
             S::TrackUnpublished(t) => {
                 if self.tracks.get(&t.peer_id) == Some(&t.ssrc) {
@@ -720,8 +779,8 @@ impl Core {
         }
     }
 
-    /// Accepts a member's stream on the media session and gives it the remote volume.
-    fn add_source(&mut self, ssrc: u32) {
+    /// Accepts a member's stream on the media session and gives it their volume.
+    fn add_source(&mut self, peer: &str, ssrc: u32) {
         if let Some(m) = &self.media {
             let _ = m.driver.expect_source(ssrc);
         }
@@ -729,7 +788,7 @@ impl Core {
             a.accepted.lock().unwrap().insert(ssrc);
             let _ = a
                 .engine
-                .set_peer_volume(PeerId::from(ssrc), self.remote_volume);
+                .set_peer_volume(PeerId::from(ssrc), self.gain(peer));
         }
     }
 
@@ -900,6 +959,7 @@ impl Core {
             sink.push(IncomingPacket {
                 peer: PeerId::from(p.ssrc),
                 seq: p.seq,
+                timestamp: p.timestamp,
                 payload: p.payload,
                 arrival: p.arrival,
             });
@@ -943,9 +1003,9 @@ impl Core {
         self.snap.media_sessions += 1;
         self.dirty = true;
         // Streams the server announced earlier stay valid until it says otherwise.
-        let known: Vec<u32> = self.tracks.values().copied().collect();
-        for ssrc in known {
-            self.add_source(ssrc);
+        let known: Vec<(String, u32)> = self.tracks.iter().map(|(p, s)| (p.clone(), *s)).collect();
+        for (peer, ssrc) in known {
+            self.add_source(&peer, ssrc);
         }
     }
 
@@ -973,10 +1033,28 @@ impl Core {
     fn publish(&mut self) {
         self.snap.room = self.want_room.clone();
         self.snap.joined = self.joined.is_some();
-        let mut members: Vec<&(u64, String)> = self.members.values().collect();
-        members.sort();
-        self.snap.members = members.into_iter().map(|(_, n)| n.clone()).collect();
         self.snap.engine = self.audio.as_ref().map(|a| a.engine.status());
+        let mut members: Vec<(&u64, &String, &String)> = self
+            .members
+            .iter()
+            .map(|(peer, (order, name))| (order, peer, name))
+            .collect();
+        members.sort();
+        let streams = self.snap.engine.as_ref().map(|e| e.peers.as_slice());
+        self.snap.members = members
+            .into_iter()
+            .map(|(_, peer, name)| {
+                let ssrc = self.tracks.get(peer).copied();
+                Member {
+                    peer_id: peer.clone(),
+                    name: name.clone(),
+                    ssrc,
+                    volume: self.member_volumes.get(peer).copied().unwrap_or(1.0),
+                    stream: ssrc
+                        .and_then(|s| streams?.iter().find(|p| p.peer == PeerId::from(s)).cloned()),
+                }
+            })
+            .collect();
         self.snap.call = self.media.as_ref().map(|m| m.driver.stats());
         self.snap.media = self.media.as_ref().map(|m| MediaStatus {
             transport: m.transport,

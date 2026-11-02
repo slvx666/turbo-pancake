@@ -70,7 +70,11 @@ Option **(c)**.
 * The client decodes every forwarded stream: ≈ 30 µs per 20 ms frame per stream on the dev
   machine — 20 talking members ≈ 3 % of one core.
 * Per-member state on the client keys on SSRC, and the UI maps member → SSRC through
-  `TrackPublished`; volume and speaking indicator per member follow from it.
+  `TrackPublished`; volume and speaking indicator per member follow from it (S2 step 3).
+* Voice activation (S2 step 3) pauses a member's stream: the sender stops sending, its
+  sequence number pauses and the RTP timestamp keeps running (RTP practice), so the SFU
+  forwards no traffic and the receivers' loss statistics stay clean; the jitter buffer
+  uses the timestamp to tell a pause from loss or jitter.
 * Video (S3+) can reuse the scheme (more SSRCs, a video m-line) or move to explicit
   subscriptions; decided with S3/S4.
 

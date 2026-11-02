@@ -67,6 +67,7 @@ fn client(role: Role, mic_on: bool, send_loss: f32) -> Client {
         sink.push(IncomingPacket {
             peer: REMOTE,
             seq: p.seq,
+            timestamp: p.timestamp,
             payload: p.payload,
             arrival: p.arrival,
         });

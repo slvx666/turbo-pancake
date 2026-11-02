@@ -1,8 +1,18 @@
-// turbo-pancake main window (S0 shell + S1 voice room panel).
+// turbo-pancake main window (S0 shell + S1/S2 voice room panel).
 // Layout follows the spec: conversation list on the left, conversation area on
 // the right, user panel at the bottom-left. No server/channel rail by design.
 
 import { Button, LineEdit, CheckBox, ComboBox, Slider, Palette } from "std-widgets.slint";
+
+// One other member of the voice room.
+export struct MemberRow {
+    peer-id: string,
+    name: string,
+    speaking: bool,
+    // Local volume, percent (0–200).
+    volume: float,
+    info: string,
+}
 
 export global Theme {
     in-out property <bool> dark: true;
@@ -139,7 +149,66 @@ component Sidebar inherits Rectangle {
     }
 }
 
-// S1 milestone: a voice room joined by id (accounts and dialogs arrive in S5).
+// A member of the call: speaking indicator, name, own volume slider.
+component MemberItem inherits Rectangle {
+    in property <MemberRow> member;
+    callback volume-changed(float);
+    height: 44px;
+    border-radius: 4px;
+    background: Theme.bg-secondary;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        // Speaking indicator: a green ring around the avatar.
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 14px;
+            border-width: 2px;
+            border-color: root.member.speaking ? #23a55a : transparent;
+            background: Theme.accent;
+            accessible-role: text;
+            accessible-label: root.member.speaking ? "говорит" : "молчит";
+            Text {
+                text: root.member.name.character-count > 0 ? "●" : "?";
+                color: white;
+                font-size: 10px;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            min-width: 120px;
+            Text {
+                text: root.member.name;
+                color: Theme.text-normal;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.member.info;
+                color: Theme.text-muted;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        Slider {
+            minimum: 0;
+            maximum: 200;
+            value: root.member.volume;
+            changed(v) => { root.volume-changed(v); }
+        }
+        Text {
+            width: 48px;
+            text: round(root.member.volume) + " %";
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// S1/S2: a voice room joined by id (accounts and dialogs arrive in S5).
 component CallPanel inherits Rectangle {
     in-out property <string> room-text;
     in property <bool> in-room;
@@ -149,7 +218,12 @@ component CallPanel inherits Rectangle {
     in property <string> devices;
     in property <string> error;
     in property <float> mic-level;
+    in property <bool> self-speaking;
     in property <bool> dsp-available;
+    in property <[MemberRow]> members;
+    in-out property <bool> voice-activation;
+    // Voice activation threshold, dBFS (meter range -60..0).
+    in-out property <float> vad-threshold: -45;
     in-out property <bool> muted;
     in-out property <bool> ns: true;
     in-out property <bool> aec: true;
@@ -165,6 +239,8 @@ component CallPanel inherits Rectangle {
     callback input-selected(int);
     callback output-selected(int);
     callback remote-volume-changed(float);
+    callback member-volume-changed(string, float);
+    callback vad-changed(bool, float);
 
     VerticalLayout {
         padding: 24px;
@@ -224,17 +300,45 @@ component CallPanel inherits Rectangle {
                 toggled => { root.dsp-changed(root.ns, root.aec); }
             }
         }
-        // Microphone level (what the peers hear; zero while muted).
+        // Microphone level in dB (what the others hear; zero while muted), green while
+        // speaking; the white mark is the voice activation threshold.
         Rectangle {
-            height: 6px;
-            border-radius: 3px;
+            height: 8px;
+            border-radius: 4px;
             background: Theme.bg-tertiary;
             Rectangle {
                 x: 0;
-                width: parent.width * min(1.0, root.mic-level * 2.0);
+                width: parent.width * root.mic-level;
                 height: parent.height;
-                border-radius: 3px;
-                background: root.mic-level > 0.02 ? #23a55a : Theme.text-muted;
+                border-radius: 4px;
+                background: root.self-speaking ? #23a55a : Theme.text-muted;
+            }
+            if root.voice-activation: Rectangle {
+                x: parent.width * (root.vad-threshold + 60) / 60 - 1px;
+                width: 2px;
+                height: parent.height;
+                background: Theme.text-normal;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            CheckBox {
+                text: "Активация голосом";
+                checked <=> root.voice-activation;
+                toggled => { root.vad-changed(root.voice-activation, root.vad-threshold); }
+            }
+            Slider {
+                enabled: root.voice-activation;
+                minimum: -60;
+                maximum: 0;
+                value <=> root.vad-threshold;
+                changed(v) => { root.vad-changed(root.voice-activation, v); }
+            }
+            Text {
+                width: 56px;
+                text: round(root.vad-threshold) + " дБ";
+                color: Theme.text-muted;
+                vertical-alignment: center;
             }
         }
         GridLayout {
@@ -265,7 +369,7 @@ component CallPanel inherits Rectangle {
             }
             Row {
                 Text {
-                    text: "Громкость собеседника";
+                    text: "Громкость звонка";
                     color: Theme.text-muted;
                     vertical-alignment: center;
                 }
@@ -285,6 +389,16 @@ component CallPanel inherits Rectangle {
                     }
                 }
             }
+        }
+        if root.members.length > 0: Text {
+            text: "УЧАСТНИКИ — " + root.members.length;
+            color: Theme.text-muted;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        for m in root.members: MemberItem {
+            member: m;
+            volume-changed(v) => { root.member-volume-changed(m.peer-id, v); }
         }
         Text {
             text: root.devices;
@@ -328,7 +442,12 @@ export component MainWindow inherits Window {
     in property <string> call-devices;
     in property <string> call-error;
     in property <float> mic-level;
+    in property <bool> self-speaking;
     in property <bool> dsp-available;
+    in property <[MemberRow]> members;
+    in-out property <bool> voice-activation;
+    // Voice activation threshold, dBFS (meter range -60..0).
+    in-out property <float> vad-threshold: -45;
     in-out property <bool> muted;
     in-out property <bool> ns: true;
     in-out property <bool> aec: true;
@@ -344,6 +463,8 @@ export component MainWindow inherits Window {
     callback input-selected(int);
     callback output-selected(int);
     callback remote-volume-changed(float);
+    callback member-volume-changed(string, float);
+    callback vad-changed(bool, float);
 
     init => {
         Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
@@ -383,7 +504,11 @@ export component MainWindow inherits Window {
                 devices: root.call-devices;
                 error: root.call-error;
                 mic-level: root.mic-level;
+                self-speaking: root.self-speaking;
                 dsp-available: root.dsp-available;
+                members: root.members;
+                voice-activation <=> root.voice-activation;
+                vad-threshold <=> root.vad-threshold;
                 muted <=> root.muted;
                 ns <=> root.ns;
                 aec <=> root.aec;
@@ -399,6 +524,8 @@ export component MainWindow inherits Window {
                 input-selected(i) => { root.input-selected(i); }
                 output-selected(i) => { root.output-selected(i); }
                 remote-volume-changed(v) => { root.remote-volume-changed(v); }
+                member-volume-changed(p, v) => { root.member-volume-changed(p, v); }
+                vad-changed(on, t) => { root.vad-changed(on, t); }
             }
             Text {
                 text: root.build-info;

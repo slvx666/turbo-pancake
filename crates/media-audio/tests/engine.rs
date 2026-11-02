@@ -61,6 +61,7 @@ fn loop_back(link: VoiceLink) -> JoinHandle<Vec<OutgoingFrame>> {
             link.incoming.push(IncomingPacket {
                 peer: PEER,
                 seq: f.seq,
+                timestamp: f.timestamp,
                 payload: f.payload.clone(),
                 arrival: Instant::now(),
             });
@@ -154,6 +155,63 @@ fn loopback_audio_reaches_the_speaker_with_volume_and_mute() {
     assert!(frames.len() > 40);
     // Muted frames are still sent (silence keeps the receiver clock running).
     assert!(frames.iter().rev().take(5).all(|f| f.peak == 0.0));
+}
+
+#[test]
+fn voice_activation_pauses_sending_and_drives_the_indicators() {
+    let (io, state) = sim();
+    let config = EngineConfig {
+        dsp: DSP_OFF,
+        voice_gate: Some(-40.0),
+        ..EngineConfig::default()
+    };
+    let (engine, link) = AudioEngine::start(io, config).unwrap();
+    let looper = loop_back(link);
+
+    // Tone above the threshold: sent, and both indicators (own and peer) light up.
+    wait_for("speaking", &engine, |s| {
+        s.speaking
+            && s.peers.len() == 1
+            && s.peers[0].stats.speaking
+            && s.peers[0].stats.jitter.played > 25
+    });
+    assert_eq!(engine.status().voice_gate, Some(-40.0));
+
+    // Silence: after the hangover nothing is sent and the peer stops "speaking".
+    state.muted_inputs.store(true, Ordering::Relaxed);
+    wait_for("gated", &engine, |s| {
+        !s.speaking && s.frames_gated > 25 && s.peers.iter().all(|p| !p.stats.speaking)
+    });
+    let sent = engine.status().frames_sent;
+    std::thread::sleep(Duration::from_millis(300));
+    let st = engine.status();
+    assert_eq!(st.frames_sent, sent, "nothing sent in silence");
+    assert!(st.mic_db < -90.0, "{st:#?}");
+
+    // Speech again: the next talkspurt plays, nothing is discarded as late.
+    let played = st.peers[0].stats.jitter.played;
+    state.muted_inputs.store(false, Ordering::Relaxed);
+    wait_for("speaking again", &engine, |s| {
+        s.speaking && s.peers[0].stats.speaking && s.peers[0].stats.jitter.played > played + 25
+    });
+    let j = engine.status().peers[0].stats.jitter;
+    assert_eq!(j.late, 0, "{j:?}");
+    assert!(j.talkspurts >= 1, "{j:?}");
+    assert!(j.target_delay_ms <= 100, "the pause is not jitter: {j:?}");
+
+    // Voice activation off: silence is sent again (continuous stream).
+    engine.set_voice_gate(None).unwrap();
+    state.muted_inputs.store(true, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(500));
+    let st = engine.status();
+    assert_eq!(st.voice_gate, None);
+    assert!(!st.speaking);
+    let sent = st.frames_sent;
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(engine.status().frames_sent >= sent + 10);
+
+    engine.stop();
+    looper.join().unwrap();
 }
 
 #[test]
@@ -278,6 +336,7 @@ fn echo_leak_db(dsp: DspConfig) -> f32 {
                 incoming.push(IncomingPacket {
                     peer: PEER,
                     seq: f.seq,
+                    timestamp: f.timestamp,
                     payload: f.payload.to_vec(),
                     arrival: Instant::now(),
                 });

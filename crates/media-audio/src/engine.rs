@@ -164,6 +164,8 @@ pub struct EngineConfig {
     /// Capacity of the outgoing and incoming packet channels (frames).
     pub channel_frames: usize,
     pub muted: bool,
+    /// Voice activation threshold in dBFS (`None` = always send).
+    pub voice_gate: Option<f32>,
     /// Echo cancellation / noise suppression on the microphone path.
     pub dsp: DspConfig,
 }
@@ -179,6 +181,7 @@ impl Default for EngineConfig {
             // 1 s of audio: a transport stall longer than that drops frames.
             channel_frames: 50,
             muted: false,
+            voice_gate: None,
             dsp: DspConfig::default(),
         }
     }
@@ -199,6 +202,8 @@ pub struct OutgoingFrame {
 pub struct IncomingPacket {
     pub peer: PeerId,
     pub seq: u16,
+    /// RTP timestamp, 48 kHz units (shows the sender's voice-activation pauses).
+    pub timestamp: u32,
     pub payload: Vec<u8>,
     /// When the packet arrived from the network (jitter estimate input).
     pub arrival: Instant,
@@ -253,9 +258,18 @@ pub struct EngineStatus {
     pub muted: bool,
     pub input: Option<ActiveDevice>,
     pub output: Option<ActiveDevice>,
-    /// Peak of the last encoded microphone frame (0 while muted).
+    /// Peak of the last microphone frame (0 while muted).
     pub mic_peak: f32,
+    /// RMS level of the last microphone frame, dBFS (−100 while muted).
+    pub mic_db: f32,
+    /// The user is speaking (own indicator): above the voice activation threshold, or
+    /// above the speech level without it, within the hangover; never while muted.
+    pub speaking: bool,
+    /// Voice activation threshold in dBFS, `None` = off.
+    pub voice_gate: Option<f32>,
     pub frames_sent: u64,
+    /// Microphone frames not sent because of voice activation.
+    pub frames_gated: u64,
     /// Encoded frames dropped because the outgoing channel was full.
     pub frames_dropped: u64,
     /// Received packets dropped (incoming queue full or peer limit reached).
@@ -279,6 +293,7 @@ pub struct EngineStatus {
 
 enum Command {
     SetMuted(bool),
+    SetVoiceGate(Option<f32>),
     SetInput(Option<String>),
     SetOutput(Option<String>),
     SetPeerVolume(PeerId, f32),
@@ -333,6 +348,8 @@ impl AudioEngine {
                     st: EngineStatus {
                         running: true,
                         muted: config.muted,
+                        voice_gate: config.voice_gate,
+                        mic_db: -100.0,
                         dsp: config.dsp,
                         dsp_available: DSP_AVAILABLE,
                         ..EngineStatus::default()
@@ -378,6 +395,12 @@ impl AudioEngine {
 
     pub fn set_muted(&self, muted: bool) -> Result<(), AudioError> {
         self.send(Command::SetMuted(muted))
+    }
+
+    /// Voice activation: stop sending below `threshold_db` (dBFS) after a 300 ms
+    /// hangover; `None` sends continuously.
+    pub fn set_voice_gate(&self, threshold_db: Option<f32>) -> Result<(), AudioError> {
+        self.send(Command::SetVoiceGate(threshold_db))
     }
 
     /// Switches the microphone (`None` = system default) without interrupting the
@@ -468,6 +491,7 @@ struct Worker {
 impl Worker {
     fn run(mut self, ready: SyncSender<()>) {
         self.sender.set_muted(self.config.muted);
+        self.sender.set_voice_gate(self.config.voice_gate);
         self.dsp.set_muted(self.config.muted);
         self.open_input();
         self.open_output();
@@ -513,7 +537,14 @@ impl Worker {
                     self.st.muted = m;
                     if m {
                         self.st.mic_peak = 0.0;
+                        self.st.mic_db = -100.0;
+                        self.st.speaking = false;
                     }
+                }
+                Ok(Command::SetVoiceGate(g)) => {
+                    self.sender.set_voice_gate(g);
+                    self.config.voice_gate = self.sender.voice_gate();
+                    self.st.voice_gate = self.config.voice_gate;
                 }
                 Ok(Command::SetInput(id)) => {
                     self.config.input = id;
@@ -685,7 +716,6 @@ impl Worker {
             &self.mic_buf,
             |f| dsp.process_capture(f),
             |f| {
-                st.mic_peak = f.peak;
                 let frame = OutgoingFrame {
                     seq: f.seq,
                     timestamp: f.timestamp,
@@ -700,6 +730,9 @@ impl Worker {
             },
         )?;
         self.st.frames_sent = self.sender.frames_sent();
+        self.st.frames_gated = self.sender.frames_gated();
+        (self.st.mic_peak, self.st.mic_db) = self.sender.last_level();
+        self.st.speaking = self.sender.speaking();
         Ok(())
     }
 
@@ -723,7 +756,7 @@ impl Worker {
             }
             let arrival_ms = p.arrival.saturating_duration_since(self.epoch).as_millis() as u64;
             if let Some(rx) = self.receivers.get_mut(&p.peer) {
-                rx.push_packet(p.seq, p.payload, arrival_ms);
+                rx.push_packet_at(p.seq, p.timestamp, p.payload, arrival_ms);
             }
         }
     }

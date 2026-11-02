@@ -3,7 +3,27 @@
 
 use turbo_pancake_media_transport::call::CallState;
 
-use crate::session::{MediaTransport, ServerStatus, Snapshot};
+use crate::session::{MediaTransport, Member, ServerStatus, Snapshot};
+
+/// Lowest level on the microphone meter and the voice activation slider, dBFS.
+pub const METER_FLOOR_DB: f32 = -60.0;
+
+/// Position 0–1 of a dBFS level on the microphone meter.
+pub fn meter_position(db: f32) -> f32 {
+    ((db - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// One row of the member list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemberView {
+    pub peer_id: String,
+    pub name: String,
+    pub speaking: bool,
+    /// Their local volume in percent (0–200 on the slider).
+    pub volume_pct: f32,
+    /// Stream health in one short line ("нет звука" until their stream plays).
+    pub info: String,
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CallView {
@@ -14,9 +34,34 @@ pub struct CallView {
     pub stats: String,
     pub devices: String,
     pub error: String,
-    /// Microphone peak 0–1 (after mute).
+    /// Microphone level on the meter, 0–1 (dBFS scale from [`METER_FLOOR_DB`]; 0 muted).
     pub mic_level: f32,
+    /// Own speaking indicator.
+    pub speaking: bool,
     pub dsp_available: bool,
+    pub members: Vec<MemberView>,
+}
+
+fn member_view(m: &Member) -> MemberView {
+    let info = match &m.stream {
+        None if m.ssrc.is_none() => "подключается…".to_string(),
+        None => "нет звука".to_string(),
+        Some(p) => {
+            let j = &p.stats.jitter;
+            format!(
+                "буфер {} мс · маскировано {:.1} %",
+                j.target_delay_ms,
+                p.stats.concealed_ratio() * 100.0
+            )
+        }
+    };
+    MemberView {
+        peer_id: m.peer_id.clone(),
+        name: m.name.clone(),
+        speaking: m.speaking(),
+        volume_pct: m.volume * 100.0,
+        info,
+    }
 }
 
 pub fn render(s: &Snapshot) -> CallView {
@@ -28,7 +73,7 @@ pub fn render(s: &Snapshot) -> CallView {
         },
         ServerStatus::Disconnected(why) => format!("Нет связи: {why}"),
     };
-    let names = s.members.join(", ");
+    let names = s.member_names().join(", ");
     let (title, detail) = match &s.room {
         None => (
             "Не в звонке".to_string(),
@@ -70,15 +115,9 @@ pub fn render(s: &Snapshot) -> CallView {
             });
         }
     }
-    if let Some(p) = s.engine.as_ref().and_then(|e| e.peers.first()) {
-        let j = &p.stats.jitter;
-        stats.push_str(&format!(
-            "\nбуфер {} мс · воспроизведено {} · FEC {} · маскировано {} · опоздало {}",
-            j.target_delay_ms, j.played, j.fec, j.concealed, j.late
-        ));
-    }
     let mut devices = String::new();
     let mut mic_level = 0.0;
+    let mut speaking = false;
     let mut dsp_available = false;
     let mut error = s.last_error.clone().unwrap_or_default();
     if let Some(e) = &s.engine {
@@ -93,7 +132,15 @@ pub fn render(s: &Snapshot) -> CallView {
             })
         };
         devices = format!("Микрофон: {} · Вывод: {}", dev(&e.input), dev(&e.output));
-        mic_level = if e.muted { 0.0 } else { e.mic_peak };
+        mic_level = if e.muted {
+            0.0
+        } else {
+            meter_position(e.mic_db)
+        };
+        speaking = e.speaking;
+        if let Some(gate) = e.voice_gate {
+            devices.push_str(&format!(" · активация голосом от {gate:.0} дБ"));
+        }
         dsp_available = e.dsp_available;
         if error.is_empty()
             && let Some(le) = &e.last_error
@@ -110,7 +157,9 @@ pub fn render(s: &Snapshot) -> CallView {
         devices,
         error,
         mic_level,
+        speaking,
         dsp_available,
+        members: s.members.iter().map(member_view).collect(),
     }
 }
 
@@ -156,7 +205,20 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
             c.remote_addr.map_or("-".to_string(), |a| a.to_string()),
         ));
     }
+    line.push_str(&format!(
+        " speaking_members={}",
+        s.members.iter().filter(|m| m.speaking()).count()
+    ));
     if let Some(e) = &s.engine {
+        line.push_str(&format!(
+            " streams={} speaking={} vad_db={} frames_gated={} mic_db={:.1}",
+            e.peers.len(),
+            e.speaking,
+            e.voice_gate
+                .map_or("off".to_string(), |g| format!("{g:.0}")),
+            e.frames_gated,
+            e.mic_db,
+        ));
         line.push_str(&format!(
             " mic={:?} mic_hz={} out={:?} out_hz={} mic_peak={:.3} muted={} frames_sent={} in_xruns={} out_xruns={} reopens={} ns={} aec={} dsp={} erle_db={}",
             e.input.as_ref().map_or("", |d| d.name.as_str()),
@@ -214,15 +276,29 @@ mod tests {
             state: CallState::Connected,
         });
         assert_eq!(render(&s).detail, "Ожидание собеседника…");
-        s.members = vec!["Боб".into()];
+        s.members = vec![Member {
+            peer_id: "p2".into(),
+            name: "Боб".into(),
+            ssrc: Some(7),
+            volume: 0.5,
+            stream: None,
+        }];
         let v = render(&s);
         assert_eq!(v.title, "Комната «r1»");
         assert_eq!(v.detail, "В звонке: Боб");
         assert!(v.in_room);
+        assert_eq!(v.members.len(), 1);
+        assert_eq!(v.members[0].volume_pct, 50.0);
+        assert_eq!(v.members[0].info, "нет звука");
+        assert!(!v.members[0].speaking);
         s.server = ServerStatus::Disconnected("x".into());
         assert_eq!(render(&s).connection, "Нет связи: x");
         let line = log_line(&s, 5);
         assert!(line.starts_with("TURBO_PANCAKE_CALL t_ms=5 server=disconnected room=r1"));
         assert!(line.contains("media=connected transport=websocket"));
+        assert!(line.contains("speaking_members=0"));
+        assert_eq!(meter_position(-100.0), 0.0);
+        assert_eq!(meter_position(-30.0), 0.5);
+        assert_eq!(meter_position(3.0), 1.0);
     }
 }

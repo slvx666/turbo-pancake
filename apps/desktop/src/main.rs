@@ -1,11 +1,12 @@
-//! turbo-pancake desktop client (S1: native window + 1:1 voice room).
+//! turbo-pancake desktop client (native window + group voice room).
 //!
 //! Command line (all optional):
 //!   `--server <url>` — signaling endpoint (default `ws://127.0.0.1:7878/v1/signal`).
 //!   `--name <display name>` — shown to the other member (default: OS user name).
 //!   `--room <id>` — join this room right after start (scripted trials without input).
 //!   `--mute` — start with the microphone muted.
-//!   `--remote-volume <0..200>` — playback volume of the other member in percent.
+//!   `--remote-volume <0..200>` — playback volume of the call in percent.
+//!   `--voice-gate <dB>` — start with voice activation at this threshold (dBFS, -60..0).
 //!   `--call-log` — print a `TURBO_PANCAKE_CALL key=value …` status line every second.
 //!   `--media <auto|udp|tcp>` — how call media reaches the server: UDP with a fallback
 //!       to the WebSocket (default), UDP only, or always through the WebSocket (TCP).
@@ -28,13 +29,14 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use slint::Model;
 use slint::winit_030::winit::dpi::PhysicalPosition;
 use slint::winit_030::winit::event::WindowEvent;
 use slint::winit_030::winit::event_loop::ActiveEventLoop;
 use slint::winit_030::winit::window::{Window as WinitWindow, WindowId};
 use slint::winit_030::{CustomApplicationHandler, EventResult};
 use turbo_pancake_desktop::session::{Command, Session, SessionConfig, Snapshot, TransportPref};
-use turbo_pancake_desktop::view;
+use turbo_pancake_desktop::view::{self, MemberView};
 use turbo_pancake_media_audio::{CpalIo, DspConfig, device};
 use turbo_pancake_protocol::validate_display_name;
 
@@ -51,6 +53,7 @@ struct Args {
     mute: bool,
     /// Percent, 0–200.
     remote_volume: Option<f32>,
+    voice_gate: Option<f32>,
     call_log: bool,
     send_loss: f32,
     media: Option<TransportPref>,
@@ -78,6 +81,12 @@ fn parse_args() -> Args {
             "--mute" => out.mute = true,
             "--remote-volume" => {
                 out.remote_volume = args.next().and_then(|v| v.parse().ok());
+            }
+            "--voice-gate" => {
+                out.voice_gate = args
+                    .next()
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .map(|v| v.clamp(view::METER_FLOOR_DB, 0.0));
             }
             "--call-log" => out.call_log = true,
             "--media" => {
@@ -154,6 +163,40 @@ fn pick(ids: &[String], index: i32) -> Option<String> {
         .and_then(|i| ids.get(i).cloned())
 }
 
+/// Updates the member list in place, so a slider being dragged is not rebuilt every
+/// status update; the list is replaced only when members come or go.
+fn show_members(w: &MainWindow, members: Vec<MemberView>) {
+    let rows: Vec<MemberRow> = members
+        .into_iter()
+        .map(|m| MemberRow {
+            peer_id: m.peer_id.into(),
+            name: m.name.into(),
+            speaking: m.speaking,
+            volume: m.volume_pct,
+            info: m.info.into(),
+        })
+        .collect();
+    let model = w.get_members();
+    let Some(list) = model.as_any().downcast_ref::<slint::VecModel<MemberRow>>() else {
+        w.set_members(slint::ModelRc::new(slint::VecModel::from(rows)));
+        return;
+    };
+    let same_people = list.row_count() == rows.len()
+        && rows
+            .iter()
+            .enumerate()
+            .all(|(i, r)| list.row_data(i).is_some_and(|o| o.peer_id == r.peer_id));
+    if !same_people {
+        list.set_vec(rows);
+        return;
+    }
+    for (i, r) in rows.into_iter().enumerate() {
+        if list.row_data(i).as_ref() != Some(&r) {
+            list.set_row_data(i, r);
+        }
+    }
+}
+
 fn default_name() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
@@ -173,12 +216,18 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
         .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
     let mut cfg = SessionConfig::new(server, name);
     cfg.engine.muted = args.mute;
+    cfg.engine.voice_gate = args.voice_gate;
     cfg.send_loss = args.send_loss;
     cfg.transport = args.media.unwrap_or(TransportPref::Auto);
     cfg.block_udp = args.block_udp;
     window.set_muted(args.mute);
     window.set_ns(cfg.engine.dsp.noise_suppression);
     window.set_aec(cfg.engine.dsp.echo_cancellation);
+    window.set_voice_activation(args.voice_gate.is_some());
+    if let Some(g) = args.voice_gate {
+        window.set_vad_threshold(g);
+    }
+    window.set_members(slint::ModelRc::new(slint::VecModel::<MemberRow>::default()));
 
     let weak = window.as_weak();
     let call_log = args.call_log;
@@ -198,7 +247,9 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
             w.set_call_devices(v.devices.into());
             w.set_call_error(v.error.into());
             w.set_mic_level(v.mic_level);
+            w.set_self_speaking(v.speaking);
             w.set_dsp_available(v.dsp_available);
+            show_members(&w, v.members);
         });
     };
     let session = match Session::start(cfg, || CpalIo, on_update) {
@@ -241,6 +292,14 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     let tx = session.sender();
     window.on_remote_volume_changed(move |v| {
         tx.send(Command::SetRemoteVolume(v / 100.0));
+    });
+    let tx = session.sender();
+    window.on_member_volume_changed(move |peer, v| {
+        tx.send(Command::SetMemberVolume(peer.to_string(), v / 100.0));
+    });
+    let tx = session.sender();
+    window.on_vad_changed(move |on, threshold| {
+        tx.send(Command::SetVoiceGate(on.then_some(threshold)));
     });
 
     // Device enumeration can take a while (WASAPI, PulseAudio): keep it off the UI thread.
@@ -313,7 +372,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
     window.set_build_info(
         format!(
-            "turbo-pancake-desktop {} · {} · S1",
+            "turbo-pancake-desktop {} · {} · S2",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS
         )

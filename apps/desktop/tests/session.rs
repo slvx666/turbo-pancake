@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use turbo_pancake_app_server::Config;
 use turbo_pancake_desktop::session::{
-    Command, MediaTransport, ServerStatus, Session, SessionConfig, Snapshot, TransportPref,
+    Command, MediaTransport, Member, ServerStatus, Session, SessionConfig, Snapshot, TransportPref,
 };
 use turbo_pancake_media_audio::DspConfig;
 use turbo_pancake_media_audio::sim::{SimDevice, SimIo, SimState};
@@ -36,6 +36,7 @@ struct Opts {
     send_loss: f32,
     transport: TransportPref,
     block_udp: bool,
+    voice_gate: Option<f32>,
 }
 
 impl Default for Opts {
@@ -45,6 +46,7 @@ impl Default for Opts {
             send_loss: 0.0,
             transport: TransportPref::Auto,
             block_udp: false,
+            voice_gate: None,
         }
     }
 }
@@ -71,6 +73,7 @@ impl Client {
         cfg.send_loss = o.send_loss;
         cfg.transport = o.transport;
         cfg.block_udp = o.block_udp;
+        cfg.engine.voice_gate = o.voice_gate;
         cfg.udp_attempt_timeout = Duration::from_secs(2);
         cfg.status_interval = Duration::from_millis(50);
         // Each engine start gets the same simulated devices (shared state).
@@ -204,8 +207,8 @@ fn two_sessions_call_through_the_server() {
         }),
         Opts::default(),
     );
-    assert_eq!(b.last.members, vec!["Алиса".to_string()]);
-    assert_eq!(a.last.members, vec!["Боб".to_string()]);
+    assert_eq!(b.last.member_names(), vec!["Алиса".to_string()]);
+    assert_eq!(a.last.member_names(), vec!["Боб".to_string()]);
     assert_eq!(a.transport(), Some(MediaTransport::Udp));
     assert_eq!(b.transport(), Some(MediaTransport::Udp));
 
@@ -412,6 +415,118 @@ fn three_members_each_hear_both_others() {
         });
     }
     for mut x in c {
+        x.quit();
+        assert!(x.released());
+    }
+}
+
+fn speaking(s: &Snapshot, name: &str) -> bool {
+    s.members.iter().any(|m| m.name == name && m.speaking())
+}
+
+fn member<'a>(s: &'a Snapshot, name: &str) -> &'a Member {
+    s.members.iter().find(|m| m.name == name).unwrap()
+}
+
+#[test]
+fn speaking_indicators_member_volume_and_voice_activation() {
+    let _serial = serial();
+    let (addr, _server) = server(None, Config::default());
+    // Алиса talks all the time, Боб talks with voice activation, Вера only listens.
+    let mut a = Client::start(addr, "Алиса", talking(Opts::default()));
+    let gated = Opts {
+        voice_gate: Some(-40.0),
+        ..Opts::default()
+    };
+    let mut b = Client::start(addr, "Боб", talking(gated));
+    let mut v = Client::start(addr, "Вера", Opts::default());
+    for x in [&mut a, &mut b, &mut v] {
+        x.send(Command::Join("vad".into()));
+        x.wait("joined", 10, |s| s.joined && s.engine.is_some());
+    }
+    v.wait("Вера sees both speak", 20, |s| {
+        s.members.len() == 2 && speaking(s, "Алиса") && speaking(s, "Боб")
+    });
+    a.wait("Алиса sees Боб speak, Вера silent", 20, |s| {
+        s.members.len() == 2
+            && speaking(s, "Боб")
+            && member(s, "Вера").stream.is_some()
+            && !speaking(s, "Вера")
+    });
+    // Own indicators.
+    assert!(a.last.engine.as_ref().unwrap().speaking);
+    assert!(!v.last.engine.as_ref().unwrap().speaking);
+
+    // Боб falls silent: voice activation stops his stream, the others see him quiet.
+    b.state.muted_inputs.store(true, Ordering::Relaxed);
+    b.wait("Боб gated", 10, |s| {
+        s.engine
+            .as_ref()
+            .is_some_and(|e| !e.speaking && e.frames_gated > 25)
+    });
+    let e = b.last.engine.clone().unwrap();
+    b.wait("Боб keeps gating", 10, |s| {
+        s.engine
+            .as_ref()
+            .is_some_and(|x| x.frames_gated >= e.frames_gated + 25)
+    });
+    assert_eq!(
+        b.last.engine.as_ref().unwrap().frames_sent,
+        e.frames_sent,
+        "nothing sent while silent"
+    );
+    v.wait("Боб quiet at Вера", 10, |s| {
+        !speaking(s, "Боб") && speaking(s, "Алиса")
+    });
+
+    // He talks again: his next talkspurt plays at once, nothing discarded as late.
+    let before = member(&v.last, "Боб")
+        .stream
+        .as_ref()
+        .unwrap()
+        .stats
+        .jitter
+        .played;
+    b.state.muted_inputs.store(false, Ordering::Relaxed);
+    v.wait("Боб speaks again", 10, |s| {
+        speaking(s, "Боб")
+            && member(s, "Боб")
+                .stream
+                .as_ref()
+                .is_some_and(|p| p.stats.jitter.played >= before + 50)
+    });
+    let j = member(&v.last, "Боб").stream.as_ref().unwrap().stats.jitter;
+    assert!(j.talkspurts >= 1, "{j:?}");
+    assert!(j.late <= 5, "{j:?}");
+
+    // Вера turns Алиса down to zero: silent for her, still shown speaking; Боб unchanged.
+    let alice = member(&v.last, "Алиса").peer_id.clone();
+    v.send(Command::SetMemberVolume(alice, 0.0));
+    v.wait("Алиса muted locally", 10, |s| {
+        let m = member(s, "Алиса");
+        let p = m.stream.as_ref();
+        m.volume == 0.0
+            && m.speaking()
+            && p.is_some_and(|p| p.volume == 0.0 && p.stats.last_peak < 0.01)
+            && member(s, "Боб")
+                .stream
+                .as_ref()
+                .is_some_and(|p| p.volume == 1.0 && p.stats.last_peak > 0.1)
+    });
+    // The call volume scales every member on top of their own volume.
+    v.send(Command::SetRemoteVolume(0.5));
+    v.wait("call volume", 10, |s| {
+        member(s, "Боб")
+            .stream
+            .as_ref()
+            .is_some_and(|p| p.volume == 0.5)
+            && member(s, "Алиса")
+                .stream
+                .as_ref()
+                .is_some_and(|p| p.volume == 0.0)
+    });
+
+    for mut x in [a, b, v] {
         x.quit();
         assert!(x.released());
     }

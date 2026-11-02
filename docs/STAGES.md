@@ -29,8 +29,9 @@ mixes up to 100 peers with per-peer volume and jitter buffers.
 2. ~~Protocol~~ — done: `TrackPublished`/`TrackUnpublished` (fields 20/21, contract test).
    Was: speaker/slot mapping (`media.track_published/unpublished`, spec §11) and,
    for (a), server offers; contract tests.
-3. Client: per-member streams → engine peers, member list with volume sliders and a
-   speaking indicator; voice activation with an adjustable threshold (spec §4 MUST).
+3. ~~Client~~ — done 2026-11-03: member list with a speaking indicator and a volume
+   slider per member, voice activation with an adjustable threshold (sequence number
+   pauses, RTP timestamp runs; jitter buffer starts a talkspurt), own indicator.
 4. Call lifecycle: one active call per user — joining another room leaves the previous one
    with a notification to both sessions; idempotent join/leave; reconnect by session.
 5. Tests: automated 20-member scenario (headless sessions, simulated devices, real server)

@@ -28,10 +28,12 @@ pub use codec::{DecodeKind, EncoderConfig, VoiceDecoder, VoiceEncoder};
 pub use dsp::{DSP_AVAILABLE, DspConfig, DspStats, VoiceDsp};
 pub use engine::{
     AudioEngine, AudioIo, CpalIo, EngineConfig, EngineStatus, IncomingPacket, OutgoingFrame,
-    PacketSink, PeerId, VoiceLink,
+    PacketSink, PeerId, PeerStatus, VoiceLink,
 };
 pub use jitter::{JitterBuffer, JitterConfig, JitterStats, Playout};
-pub use pipeline::{EncodedFrame, ReceiverStats, VoiceReceiver, VoiceSender};
+pub use pipeline::{
+    EncodedFrame, HANGOVER_FRAMES, ReceiverStats, SPEECH_DB, VoiceReceiver, VoiceSender, level_db,
+};
 pub use resample::MonoResampler;
 
 /// Opus/network sample rate. Devices running at other rates are resampled.
