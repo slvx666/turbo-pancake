@@ -21,8 +21,10 @@ if (-not (Test-Path (Join-Path $llvm "clang-cl.exe"))) { $llvm = "$env:ProgramFi
 $git = Split-Path (Split-Path (Get-Command git).Source)
 $paths = @("$ToolsDir\bin", "$ToolsDir\venv\Scripts", $llvm, (Join-Path $git "usr\bin"), "$env:USERPROFILE\.cargo\bin")
 $env:PATH = (($paths | Where-Object { Test-Path $_ }) -join ";") + ";" + $env:PATH
-$env:CC = "clang-cl"
-$env:CXX = "clang-cl"
+# Full path: vcvars puts the VS clang's own headers on INCLUDE, and a separately
+# installed (older) clang-cl found on PATH fails on their builtins (seen on CI images).
+$env:CC = Join-Path $llvm "clang-cl.exe"
+$env:CXX = $env:CC
 $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
 $line = ($Command | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join " "
 cmd /c "call `"$vcvars`" >nul && $line"
