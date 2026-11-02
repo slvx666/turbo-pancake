@@ -11,16 +11,23 @@
 //! lock-free ring (no locks, no allocation). Everything that can take noticeable time
 //! (resampling, codec, jitter buffer) runs on a worker thread through [`VoiceSender`] and
 //! [`VoiceReceiver`], which are plain synchronous types so they can be tested with
-//! synthetic signals and simulated networks without any audio hardware.
+//! synthetic signals and simulated networks without any audio hardware. [`AudioEngine`]
+//! runs them on a worker thread between the device rings and the transport.
 
 pub mod codec;
 pub mod device;
+pub mod engine;
 pub mod jitter;
 pub mod pipeline;
 pub mod resample;
+pub mod sim;
 pub mod testsignal;
 
 pub use codec::{DecodeKind, EncoderConfig, VoiceDecoder, VoiceEncoder};
+pub use engine::{
+    AudioEngine, AudioIo, CpalIo, EngineConfig, EngineStatus, IncomingPacket, OutgoingFrame,
+    PacketSink, PeerId, VoiceLink,
+};
 pub use jitter::{JitterBuffer, JitterConfig, JitterStats, Playout};
 pub use pipeline::{EncodedFrame, ReceiverStats, VoiceReceiver, VoiceSender};
 pub use resample::MonoResampler;
@@ -44,4 +51,6 @@ pub enum AudioError {
     Device(String),
     #[error("no such device: {0}")]
     NoDevice(String),
+    #[error("audio engine: {0}")]
+    Engine(String),
 }

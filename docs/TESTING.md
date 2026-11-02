@@ -19,6 +19,7 @@ cargo test --workspace --locked
 | signaling integration | `apps/app-server/tests/signaling.rs` | real TCP+WS: hello/welcome, join/leave, offer/answer/ICE relay, error codes, heartbeat eviction, room capacity, connection limit, oversize close, 20-peer join/relay/leave, gap-free `event_id`, health/ready/version |
 | WebRTC spike | `crates/media-transport/tests/loopback_spike.rs` | str0m ICE+DTLS+SRTP over real loopback UDP, SDP via protobuf, 100/100 RTP packets, data channel |
 | audio unit | `crates/media-audio/src/{resample,codec,jitter}.rs` | 16/44.1/48/96/192 kHz ↔ 48 kHz (tone + level preserved), Opus round trip level/bitrate, FEC beats PLC on lost frames, DTX, jitter buffer order/reorder/dup/late/FEC/PLC/wrap-around/adaptation/stall+burst |
+| audio engine | `crates/media-audio/tests/engine.rs` (simulated devices, `sim.rs`) | start/stop and drop release every device stream and device thread; mic → Opus → loop back as a peer → jitter buffer → mix → speaker (peak kept), peer volume 0 and mute silence the output, muted frames still sent; input + output switch with different rates keeps seq/timestamp continuous; unplugged device → fallback to default; no speaker → wall-clock ticks and retry, recovery when it returns; unknown ids at start fall back |
 | audio impairment | `crates/media-audio/tests/impairment.rs` | 192 kHz mic → Opus → simulated network (loss 0/1/3/5/10 % × jitter 0/20/50 ms, 2 s outage) → 44.1 kHz output: no decode errors, bounded late/underruns, concealment ≤ loss, loudness kept, bounded delay. `TURBO_PANCAKE_REPORT_DIR=<dir>` writes the table as JSON |
 
 ## Benchmarks (`benchmarks/README.md`)
@@ -32,6 +33,7 @@ $T/release/turbo-pancake-media-probe > benchmarks/results/media-probe-<os>-<ts>.
 # voice pipeline CPU cost and real-device run (receiver volume 0: the speaker plays silence)
 cargo run --release -p turbo-pancake-media-audio --example codec_cost
 cargo run --release -p turbo-pancake-media-audio --example device_check -- 5
+cargo run --release -p turbo-pancake-media-audio --example engine_check -- 20
 ```
 
 Windows note: libopus is built by CMake. Without an explicit `CMAKE_GENERATOR` the

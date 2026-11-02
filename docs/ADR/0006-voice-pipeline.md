@@ -57,11 +57,29 @@ more than target + 2 frames buffered → drop one frame per tick (also absorbs c
   room), so audible quality is **UNVERIFIED**.
   `benchmarks/results/audio-device-check-windows-20261102.json`.
 
+* **Audio engine** (`src/engine.rs`, step 2, 2026-11-02): one worker thread owns both
+  streams (cpal streams are created and dropped on it, so `!Send` streams never cross
+  threads), drains the mic ring into `VoiceSender`, mixes per-peer `VoiceReceiver`s at
+  48 kHz and resamples once to the output rate. Playout is paced by the speaker ring
+  (40 ms prefill/target); without an output device it ticks on the wall clock. Engine ↔
+  transport and UI ↔ engine channels are bounded and `try_send` on the engine side.
+  Fatal stream errors → reopen selected device → default → retry every 1 s.
+* **cpal error kinds:** the first engine run on real devices reopened the microphone
+  213 times in 10 s: WASAPI reports a capture *data discontinuity* as `ErrorKind::Xrun`
+  through the error callback and the handler treated every kind except `DeviceChanged`
+  as fatal. `Xrun` is now counted (`StreamHealth::backend_xruns`) and `RealtimeDenied`
+  flagged; only the remaining kinds mark the stream failed. After the fix
+  (`examples/engine_check.rs`, 20 s, live mic + speaker switch by id halfway): 999 frames
+  sent/played, 0 concealed, 0 underruns, 2 reopens (the switches), 2 backend xruns,
+  start 55 ms, stop 15 ms, devices reopen after stop.
+  `benchmarks/results/audio-engine-check-windows-20261102.json`.
+
 ## Open / UNVERIFIED
 
 * AEC / NS / AGC / VAD: WebRTC APM binding (`webrtc-audio-processing` 2.x) to be evaluated
   next; it must run at 48 kHz on 10 ms frames between resampler and encoder.
-* Device hot-unplug: errors set `StreamHealth::failed`; rebuilding on another device is
-  not implemented/tested yet. Sleep/wake untested.
+* Device hot-unplug: the engine reopens failed streams with fallback (tested on simulated
+  devices, `tests/engine.rs`); a physical unplug and sleep/wake are untested.
+* Engine thread priority is the OS default (no real-time promotion yet).
 * macOS / Linux device paths: CI builds and unit tests only.
 * Bitrate/FEC adaptation from RTCP receiver reports (str0m) — S1/S2.

@@ -1,7 +1,7 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S1 — end-to-end 1:1 voice
-Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02, evidence below; S1 step 1 — audio pipeline crate — done)
+Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02, evidence below; S1 step 1 — audio pipeline crate — done; step 2.1 — AudioEngine — done)
 Last verified commit: e00ff86 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41369109162 green)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
@@ -44,6 +44,7 @@ apps are visible at the edges).
 | Benchmark harness (startup + memory, signaling latency + idle connections), child stderr/exit diagnostics | `benchmarks/harness` | JSON reports in `benchmarks/results/`, CI artifacts `bench-<os>` |
 | Audio device probe (cpal) | `tools/media-probe` | Windows report in `benchmarks/results/` |
 | **Voice pipeline** (S1): cpal capture/playback on lock-free `rtrb` rings with xrun/failure counters, device listing/selection by id, rubato FFT resampler (any rate ↔ 48 kHz), Opus 48 kHz mono 20 ms (libopus 1.6.1 static, FEC/DTX/complexity/bitrate at runtime), adaptive jitter buffer with FEC→PLC, `VoiceSender` (mute = encoded silence, peak level) / `VoiceReceiver` (per-peer volume, stats) | `crates/media-audio` | 11 unit + 2 impairment tests (3 OS in CI); `examples/device_check` on real Windows devices; `examples/codec_cost` |
+| **Audio engine** (S1): worker thread owning both streams, mic → `VoiceSender` → bounded outgoing channel; non-blocking `PacketSink` → per-peer `VoiceReceiver` (≤ 100 peers) → 48 kHz mix → output resample, speaker-paced playout with 40 ms prefill (wall clock without speaker), bounded command channel (mute, device switch, per-peer volume, remove peer, encoder config), status snapshot every 50 ms, failed stream → reopen selected → default → retry 1 s; `SimIo` simulated devices | `crates/media-audio/src/{engine,sim}.rs` | 5 integration tests `tests/engine.rs`; `examples/engine_check` on real Windows devices |
 | ADRs 0001–0005, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
@@ -80,8 +81,8 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Two real desktop clients talk through the server (signaling + WebRTC) | two `turbo-pancake-desktop` instances + `app-server` | **UNVERIFIED** — audio ↔ transport ↔ desktop wiring not implemented yet | — |
 | Speech continuity under moderate packet loss | `cargo test -p turbo-pancake-media-audio --test impairment` (in-process network model) | **PASS (pipeline level)**: loss ≤ 10 % × jitter ≤ 50 ms → 0 decode errors, 0 late, PLC-only ≤ 1.4 % of frames, FEC repairs ≈ 90 % of losses, level ratio ≥ 0.91; end-to-end over real UDP between clients still **UNVERIFIED** | `benchmarks/results/audio-impairment-windows-20261102.json` |
 | No audio loop | AEC + mute; two clients on one machine | **UNVERIFIED** — no AEC yet (APM pending) | — |
-| Resources released after leave | drop of `Capture`/`Playback` stops streams; call-level check pending | **UNVERIFIED** | — |
-| Opus in/out, mute, device selection | unit tests + `examples/device_check` | **PASS (Windows, library level)**: 192 kHz mic → Opus → 192 kHz stereo out, 0 overflows, ≈ 50 frames/s, 0 concealed; mute path unit-covered; UI device pickers not implemented | `benchmarks/results/audio-device-check-windows-20261102.json` |
+| Resources released after leave | `AudioEngine::stop`/drop: `tests/engine.rs` (simulated: 0 open streams, 0 device threads, engine thread joined); `examples/engine_check` (real Windows devices reopen right after stop, stop 15 ms) | **PASS (engine level)**; call-level leave (transport + signaling) **UNVERIFIED** | `benchmarks/results/audio-engine-check-windows-20261102.json` |
+| Opus in/out, mute, device selection | unit tests + `examples/device_check` + `tests/engine.rs` + `examples/engine_check` | **PASS (Windows, engine level)**: 192 kHz mic → Opus → 192 kHz stereo out, 0 overflows, ≈ 50 frames/s, 0 concealed; live input/output switch by id without sequence gaps (simulated + real), unplug fallback (simulated); UI device pickers not implemented | `benchmarks/results/audio-device-check-windows-20261102.json` |
 | Basic DSP (NS/AEC) | — | **UNVERIFIED** (not started) | — |
 | Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
 | Planned platforms | CI on Windows/Ubuntu/macOS (unit + impairment tests) | build/tests in CI; device I/O on macOS/Linux **UNVERIFIED** | CI run (see session log) |
@@ -113,6 +114,8 @@ performance results for the target hardware (RTX 4070 Super / M4).
 12. Output startup underrun ≈ 22 ms before the first decoded frame (expected; prefill
     silence when wiring the engine). Device hot-unplug rebuild and sleep/wake not
     implemented (errors only flag `StreamHealth::failed`).
+13. **cpal reports non-fatal events through the error callback** (WASAPI capture discontinuity → `ErrorKind::Xrun`). Treating them as fatal caused a reopen storm (213 reopens / 10 s). Fixed in `device.rs`; only device/stream-level kinds mark a stream failed.
+14. Physical unplug and sleep/wake are not tested on real hardware (only simulated devices); engine thread runs at default OS priority.
 
 ## Design decisions / ADR links
 
@@ -167,13 +170,23 @@ media-audio unit + impairment tests pass on all three. Codec cost on runners (co
 runner has VS 18 (2026); the generator step printed a wrong year ("Visual Studio 18 18"),
 fixed in the next commit with an explicit version→year map.
 
+## Session log 2026-11-02 (S1, step 2.1 — AudioEngine)
+
+Files: `crates/media-audio/src/{engine.rs,sim.rs}` (new), `src/{lib,device,pipeline}.rs`
+(`VoiceSender::set_input_rate`, cpal `Xrun`/`RealtimeDenied` non-fatal,
+`StreamHealth::{backend_xruns,realtime_denied}`, `AudioError::Engine`),
+`tests/engine.rs`, `examples/engine_check.rs`, `docs/{ADR/0006,TESTING,ARCHITECTURE,STAGES,PROJECT_STATE}.md`,
+`benchmarks/results/audio-engine-check-windows-20261102.json`.
+
+Local (Windows): fmt OK; clippy `-D warnings` OK; `cargo test --workspace --locked`
+41 passed (engine suite 5/5, repeated 5× without flakes, 1.4 s). `engine_check -- 20` on
+fifine 192 kHz mic + Realtek 192 kHz output: 999 frames sent/looped/played, 0 concealed,
+0 underruns, 0 dropped, 2 reopens (deliberate switches), output xruns 4224 samples
+(≈ 22 ms over 3 output opens: startup/switch), start 55 ms, stop 15 ms, reopen after stop OK.
+
 ## Exact next task — S1 step 2/3 (plan in `docs/STAGES.md` → "S1 plan")
 
-1. `crates/media-audio`: an `AudioEngine` worker thread that owns `Capture`/`Playback`,
-   moves samples ring → `VoiceSender` and `VoiceReceiver` → ring (output-paced, prefill
-   ~40 ms), exposes mute/volume/device switch through a bounded command channel, rebuilds
-   a stream when `StreamHealth::failed` (fallback to default device), and reports levels/
-   stats. Test: engine start/stop releases devices (no thread left), device switch.
+1. ~~AudioEngine~~ — done (see session log above).
 2. Evaluate WebRTC APM (`webrtc-audio-processing` 2.x): build on 3 OS in CI, NS default on
    + toggle, AEC with playback reference, CPU per 10 ms frame; record in ADR 0006.
 3. `crates/media-transport`: async call driver — `UdpPeer` on its own thread, Opus audio

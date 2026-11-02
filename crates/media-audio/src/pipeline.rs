@@ -57,6 +57,19 @@ impl VoiceSender {
         self.muted
     }
 
+    /// Switches to a microphone running at another rate (device change). Sequence
+    /// numbers and timestamps continue, so the receiver sees one uninterrupted stream;
+    /// samples buffered from the old device are dropped.
+    pub fn set_input_rate(&mut self, input_rate: u32) -> Result<(), AudioError> {
+        self.resampler = MonoResampler::new(input_rate, CODEC_RATE)?;
+        self.resampled.clear();
+        Ok(())
+    }
+
+    pub fn input_rate(&self) -> u32 {
+        self.resampler.rate_in()
+    }
+
     pub fn encoder(&mut self) -> &mut VoiceEncoder {
         &mut self.encoder
     }

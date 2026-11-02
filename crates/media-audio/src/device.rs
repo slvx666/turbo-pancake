@@ -93,6 +93,11 @@ pub struct StreamHealth {
     /// Samples lost because the ring was full (capture) or missing (playback underrun).
     pub xruns: AtomicU64,
     pub callbacks: AtomicU64,
+    /// Glitches reported by the backend itself (`ErrorKind::Xrun`, e.g. a WASAPI capture
+    /// discontinuity). The stream keeps running.
+    pub backend_xruns: AtomicU64,
+    /// The OS refused real-time scheduling for the callback thread (still plays).
+    pub realtime_denied: AtomicBool,
     /// Set when the stream reported an error that requires rebuilding it.
     pub failed: AtomicBool,
 }
@@ -109,6 +114,12 @@ fn error_handler(health: Arc<StreamHealth>) -> impl FnMut(cpal::Error) + Send + 
         match e.kind() {
             // Rerouted by the backend: the stream keeps working.
             DeviceChanged => {}
+            // Non-fatal: treating these as failures made the engine reopen the WASAPI
+            // microphone on every capture discontinuity (found on the dev machine).
+            Xrun => {
+                health.backend_xruns.fetch_add(1, Ordering::Relaxed);
+            }
+            RealtimeDenied => health.realtime_denied.store(true, Ordering::Relaxed),
             _ => health.failed.store(true, Ordering::Relaxed),
         }
     }

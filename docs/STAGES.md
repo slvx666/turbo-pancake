@@ -15,7 +15,7 @@ verbatim-in-meaning so each session can check them.
 | S7 | Desktop polish + delivery | E2E on Win/macOS/Linux, signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
 
-## S1 plan (in progress; step 1 done 2026-11-02 except APM/hot-unplug)
+## S1 plan (in progress; step 1 done 2026-11-02 except APM; AudioEngine with device rebuild done)
 
 1. `crates/media-audio`: cpal capture/playback on dedicated RT callbacks with lock-free
    SPSC rings; resampler to 48 kHz (device here is 192 kHz); Opus 48 kHz 20 ms frames;

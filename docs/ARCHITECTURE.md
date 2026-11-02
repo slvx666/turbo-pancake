@@ -16,7 +16,7 @@ turbo-pancake/
 ├─ crates/
 │  ├─ protocol/               prost types generated from proto/ + validation + limits
 │  ├─ media-transport/        str0m wrapper (S0: UDP peer used by the feasibility spike)
-│  └─ media-audio/            voice pipeline: cpal I/O + SPSC rings, rubato, Opus, jitter buffer
+│  └─ media-audio/            voice pipeline: cpal I/O + SPSC rings, rubato, Opus, jitter buffer, AudioEngine thread
 ├─ proto/turbo_pancake/v1/           protobuf schemas (source of truth for the wire format)
 ├─ benchmarks/
 │  ├─ harness/                turbo-pancake-bench: startup/memory/signaling scenarios → JSON
