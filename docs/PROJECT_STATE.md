@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S1 — end-to-end 1:1 voice
 Stage status: IN_PROGRESS (S0 = DONE on 2026-11-02, evidence below; S1 step 1 — audio pipeline crate — done; step 2.1 — AudioEngine — done)
-Last verified commit: e00ff86 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41369109162 green)
+Last verified commit: bf85c04 (branch `main`, https://github.com/slvx666/turbo-pancake, CI run 41386258757 green incl. job `apm` on 3 OS)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-02
 
@@ -81,10 +81,10 @@ performance results for the target hardware (RTX 4070 Super / M4).
 |---|---|---|---|
 | Two real desktop clients talk through the server (signaling + WebRTC) | two `turbo-pancake-desktop` instances + `app-server` | **UNVERIFIED** — audio ↔ transport ↔ desktop wiring not implemented yet | — |
 | Speech continuity under moderate packet loss | `cargo test -p turbo-pancake-media-audio --test impairment` (in-process network model) | **PASS (pipeline level)**: loss ≤ 10 % × jitter ≤ 50 ms → 0 decode errors, 0 late, PLC-only ≤ 1.4 % of frames, FEC repairs ≈ 90 % of losses, level ratio ≥ 0.91; end-to-end over real UDP between clients still **UNVERIFIED** | `benchmarks/results/audio-impairment-windows-20261102.json` |
-| No audio loop | `tests/engine.rs::echo_canceller_breaks_the_audio_loop` (`--features apm`, simulated speaker→mic coupling) | **PASS (engine level, Windows; Linux/macOS via CI job `apm`)**: remote voice comes back at −67.6 dB with AEC3 + NS vs −7.3 dB without; two real clients **UNVERIFIED** | ADR 0006 |
+| No audio loop | `tests/engine.rs::echo_canceller_breaks_the_audio_loop` (`--features apm`, simulated speaker→mic coupling) | **PASS (engine level, 3 OS)**: remote voice comes back with AEC3 + NS at −67.6 dB (Windows CI), −67.8 dB (Ubuntu), −44.1 dB (macOS VM) vs ≈ −7 dB without (CI run 41386258757); two real clients **UNVERIFIED** | ADR 0006 |
 | Resources released after leave | `AudioEngine::stop`/drop: `tests/engine.rs` (simulated: 0 open streams, 0 device threads, engine thread joined); `examples/engine_check` (real Windows devices reopen right after stop, stop 15 ms) | **PASS (engine level)**; call-level leave (transport + signaling) **UNVERIFIED** | `benchmarks/results/audio-engine-check-windows-20261102.json` |
 | Opus in/out, mute, device selection | unit tests + `examples/device_check` + `tests/engine.rs` + `examples/engine_check` | **PASS (Windows, engine level)**: 192 kHz mic → Opus → 192 kHz stereo out, 0 overflows, ≈ 50 frames/s, 0 concealed; live input/output switch by id without sequence gaps (simulated + real), unplug fallback (simulated); UI device pickers not implemented | `benchmarks/results/audio-device-check-windows-20261102.json` |
-| Basic DSP (NS/AEC) | `src/dsp.rs` unit tests + engine loop test (`--features apm`); `tools/apm-eval` | **PASS (Windows, engine level)**: NS default on + live toggle, AEC3 with the mix as reference, echo and NS tests pass; ≈ 60 µs/10 ms; Linux/macOS **pending CI job `apm`**; not yet in the default (desktop) build | ADR 0006, `benchmarks/results/audio-apm-eval-windows-20261102.json` |
+| Basic DSP (NS/AEC) | `src/dsp.rs` unit tests + engine loop test (`--features apm`); `tools/apm-eval` | **PASS (Windows, engine level)**: NS default on + live toggle, AEC3 with the mix as reference, echo and NS tests pass; ≈ 60 µs/10 ms; builds and tests pass on Windows/Ubuntu/macOS (CI job `apm`, run 41386258757); not yet in the desktop build (desktop has no audio yet) | ADR 0006, `benchmarks/results/audio-apm-eval-windows-20261102.json` |
 | Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
 | Planned platforms | CI on Windows/Ubuntu/macOS (unit + impairment tests) | build/tests in CI; device I/O on macOS/Linux **UNVERIFIED** | CI run (see session log) |
 
@@ -207,12 +207,18 @@ src/engine.rs,src/pipeline.rs,src/sim.rs,src/lib.rs,tests/engine.rs,examples/eng
 (job `apm`), docs. Local: default fmt/clippy/test OK (43 tests); `--features apm`
 clippy OK and tests OK (media-audio 14 unit + 7 engine + 2 impairment).
 
+CI fixes on the way (commits 5541d70, 5e9d61a, bf85c04): `apm-env.ps1` must be run with
+`-File` (direct invocation drops `--`); on the windows-latest image (VS 18) a separate LLVM
+is on PATH whose clang-cl/libclang do not match the VS clang headers that vcvars puts on
+INCLUDE → CC/CXX by full path and `LIBCLANG_PATH` to the VS LLVM; macOS VM reached only
+−24.6 dB once in the simulated room (device-thread jitter) → loop test 10 s, bound −20 dB.
+
 ## Exact next task — S1 step 2/3 (plan in `docs/STAGES.md` → "S1 plan")
 
 1. ~~AudioEngine~~ — done (see session log above).
-2. APM: integrated behind feature `apm` (done). Check the CI job `apm` on all three OS
-   and fix what breaks; once green, enable `apm` for the desktop build and move the
-   meson/ninja/llvm-tools/clang-cl setup into the main CI job.
+2. ~~APM~~ — done, green on 3 OS. When the desktop starts using `media-audio` (item 4),
+   depend on it with `features = ["apm"]` and move the meson/ninja/llvm-tools/clang-cl
+   setup from job `apm` into the main CI job.
 3. `crates/media-transport`: async call driver — `UdpPeer` on its own thread, Opus audio
    track (str0m `Media` API, PT 111, 48 kHz), RTP seq/timestamp from `EncodedFrame`,
    bounded channels to/from the audio engine; loopback test: two drivers exchange encoded

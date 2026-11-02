@@ -119,7 +119,7 @@ more than target + 2 frames buffered → drop one frame per tick (also absorbs c
 
 ## Open / UNVERIFIED
 
-* APM on Linux/macOS: CI job `apm` (first run pending at the time of writing).
+* APM on Linux/macOS: builds and passes the tests in CI job `apm` (run 41386258757; echo loop −67.8 dB Ubuntu, −44.1 dB macOS VM).
 * Voice activation (VAD threshold + indicator) is S2; AEC with real acoustics and
   double-talk by ear on real hardware are UNVERIFIED.
 * Device hot-unplug: the engine reopens failed streams with fallback (tested on simulated
