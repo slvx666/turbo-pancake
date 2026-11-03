@@ -67,6 +67,21 @@ Option **(c)**.
   DTX makes silence cheap. A cap on concurrently forwarded speakers (loudest/most recent
   N, using the negotiated audio-level extension) is the planned guard for large rooms;
   measured in S2 step 6.
+* **Measured (S2 step 6, `turbo-pancake-bench sfu`, Windows dev machine, release, loopback):**
+  20 members all talking = 380 forwarded streams, 19 000 packets/s out, 18.7 % of one
+  core, 100 % delivered, ≈ 25 Mbit/s egress including headers. The SFU thread costs
+  ≈ 11 µs per forwarded packet under load and saturates one core at ≈ 78 000 packets/s
+  out (50 members all talking: 64 % delivered — it drops, it does not fall over). One SFU
+  thread therefore carries about 1 500 concurrently forwarded streams: a 100-member room
+  with up to ~15 people talking at once, or many small rooms.
+* **Speaker cap: not implemented in S2.** 20 members (the S2 target) need < 20 % of a
+  core in the worst case. For 100-member rooms a cap is needed only when more than ~15
+  members send at once; it must rank *speech*, not traffic (a member without voice
+  activation sends silence continuously), so it needs the audio level in every packet:
+  the client sets the negotiated RFC 6464 audio-level extension from the encoder's frame
+  level, the SFU forwards the N loudest recently active sources per room. Alternative or
+  complement: one SFU worker per CPU core, rooms sharded across them. Decided when a
+  stage needs larger rooms (or S7 load tests).
 * The client decodes every forwarded stream: ≈ 30 µs per 20 ms frame per stream on the dev
   machine — 20 talking members ≈ 3 % of one core.
 * Per-member state on the client keys on SSRC, and the UI maps member → SSRC through

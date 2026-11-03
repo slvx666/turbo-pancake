@@ -38,7 +38,9 @@ mixes up to 100 peers with per-peer volume and jitter buffers.
 5. ~~Tests~~ — automated 20-member scenario done 2026-11-03 (3 talkers + 17 listeners with
    voice activation; leave, switch, rejoin, server outage). Still open: 3 real clients by
    hand.
-6. Server never transcodes; measure SFU CPU/bandwidth for 20 members.
+6. ~~Server never transcodes; measure SFU CPU/bandwidth for 20 members~~ — done
+   2026-11-03 (`turbo-pancake-bench sfu`): 20 members all talking = 18.7 % of one core;
+   speaker cap deferred (ADR 0008).
 
 ## S1 plan (Windows done; macOS/Linux trials blocked on hardware; step 1 done 2026-11-02 except APM; AudioEngine with device rebuild done)
 

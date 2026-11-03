@@ -4,6 +4,7 @@
 //! samples, summary) into `benchmarks/results/`. See `benchmarks/README.md`.
 
 mod mem;
+mod sfu;
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
@@ -61,6 +62,21 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         idle_connections: u32,
     },
+    /// SFU forwarding: N media members, server CPU and throughput per number of talkers.
+    Sfu {
+        #[arg(long)]
+        server_exe: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        members: usize,
+        /// Members talking at once, one measured phase each (comma-separated).
+        #[arg(long, value_delimiter = ',', default_value = "1,3,10,20")]
+        talkers: Vec<usize>,
+        #[arg(long, default_value_t = 10)]
+        seconds: u64,
+        /// Payload bytes per 20 ms frame (100 ≈ Opus voice at 40 kbit/s).
+        #[arg(long, default_value_t = 100)]
+        payload: usize,
+    },
 }
 
 fn parse_kv(s: &str) -> Result<(String, String), String> {
@@ -88,6 +104,19 @@ fn main() -> anyhow::Result<()> {
             &server_exe,
             messages,
             idle_connections,
+        ))?,
+        Cmd::Sfu {
+            server_exe,
+            members,
+            talkers,
+            seconds,
+            payload,
+        } => tokio::runtime::Runtime::new()?.block_on(sfu::sfu(
+            &server_exe,
+            members,
+            &talkers,
+            seconds,
+            payload,
         ))?,
     };
     std::fs::create_dir_all(&cli.out_dir)?;

@@ -1,0 +1,113 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "AMD Ryzen 5 5500",
+    "git_commit": "03c816d",
+    "logical_cpus": 12,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 34246471680
+  },
+  "label": "20m",
+  "params": {
+    "members": 20,
+    "payload_bytes": 100,
+    "seconds_per_phase": 10,
+    "talkers": [
+      1,
+      3,
+      10,
+      20
+    ],
+    "wire_overhead_bytes": 66
+  },
+  "phases": [
+    {
+      "delivered_ratio": 1.000806828091481,
+      "egress_mbit_s_estimated": 1.2626178943202124,
+      "forwarded_streams": 19,
+      "in_pps": 50.04034140457406,
+      "members_receiving": 19,
+      "out_pps": 950.766486686907,
+      "server_cpu_pct_of_one_core": 6.71199788899676,
+      "server_cpu_us_per_forwarded_packet": 70.59565080365584,
+      "server_working_set_mib": 15.1875,
+      "talkers": 1,
+      "wall_s": 10.0119221
+    },
+    {
+      "delivered_ratio": 1.0008591506799145,
+      "egress_mbit_s_estimated": 3.7880517134933402,
+      "forwarded_streams": 57,
+      "in_pps": 149.82921417363988,
+      "members_receiving": 20,
+      "out_pps": 2852.448579437756,
+      "server_cpu_pct_of_one_core": 6.872166623430949,
+      "server_cpu_us_per_forwarded_packet": 24.092166544104774,
+      "server_working_set_mib": 16.25390625,
+      "talkers": 3,
+      "wall_s": 10.0113987
+    },
+    {
+      "delivered_ratio": 0.998674239972951,
+      "egress_mbit_s_estimated": 12.59927421149875,
+      "forwarded_streams": 190,
+      "in_pps": 499.3371199864755,
+      "members_receiving": 20,
+      "out_pps": 9487.405279743034,
+      "server_cpu_pct_of_one_core": 13.891558678023749,
+      "server_cpu_us_per_forwarded_packet": 14.642105263157895,
+      "server_working_set_mib": 18.07421875,
+      "talkers": 10,
+      "wall_s": 10.0132752
+    },
+    {
+      "delivered_ratio": 1.000719589292696,
+      "egress_mbit_s_estimated": 25.250156677033306,
+      "forwarded_streams": 380,
+      "in_pps": 1000.7195892926959,
+      "members_receiving": 20,
+      "out_pps": 19013.672196561223,
+      "server_cpu_pct_of_one_core": 18.72604021880045,
+      "server_cpu_us_per_forwarded_packet": 9.848723605420737,
+      "server_working_set_mib": 21.6953125,
+      "talkers": 20,
+      "wall_s": 10.0127949
+    }
+  ],
+  "scenario": "sfu",
+  "summary": {
+    "members": 20,
+    "phases": [
+      {
+        "cpu_pct": 6.71199788899676,
+        "delivered": 1.000806828091481,
+        "egress_mbit_s": 1.2626178943202124,
+        "out_pps": 950.766486686907,
+        "talkers": 1
+      },
+      {
+        "cpu_pct": 6.872166623430949,
+        "delivered": 1.0008591506799145,
+        "egress_mbit_s": 3.7880517134933402,
+        "out_pps": 2852.448579437756,
+        "talkers": 3
+      },
+      {
+        "cpu_pct": 13.891558678023749,
+        "delivered": 0.998674239972951,
+        "egress_mbit_s": 12.59927421149875,
+        "out_pps": 9487.405279743034,
+        "talkers": 10
+      },
+      {
+        "cpu_pct": 18.72604021880045,
+        "delivered": 1.000719589292696,
+        "egress_mbit_s": 25.250156677033306,
+        "out_pps": 19013.672196561223,
+        "talkers": 20
+      }
+    ],
+    "server_working_set_mib_start": 5.29296875
+  }
+}

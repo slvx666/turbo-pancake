@@ -86,7 +86,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Join / leave | 3-member test: leave → others keep hearing each other, rejoin → all hear all | **PASS (headless)** | same test |
 | Reconnection | signaling outage: 2 members, and 3 members (server restart → all rejoin, each hears both others as exactly 2 fresh streams) | **PASS (headless)**; real network roaming **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects`, `group_call_reconnects_after_a_server_outage` |
 | New call closes the previous one | server: join of another room → `RoomLeft{old}`, old members `PeerLeft{SWITCHED}`, SFU session ends; repeated join/leave idempotent; full room refuses without ending the current call. Client: 3 sessions, Алиса switches from Боб's room to Вера's — Боб loses her stream at once, Алиса and Вера hear each other, repeated join changes nothing | **PASS (headless, per connection)**; per *user* across devices **UNVERIFIED** until accounts (S5) | `apps/app-server/tests/signaling.rs::{joining_another_room_closes_the_previous_call,switch_to_a_full_room_keeps_the_current_call}`, `apps/desktop/tests/session.rs::joining_another_room_closes_the_previous_call` |
-| No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008) | **PASS (by design)**; CPU/bandwidth for 20 members **UNVERIFIED** (S2 step 6) | `crates/media-sfu/src/lib.rs` |
+| No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008); load measured with `turbo-pancake-bench sfu` (release server process, 20 real call drivers) | **PASS**: no transcoding by design; 20 members, 1 / 3 / 10 / 20 talking → server 6.7 / 6.9 / 13.9 / 18.7 % of one core, 951 – 19 014 packets/s out, 100 % delivered, egress ≈ 1.3 – 25.3 Mbit/s | `crates/media-sfu/src/lib.rs`, `benchmarks/results/sfu-20m-windows-1793678064.json`, `sfu-50m-windows-1793678121.json` |
 | Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
 
 ## Known issues and blockers
@@ -148,6 +148,11 @@ performance results for the target hardware (RTX 4070 Super / M4).
     marker would remove it.
 24. One active call is enforced per connection; the same person on two devices can be in
     two rooms until accounts (S5) give a user identity to enforce it per user.
+25. **The SFU is one thread:** ≈ 11 µs per forwarded packet, saturates one core at
+    ≈ 78 000 packets/s out (≈ 1 500 concurrent streams); 50 members all talking delivered
+    64 %. No speaker cap yet (ADR 0008: needs the audio-level extension from clients) and
+    no sharding across cores. Fine for S2 (20 members ≤ 19 % of a core); revisit for
+    100-member rooms with many simultaneous talkers or many busy rooms (S7 load tests).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -327,6 +332,18 @@ run `voice-trial` (or two clients against one server) and record. Still open on 
 and doable any time: a measured two-homes run with `--call-log` (with/without VPN), the
 DTLS backend benchmark (ADR 0003).
 
+## Session log 2026-11-03 (S2, step 6 — SFU load)
+
+New bench scenario `turbo-pancake-bench sfu` (`benchmarks/harness/src/sfu.rs`): release
+server in its own process, N members with real signaling + `CallDriver` (no audio engine),
+synthetic 100-byte frames every 20 ms from the first k members, server CPU from process CPU
+time. Results (Windows dev machine, loopback): 20 members, talkers 1/3/10/20 → 6.7 / 6.9 /
+13.9 / 18.7 % of one core, 19 014 packets/s out at 20 talkers, 100 % delivered; 50 members,
+talkers 3/10/25/50 → 11 / 26 / 67 / 100 %, delivered 100 / 100 / 100 / 64 %. Decision
+(ADR 0008): no speaker cap in S2; a cap needs RFC 6464 audio level from clients, recorded
+with the alternative of one SFU worker per core. Client decode of 19 streams ≈ 19 × 29 µs
+per 20 ms ≈ 2.8 % of a core (decode cost from the S1 step 1 benchmark).
+
 ## Session log 2026-11-03 (S2, step 5 — 20-member scenario)
 
 New test `twenty_members_hear_every_talker_through_leave_switch_and_reconnect` in
@@ -406,15 +423,19 @@ session suite 4× green.
 CI run 41503469373 (commit 9af5491): Windows, Ubuntu (incl. the 3-member and outage tests),
 audit green; macOS runner not acquired (cancelled, 0 steps).
 
-## Exact next task — S2 step 6 (plan in `docs/STAGES.md` → "S2 plan")
+## Exact next task — finish S2: the real-client criterion
 
-1. SFU CPU and egress for 20 members: a bench (`turbo-pancake-bench`) or an ignored test
-   with N members all talking (worst case N·(N−1) forwarded streams) and with 3 talkers;
-   record server CPU per forwarded stream, packets/s, egress Mbit/s; client decode CPU for
-   19 streams. Decide on a speaker cap (loudest/most recent N by the negotiated
-   audio-level extension) from the numbers; ADR 0008 consequence update.
-2. Then the remaining S2 criterion that needs people: three real clients on real devices
-   (by hand, owner-assisted) — after known issue 21 (window took the foreground) is fixed.
+All S2 steps are done except the trial that needs people: **three real desktop clients on
+real devices** (spec §17 S2 "минимум 3 реальных клиента").
+1. Fix known issue 21 first (the window took the foreground in `window-check.ps1`):
+   reproduce once with the owner's consent, then make `--no-activate` hold on Windows
+   (winit `with_active(false)` behaviour, `WS_EX_NOACTIVATE` through the raw window
+   handle until the first user click, or launching through a non-foreground process).
+2. Owner-assisted trial: server on the tester's public IP, three clients (two homes + one
+   more machine, or three machines), voice activation on one of them; check by ear that
+   everyone hears everyone, per-member volume, speaking indicators, leave/rejoin and
+   switching rooms; record `--call-log` lines in `benchmarks/results/` (scrubbed).
+3. Then mark S2 DONE (every criterion PASS) and start S3 (screen share 1080p/60).
 
 ## Previous next-task list — S1 (plan in `docs/STAGES.md` → "S1 plan")
 
