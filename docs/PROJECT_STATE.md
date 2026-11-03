@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S3 — screen share 1080p60 + system audio (IN_PROGRESS since 2026-11-03: step 1 probe done, step 3 encoder/decoder library on Windows done)
 Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked)
-Last verified commit: 6596928 (branch `main`, CI run 41654959430: Windows, Ubuntu, audit green; macOS arm64 job never got a runner — cancelled with 0 steps, as in runs 41641056166 and 41647867149 ×3; last macOS run that executed tests: 41588139375, before the SFU burst fix — see known issue 26)
+Last verified commit: 8a1cd67 (branch `main`, CI run 41696686532: Windows, Ubuntu, audit green; macOS arm64 job again got no runner — see known issue 26; last macOS run that executed tests: 41588139375)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-03
 
@@ -191,7 +191,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
     and mapping it takes ≈ 3 ms. The viewer should eventually draw the decoded texture on the
     GPU (S4: Slint GPU texture import), the CPU copy is the step 5 path. The OS software
     encoder rejects `MFT_MESSAGE_COMMAND_FLUSH` before streaming (now ignored). NVENC did not
-    encoder accepted `CODECAPI_AVEncMPVDefaultBPictureCount` on NVENC (low-latency mode
+    accept `CODECAPI_AVEncMPVDefaultBPictureCount` (low-latency mode
     already avoids B-frames: decode order == capture order in the test).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
@@ -492,6 +492,10 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
   codecs only (ADR 0009).
 * New `crates/media-video` (Windows): hardware or OS software H.264 encoder MFT, Microsoft
   decoder MFT with DXVA; loopback tests and 1080p60 numbers in the S3 table; issue 29.
+* CI 41696686532 (commit 8a1cd67): Windows, Ubuntu, audit green; macOS cancelled without a
+  runner (issue 26). The three `media-video` loopback tests pass on the GPU-less Windows
+  runner, but CI runs them without `--nocapture`, so whether they encoded (OS software
+  encoder) or took the SKIP branch (no Media Foundation on the image) is **UNVERIFIED**.
 * Local checks need the APM build environment (vcvars64, meson/ninja venv, clang-cl as
   CC/CXX, `nm`); with Git's `usr/bin` first on PATH its `link` shadows MSVC's linker.
 
