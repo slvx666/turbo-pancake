@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S3 — screen share 1080p60 + system audio: **BLOCKED** (2026-11-04: complete and measured on Windows; macOS/Linux capture, codecs and system audio are not implemented and cannot be verified without the owner's hardware — same formal blocker as S1). Next: S4 (spec §16 allows continuing past a formal blocker).
 Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked); **S3 = BLOCKED** (2026-11-04: Windows PASS on every criterion, macOS/Linux not implemented — see the S3 table)
-Last verified commit: 8a1cd67 (branch `main`, CI run 41696686532: Windows, Ubuntu, audit green; macOS arm64 job again got no runner — see known issue 26; last macOS run that executed tests: 41588139375)
+Last verified commit: f4b5701 (branch `main`, CI run 41722064301: Windows, Ubuntu, audit green; macOS arm64 job again got no runner — known issue 26; last macOS run that executed tests: 41588139375). CI 41719528152 (10e3c8e) failed on Ubuntu clippy: dead code in the non-Windows build of the system audio packer — fixed in f4b5701
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-04
 
@@ -539,8 +539,7 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 
 ## Exact next task — S4 (S3 stays BLOCKED on macOS/Linux)
 
-1. Check CI for 10e3c8e and the following commits (Linux/macOS build the non-Windows
-   stubs of media-video/system audio for the first time).
+1. ~~Check CI~~ — done: 41722064301 green on Windows and Ubuntu (macOS: no runner, issue 26).
 2. Write the S4 plan in `docs/STAGES.md` from spec §5.1–§5.3, §13, §17 S4: two qualities
    per share (simulcast: a low preview layer 160–320 px / 5–15 fps + the high layer, or two
    encoder sessions), layer subscriptions in the SFU (`SubscribeScreen` with a layer),
