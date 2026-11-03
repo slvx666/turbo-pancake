@@ -7,7 +7,7 @@ verbatim-in-meaning so each session can check them.
 |---|---|---|---|
 | S0 | Audit, skeleton, media feasibility | compiles on CI targets or blockers recorded; real native window; toolchain recorded; reproducible benchmark harness; PROJECT_STATE filled; ADRs for UI/codecs/GPU textures/str0m/capture/audio | DONE (2026-11-02, CI run 41364362270) |
 | S1 | 1:1 voice end-to-end | two real clients talk via server; continuity under moderate loss; no audio loop; resources freed after leave; trials recorded | BLOCKED (2026-11-02): Windows done, real-device trials on macOS/Linux need owner hardware (none available) |
-| S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | IN_PROGRESS (started 2026-11-02 under the S1 platform blocker, spec §16) |
+| S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | DONE (2026-11-03; CI 41647867149 Windows/Ubuntu; macOS re-check pending, PROJECT_STATE issue 26) |
 | S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | NOT_STARTED |
 | S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | NOT_STARTED |
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | NOT_STARTED |
@@ -15,7 +15,7 @@ verbatim-in-meaning so each session can check them.
 | S7 | Desktop polish + delivery | E2E on Win/macOS/Linux, signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
 
-## S2 plan (in progress since 2026-11-02)
+## S2 plan (done 2026-11-03)
 
 Base already in place from S1 (ADR 0007): every member has one media session with the
 server's SFU (UDP or WebSocket tunnel), RTP is forwarded without transcoding, the engine
@@ -36,8 +36,8 @@ mixes up to 100 peers with per-peer volume and jitter buffers.
    (`PeerLeft{SWITCHED}` to its members, `RoomLeft` to the joiner), idempotent join/leave,
    group reconnect test. Per user across devices waits for accounts (S5).
 5. ~~Tests~~ — automated 20-member scenario done 2026-11-03 (3 talkers + 17 listeners with
-   voice activation; leave, switch, rejoin, server outage). Still open: 3 real clients by
-   hand.
+   voice activation; leave, switch, rejoin, server outage); three real clients on real
+   devices (`benchmarks/scripts/group-trial.ps1`, one machine) done 2026-11-03.
 6. ~~Server never transcodes; measure SFU CPU/bandwidth for 20 members~~ — done
    2026-11-03 (`turbo-pancake-bench sfu`): 20 members all talking = 18.7 % of one core;
    speaker cap deferred (ADR 0008).

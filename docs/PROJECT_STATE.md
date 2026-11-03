@@ -1,8 +1,8 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
-Current stage: S2 — group audio + SFU
-Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
-Last verified commit: 7de3154 (branch `main`, CI run 41559716784 attempt 2: Windows, Ubuntu, macOS arm64, audit all green; attempt 1 macOS failed two 2-member session tests on concealment — see known issue 20)
+Current stage: S3 — screen share 1080p60 + system audio (NOT_STARTED)
+Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked)
+Last verified commit: 9259594 (branch `main`, CI run 41647867149: Windows, Ubuntu, audit green; macOS arm64 job never got a runner — cancelled with 0 steps in 3 attempts, as in run 41641056166; last macOS run that executed tests: 41588139375, before the SFU burst fix — see known issue 26)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-03
 
@@ -77,7 +77,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Trials recorded | this file + `benchmarks/results/audio-*.json` | **PASS** for the pipeline part | |
 | Planned platforms | CI on Windows/Ubuntu/macOS (unit + impairment tests) | build/tests in CI; device I/O on macOS/Linux **UNVERIFIED** | CI run (see session log) |
 
-## Acceptance checks — S2 (IN_PROGRESS)
+## Acceptance checks — S2 (DONE 2026-11-03)
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
@@ -158,6 +158,13 @@ performance results for the target hardware (RTX 4070 Super / M4).
     needs the audio-level extension from clients) and no sharding across cores. Fine for
     S2 (20 members ≤ 26 % of a core); revisit for 100-member rooms with many simultaneous
     talkers or many busy rooms (S7 load tests).
+26. **macOS CI after the SFU burst fix is UNVERIFIED:** from 2026-11-03 13:00 UTC GitHub did
+    not assign a macOS arm64 runner (runs 41641056166, 41647867149 ×3: cancelled after
+    15 min queued, 0 steps). The failures there are explained by SFU counters (RTP
+    overwritten in str0m before forwarding) and the fix is covered by a deterministic test
+    that fails on the old code (`crates/media-sfu/tests/burst.rs`), green on Windows and
+    Ubuntu. First thing next session: check the newest CI run's macOS job (session suite
+    green ⇒ close this issue).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -443,19 +450,22 @@ session suite 4× green.
 CI run 41503469373 (commit 9af5491): Windows, Ubuntu (incl. the 3-member and outage tests),
 audit green; macOS runner not acquired (cancelled, 0 steps).
 
-## Exact next task — finish S2: the real-client criterion
+## Exact next task — start S3 (screen share 1080p60 + system audio)
 
-All S2 steps are done except the trial that needs people: **three real desktop clients on
-real devices** (spec §17 S2 "минимум 3 реальных клиента").
-1. Fix known issue 21 first (the window took the foreground in `window-check.ps1`):
-   reproduce once with the owner's consent, then make `--no-activate` hold on Windows
-   (winit `with_active(false)` behaviour, `WS_EX_NOACTIVATE` through the raw window
-   handle until the first user click, or launching through a non-foreground process).
-2. Owner-assisted trial: server on the tester's public IP, three clients (two homes + one
-   more machine, or three machines), voice activation on one of them; check by ear that
-   everyone hears everyone, per-member volume, speaking indicators, leave/rejoin and
-   switching rooms; record `--call-log` lines in `benchmarks/results/` (scrubbed).
-3. Then mark S2 DONE (every criterion PASS) and start S3 (screen share 1080p/60).
+0. Check known issue 26 (macOS job of the newest CI run).
+1. Write the S3 plan in `docs/STAGES.md` from spec §5.1/§5.2, §14, §17 S3 and ADR 0005
+   (capture, system audio without our own sound, hardware codecs — all UNVERIFIED there):
+   capture spike per OS (Windows: Windows.Graphics.Capture monitor item → D3D11 texture;
+   macOS: ScreenCaptureKit; Linux: xdg-desktop-portal + PipeWire), hardware encoder probe
+   and a 1080p60 encode spike (NVENC / Media Foundation on Windows, VideoToolbox on macOS,
+   VA-API on Linux), system-audio capture excluding the messenger (Windows process
+   loopback exclude, macOS `excludesCurrentProcessAudio`, Linux PipeWire routing).
+2. Owner decision recorded in ADR 0005 before S3: H.264 licensing / dynamic linking of
+   codecs. Raise it with the owner with options; do not pick silently.
+3. First runnable piece: a `tools/` probe that lists monitors and hardware encoders and
+   captures + encodes 10 s of the primary monitor at 1080p60 on Windows, reporting real
+   FPS, encode latency and bitrate as JSON in `benchmarks/results/` (GUI/capture runs:
+   secondary monitor only, launched through CreateProcess, never take focus).
 
 ## Previous next-task list — S1 (plan in `docs/STAGES.md` → "S1 plan")
 
