@@ -453,6 +453,10 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 ## Exact next task — start S3 (screen share 1080p60 + system audio)
 
 0. Check known issue 26 (macOS job of the newest CI run).
+   `tools/screen-probe/` exists on the dev machine but is **not committed** (written by a
+   parallel S3 session, untested): review and build it, add it back to the workspace
+   `members` in `Cargo.toml`, then commit it together with its `Cargo.lock` entry. The S3
+   plan from that session is already in `docs/STAGES.md`.
 1. Write the S3 plan in `docs/STAGES.md` from spec §5.1/§5.2, §14, §17 S3 and ADR 0005
    (capture, system audio without our own sound, hardware codecs — all UNVERIFIED there):
    capture spike per OS (Windows: Windows.Graphics.Capture monitor item → D3D11 texture;

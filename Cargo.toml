@@ -9,7 +9,6 @@ members = [
     "crates/media-sfu",
     "benchmarks/harness",
     "tools/media-probe",
-    "tools/screen-probe",
 ]
 # Vendored third-party crates and stand-alone tools are not workspace members.
 exclude = ["third_party", "tools/apm-eval"]
