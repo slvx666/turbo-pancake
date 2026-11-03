@@ -22,13 +22,13 @@ Scope (spec §5.1, §5.2, §14.1–14.3, §17 S3): one sharer per member, whole 
 Windows first (dev machine); macOS/Linux pieces are written behind `cfg` and stay
 UNVERIFIED until they run on real hardware (owner has none — same blocker shape as S1).
 
-1. **Capture + encode probe** (`tools/screen-probe`): list monitors and hardware encoders;
+1. ~~**Capture + encode probe**~~ — done 2026-11-03 on Windows (PROJECT_STATE S3 table) (`tools/screen-probe`): list monitors and hardware encoders;
    capture a monitor with Windows.Graphics.Capture (D3D11 texture, no CPU copy), scale and
    convert BGRA → NV12 on the GPU (D3D11 video processor), encode H.264 with the hardware
    Media Foundation MFT (async, low-latency CBR); report captured / encoded FPS, capture →
    encoded latency p50/p95/p99, bitrate, keyframes as JSON in `benchmarks/results/`.
    No pixels are written anywhere. Runs on the secondary monitor only.
-2. **Owner decision (ADR 0009): H.264 licensing.** Options: (a) OS/vendor encoders only
+2. ~~**Owner decision (ADR 0009): H.264 licensing.**~~ — decided 2026-11-03: (a), OS/vendor codecs only. Options: (a) OS/vendor encoders only
    (Media Foundation, VideoToolbox, VA-API) — no codec code shipped by us; (b) bundle
    OpenH264 (Cisco binary, BSD, Cisco pays MPEG LA when downloaded from Cisco) as a CPU
    fallback; (c) FFmpeg LGPL dynamic. Until decided the code uses (a) only.

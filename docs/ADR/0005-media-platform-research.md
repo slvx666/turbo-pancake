@@ -35,7 +35,11 @@ toggleable; never applied to screen-share system audio. UNVERIFIED (S1/S2).
 | macOS | ScreenCaptureKit (`SCDisplay`), IOSurface/CVPixelBuffer | screen-recording permission UX on M4 (§14.2) |
 | Linux | XDG Desktop Portal ScreenCast + PipeWire (Wayland), X11 fallback (XShm/XComposite) | DMA-BUF import where supported |
 
-All UNVERIFIED; first runnable spike is part of S3.
+Windows verified 2026-11-03 (`tools/screen-probe`, RTX 2060 SUPER, 1920×1080 @ 60 Hz secondary
+monitor): Windows.Graphics.Capture monitor item → D3D11 copy → D3D11 video processor
+BGRA→NV12 → NVIDIA H.264 Encoder MFT, all on the GPU: capture 54.9 fps, encoded 57.8 fps,
+capture → encoded p50 18 ms / p95 30 ms, 5.6 % of one CPU core. Capture delivers frames only
+on content change. macOS/Linux UNVERIFIED.
 
 ## System audio without the messenger's own sound (§5.1, §14.1)
 
@@ -58,7 +62,9 @@ Linux fallback must be disclosed to the user. All UNVERIFIED (S3).
 * Licensing (§14.8): prefer OS/vendor APIs over bundling FFmpeg; if FFmpeg is used, LGPL
   dynamic linking only and H.264 patent position documented. Owner decision before S3.
 
-All UNVERIFIED; capability probing tool and 1080p60 encode spike belong to S3.
+Windows 2026-11-03: hardware encoder MFTs found — NVIDIA H.264 and HEVC (no AV1, as expected
+for Turing); `MFT_ENUM_FLAG_HARDWARE` lists no decoders (the Microsoft H.264 decoder is a
+software MFT with DXVA) — decode acceleration still UNVERIFIED. macOS/Linux UNVERIFIED.
 
 ## Network/TLS trust for IP-only server (§2, §14.5)
 

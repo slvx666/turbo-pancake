@@ -1,6 +1,6 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
-Current stage: S3 — screen share 1080p60 + system audio (NOT_STARTED)
+Current stage: S3 — screen share 1080p60 + system audio (IN_PROGRESS since 2026-11-03: step 1 capture + encode probe on Windows done)
 Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked)
 Last verified commit: 6596928 (branch `main`, CI run 41654959430: Windows, Ubuntu, audit green; macOS arm64 job never got a runner — cancelled with 0 steps, as in runs 41641056166 and 41647867149 ×3; last macOS run that executed tests: 41588139375, before the SFU burst fix — see known issue 26)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
@@ -28,6 +28,7 @@ Last session: 2026-11-03
 | str0m WebRTC spike, **aws-lc-rs** crypto: ICE+DTLS+SRTP+data channel over real loopback UDP, SDP via protobuf | `crates/media-transport` | `loopback_spike` on 3 OS (Windows: handshake 27 ms, 100/100 RTP) |
 | Benchmark harness (startup + memory, signaling latency + idle connections), child stderr/exit diagnostics | `benchmarks/harness` | JSON reports in `benchmarks/results/`, CI artifacts `bench-<os>` |
 | Audio device probe (cpal) | `tools/media-probe` | Windows report in `benchmarks/results/` |
+| **Screen capture + encode probe** (S3 step 1): `list` (monitors with refresh rate, hardware H.264/HEVC/AV1 encoder/decoder MFTs, adapter); `run` — Windows.Graphics.Capture monitor item → own D3D11 copy (newest frame wins) → D3D11 video processor BGRA→NV12 + scale → hardware H.264 MFT (async, low latency, CBR, GOP), fixed-rate pacing; JSON with capture/encoded FPS, latency percentiles, bitrate, CPU; `--pattern` draws a moving test pattern in a window that never activates | `tools/screen-probe` | Windows reports in `benchmarks/results/screen-probe-windows-*.json`; foreground sampling 0 of 112; macOS/Linux print UNVERIFIED |
 | **Voice pipeline** (S1): cpal capture/playback on lock-free `rtrb` rings with xrun/failure counters, device listing/selection by id, rubato FFT resampler (any rate ↔ 48 kHz), Opus 48 kHz mono 20 ms (libopus 1.6.1 static, FEC/DTX/complexity/bitrate at runtime), adaptive jitter buffer with FEC→PLC, `VoiceSender` (mute = encoded silence, peak level) / `VoiceReceiver` (per-peer volume, stats) | `crates/media-audio` | 11 unit + 2 impairment tests (3 OS in CI); `examples/device_check` on real Windows devices; `examples/codec_cost` |
 | **Call driver** (S1): one thread per call, `UdpPeer` (non-blocking socket, ≤ 1 ms idle sleep), RTP-mode Opus track, extended seq/SRTP ROC, SDP offer/answer + candidate commands, states incl. Reconnecting (ICE + 3 s silence), stats (RTT, loss, loop gap), test wire loss | `crates/media-transport/src/{lib,call}.rs` | 1 unit + 3 UDP tests (`tests/call.rs`) + 2-client test (`tests/voice_call.rs`) |
 | **Voice DSP** (S1): WebRTC APM 2.1.0 (vendored patched sys crate), NS + AEC3 (+HPF, optional AGC2) on the capture path, mix as render reference, live config; feature `apm` | `crates/media-audio/src/dsp.rs`, `third_party/webrtc-audio-processing-sys/` | 3 unit + 2 engine tests; CI job `apm` |
@@ -88,6 +89,15 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | New call closes the previous one | server: join of another room → `RoomLeft{old}`, old members `PeerLeft{SWITCHED}`, SFU session ends; repeated join/leave idempotent; full room refuses without ending the current call. Client: 3 sessions, Алиса switches from Боб's room to Вера's — Боб loses her stream at once, Алиса and Вера hear each other, repeated join changes nothing | **PASS (headless, per connection)**; per *user* across devices **UNVERIFIED** until accounts (S5) | `apps/app-server/tests/signaling.rs::{joining_another_room_closes_the_previous_call,switch_to_a_full_room_keeps_the_current_call}`, `apps/desktop/tests/session.rs::joining_another_room_closes_the_previous_call` |
 | No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008); load measured with `turbo-pancake-bench sfu` (release server process, 20 real call drivers) | **PASS**: no transcoding by design; 20 members, 1 / 3 / 10 / 20 talking → server 6.9 / 6.2 / 14.4 / 25.4 % of one core, 951 – 18 991 packets/s out, 99–100 % delivered, egress ≈ 1.3 – 25.2 Mbit/s (re-measured after the burst fix) | `crates/media-sfu/src/lib.rs`, `benchmarks/results/sfu-20m-windows-1793711275.json`, `sfu-50m-windows-1793711325.json` |
 | Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
+
+## Acceptance checks — S3 (IN_PROGRESS)
+
+| Criterion | Command / procedure | Result | Evidence |
+|---|---|---|---|
+| Real share with measured frames, latency, bitrate | step 1 probe only: `turbo-pancake-screen-probe run --monitor 1 --seconds 10 --pattern` (secondary monitor, 1920×1080 @ 60 Hz, RTX 2060 SUPER, NVIDIA H.264 Encoder MFT, 8 Mbit/s CBR requested) | **UNVERIFIED** (no transport/viewer yet). Probe: capture 54.9 fps, encoded 57.8 fps, capture → encoded p50 18.4 / p95 30.3 / p99 43.0 ms, submit → encoded p50 6.7 / p95 16.3 ms, 983 kbit/s on the simple pattern (encoder does not pad CBR), 10 keyframes / 10 s, process CPU 5.6 % of one core. Static screen: capture 0.3 fps, encoder repeats the last frame at 57 fps | `benchmarks/results/screen-probe-windows-1080p60-pattern-2026-11-03.json`, `…-1080p60-2026-11-03.json` |
+| System audio without echo, own sound excluded | — | **UNVERIFIED** (step 6) | — |
+| Stop / switch monitor | — | **UNVERIFIED** (step 5) | — |
+| Platform limits stated | macOS/Linux probe prints UNVERIFIED; no hardware for trials (same as S1) | **UNVERIFIED** | — |
 
 ## Known issues and blockers
 
@@ -165,6 +175,15 @@ performance results for the target hardware (RTX 4070 Super / M4).
     that fails on the old code (`crates/media-sfu/tests/burst.rs`), green on Windows and
     Ubuntu. First thing next session: check the newest CI run's macOS job (session suite
     green ⇒ close this issue).
+27. **H.264 licensing — decided 2026-11-03 (ADR 0009):** OS / vendor codecs only, nothing
+    bundled; no encoder ⇒ screen share unavailable with a clear message.
+28. S3 probe findings: `MFTEnumEx(HARDWARE)` lists no H.264 *decoder* on Windows — the
+    Microsoft H.264 decoder MFT is a software MFT that uses DXVA when given a D3D manager, so
+    decode acceleration must be checked by enabling D3D on it (step 3). The probe pattern
+    window paces with `DwmFlush`, which follows the primary monitor's refresh (320 Hz here),
+    so it changes content faster than the 60 Hz captured monitor — fine for FPS, but the
+    end-to-end latency marker (step 7) must be timestamp-based. CBR on NVENC does not pad:
+    simple content gives ≈ 1 Mbit/s of 8 requested.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -180,6 +199,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 * [0005 Media/OS research](ADR/0005-media-platform-research.md) — research
 * [0007 Media through the SFU, UDP + WebSocket fallback](ADR/0007-media-through-sfu.md) — accepted
 * [0008 Per-member audio: one m-line, one SSRC per member](ADR/0008-per-member-audio-streams.md) — accepted
+* [0009 H.264: OS/vendor codecs only](ADR/0009-h264-os-encoders-only.md) — accepted (owner, 2026-11-03)
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -450,14 +470,26 @@ session suite 4× green.
 CI run 41503469373 (commit 9af5491): Windows, Ubuntu (incl. the 3-member and outage tests),
 audit green; macOS runner not acquired (cancelled, 0 steps).
 
-## Exact next task — start S3 (screen share 1080p60 + system audio)
+## Session log 2026-11-03 (S3, step 1 — capture + encode probe)
 
-0. Check known issue 26 (macOS job of the newest CI run).
-   `tools/screen-probe/` exists on the dev machine but is **not committed** (written by a
-   parallel S3 session, untested): review and build it, add it back to the workspace
-   `members` in `Cargo.toml`, then commit it together with its `Cargo.lock` entry. The S3
-   plan from that session is already in `docs/STAGES.md`.
-1. Write the S3 plan in `docs/STAGES.md` from spec §5.1/§5.2, §14, §17 S3 and ADR 0005
+* CI 41661382739: Windows, Ubuntu, audit green; macOS arm64 again got no runner (issue 26 open).
+* Reviewed and committed `tools/screen-probe` (clippy fixes, back in the workspace), added
+  `--pattern` (non-activating moving test window on the captured monitor). Results in the S3
+  table above; foreground sampled every 50 ms during a 6 s run: 0 of 112 samples.
+
+## Exact next task — S3 step 2/3
+
+1. ~~Owner decision on H.264 licensing~~ — done: ADR 0009, OS/vendor codecs only.
+2. S3 step 3 (`docs/STAGES.md`): `crates/media-video` — move the probe's capture → convert →
+   encode pipeline into a library with a capture thread, a depth-1 latest-frame slot,
+   keyframe request and runtime bitrate; add the decoder (MS H.264 MFT with D3D11 manager,
+   verify DXVA is used) and a loopback test encode → decode on Windows (frame count, size,
+   latency). Then step 4 (H.264 video track through the SFU).
+
+## Previous next-task list — start S3
+
+0. ~~Check known issue 26; commit `tools/screen-probe`~~ — done 2026-11-03 (issue 26 still open).
+1. ~~Write the S3 plan~~ (in `docs/STAGES.md`). Was: write the S3 plan in `docs/STAGES.md` from spec §5.1/§5.2, §14, §17 S3 and ADR 0005
    (capture, system audio without our own sound, hardware codecs — all UNVERIFIED there):
    capture spike per OS (Windows: Windows.Graphics.Capture monitor item → D3D11 texture;
    macOS: ScreenCaptureKit; Linux: xdg-desktop-portal + PipeWire), hardware encoder probe

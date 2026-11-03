@@ -1,0 +1,89 @@
+{
+  "adapter": "NVIDIA GeForce RTX 2060 SUPER",
+  "capture": {
+    "api": "Windows.Graphics.Capture",
+    "border_disabled": true,
+    "cursor": true,
+    "source": [
+      1920,
+      1080
+    ]
+  },
+  "encoder": {
+    "codec": "h264",
+    "name": "NVIDIA H.264 Encoder MFT",
+    "profile": "high",
+    "provides_samples": true,
+    "settings_applied": [
+      "low_latency",
+      "cbr",
+      "mean_bitrate",
+      "gop"
+    ]
+  },
+  "monitor": {
+    "height": 1080,
+    "index": 1,
+    "left": 1920,
+    "name": "\\\\.\\DISPLAY2",
+    "primary": false,
+    "refresh_hz": 60,
+    "top": 0,
+    "width": 1920
+  },
+  "notes": [
+    "Windows.Graphics.Capture delivers a frame only when the monitor content changes; on a static screen the encoder repeats the last frame (submitted_repeat), as a real share would.",
+    "capture_to_encoded uses the capture timestamp (SystemRelativeTime) of frames encoded for the first time; it excludes network, decode and display."
+  ],
+  "os": "windows",
+  "pattern_frames_drawn": 2669,
+  "requested": {
+    "bitrate_kbps": 8000,
+    "fps": 60,
+    "gop_seconds": 2,
+    "height": 1080,
+    "seconds": 10,
+    "width": 1920
+  },
+  "result": {
+    "bitrate_kbps": 983.0,
+    "capture_fps": 54.9,
+    "capture_frames_arrived": 549,
+    "encoded": 578,
+    "encoded_fps": 57.8,
+    "in_flight_at_end": 1,
+    "keyframes": 10,
+    "latency_ms": {
+      "capture_to_encoded_fresh_frames": {
+        "max": 62.09,
+        "n": 509,
+        "p50": 18.35,
+        "p95": 30.3,
+        "p99": 42.95
+      },
+      "gpu_convert_submit_cpu": {
+        "max": 3.38,
+        "n": 579,
+        "p50": 0.01,
+        "p95": 0.1,
+        "p99": 0.76
+      },
+      "submit_to_encoded": {
+        "max": 35.99,
+        "n": 578,
+        "p50": 6.7,
+        "p95": 16.28,
+        "p99": 23.97
+      }
+    },
+    "process_cpu_percent_of_one_core": 5.6,
+    "submitted": 579,
+    "submitted_fresh": 510,
+    "submitted_repeat": 69,
+    "ticks_skipped_behind": 0,
+    "ticks_without_encoder_credit": 22,
+    "wall_s": 10.005
+  },
+  "tool": "turbo-pancake-screen-probe",
+  "version": "0.1.0"
+}
