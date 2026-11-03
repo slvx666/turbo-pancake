@@ -531,3 +531,92 @@ fn speaking_indicators_member_volume_and_voice_activation() {
         assert!(x.released());
     }
 }
+
+#[test]
+fn joining_another_room_closes_the_previous_call() {
+    let _serial = serial();
+    let (addr, _server) = server(None, Config::default());
+    let mut a = Client::start(addr, "Алиса", talking(Opts::default()));
+    let mut b = Client::start(addr, "Боб", talking(Opts::default()));
+    let mut c = Client::start(addr, "Вера", talking(Opts::default()));
+    a.send(Command::Join("first".into()));
+    b.send(Command::Join("first".into()));
+    c.send(Command::Join("second".into()));
+    for x in [&mut a, &mut b] {
+        x.wait("in the first call", 20, |s| {
+            s.in_call() && heard(s, 50) == 1
+        });
+    }
+    c.wait("alone in the second room", 20, |s| {
+        s.joined && s.members.is_empty() && s.media.is_some()
+    });
+
+    // Алиса takes the other call: the first one ends for her and for Боб at once.
+    a.send(Command::Join("second".into()));
+    b.wait("Боб alone, her stream gone", 5, |s| {
+        s.joined && s.members.is_empty() && s.engine.as_ref().is_some_and(|e| e.peers.is_empty())
+    });
+    for x in [&mut a, &mut c] {
+        x.wait("in the second call", 20, |s| {
+            s.room.as_deref() == Some("second")
+                && s.joined
+                && s.member_names().len() == 1
+                && s.engine.as_ref().is_some_and(|e| e.peers.len() == 1)
+                && heard(s, 50) == 1
+        });
+    }
+    assert_eq!(a.last.room.as_deref(), Some("second"));
+    assert_eq!(a.last.member_names(), vec!["Вера".to_string()]);
+    assert_eq!(c.last.member_names(), vec!["Алиса".to_string()]);
+
+    // Joining the room she is already in changes nothing.
+    let sessions = a.last.media_sessions;
+    a.send(Command::Join("second".into()));
+    let before = a.played();
+    a.wait("still hears Вера", 10, |s| played(s) >= before + 50);
+    assert_eq!(a.last.media_sessions, sessions);
+    assert_eq!(c.last.member_names().len(), 1);
+
+    for mut x in [a, b, c] {
+        x.quit();
+        assert!(x.released());
+    }
+}
+
+#[test]
+fn group_call_reconnects_after_a_server_outage() {
+    let _serial = serial();
+    let (addr, server_stop) = server(None, Config::default());
+    let mut c: Vec<Client> = ["Алиса", "Боб", "Вера"]
+        .iter()
+        .map(|n| Client::start(addr, n, talking(Opts::default())))
+        .collect();
+    for x in &mut c {
+        x.send(Command::Join("regroup".into()));
+    }
+    for x in &mut c {
+        x.wait("everyone heard", 20, |s| heard(s, 50) == 2);
+    }
+
+    drop(server_stop);
+    for x in &mut c {
+        x.wait("offline", 10, |s| {
+            matches!(s.server, ServerStatus::Disconnected(_)) && s.media.is_none()
+        });
+    }
+
+    // Server back: all three rejoin and hear both others again, as fresh streams only.
+    let (_addr, _server) = server(Some(addr), Config::default());
+    for x in &mut c {
+        x.wait("everyone heard again", 30, |s| {
+            s.server == ServerStatus::Connected
+                && s.members.len() == 2
+                && s.engine.as_ref().is_some_and(|e| e.peers.len() == 2)
+                && heard(s, 50) == 2
+        });
+    }
+    for mut x in c {
+        x.quit();
+        assert!(x.released());
+    }
+}

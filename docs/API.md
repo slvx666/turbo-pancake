@@ -51,12 +51,16 @@ token-authenticated handshake (Hello field 3 is reserved for it).
 
 | Client request | Success reply | Errors |
 |---|---|---|
-| `JoinRoom{room_id}` | `RoomJoined{room_id, peers[]}` (existing members); others get `PeerJoined` | `BAD_REQUEST` (invalid id), `ALREADY_IN_ROOM`, `ROOM_FULL` (default 100) |
-| `LeaveRoom{room_id}` | `RoomLeft{room_id}`; others get `PeerLeft{reason=LEFT}` | `NOT_IN_ROOM` |
+| `JoinRoom{room_id}` | `RoomJoined{room_id, peers[]}` (existing members); others get `PeerJoined`. While in another room: first `RoomLeft{old room}` (event, `request_id` 0), the old room's members get `PeerLeft{reason=SWITCHED}` and the media session ends; then `RoomJoined`. Same room again: `RoomJoined` with the current members, nobody else is told | `BAD_REQUEST` (invalid id), `ROOM_FULL` (default 100; checked before leaving, so the current call goes on) |
+| `LeaveRoom{room_id}` | `RoomLeft{room_id}`; others get `PeerLeft{reason=LEFT}`. Not in that room: `RoomLeft` all the same, nothing changes (idempotent) | — |
 | `Signal{room_id, to_peer_id, description \| ice_candidate}` | none; target gets `SignalRelay{from_peer_id, ...}` | `NOT_IN_ROOM`, `PEER_NOT_FOUND`, `BAD_REQUEST` (self-target, missing payload, SDP > 32 KiB, untyped SDP, candidate > 1 KiB) |
 | `Ping{client_time_us}` | `Pong{client_time_us}` | — |
 
-* A connection is in at most one room at a time (spec: one active call per user).
+* A connection is in at most one room at a time (spec: one active call per user): a new
+  join closes the previous call. `ALREADY_IN_ROOM` is no longer sent (kept reserved). Until
+  accounts (S5) "user" means connection: two connections of one person are two members.
+* A `RoomLeft` for the room the client is in, without its own leave, means the server
+  ended the membership; the desktop client ends the call and does not rejoin by itself.
 * Room id: 1–64 chars of `[A-Za-z0-9_-]`.
 * Abrupt disconnects announce `PeerLeft{reason=DISCONNECTED}`.
 * Ordering guarantee: `RoomJoined` is always delivered to the joiner before any

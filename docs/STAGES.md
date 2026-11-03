@@ -32,8 +32,9 @@ mixes up to 100 peers with per-peer volume and jitter buffers.
 3. ~~Client~~ — done 2026-11-03: member list with a speaking indicator and a volume
    slider per member, voice activation with an adjustable threshold (sequence number
    pauses, RTP timestamp runs; jitter buffer starts a talkspurt), own indicator.
-4. Call lifecycle: one active call per user — joining another room leaves the previous one
-   with a notification to both sessions; idempotent join/leave; reconnect by session.
+4. ~~Call lifecycle~~ — done 2026-11-03: joining another room closes the previous call
+   (`PeerLeft{SWITCHED}` to its members, `RoomLeft` to the joiner), idempotent join/leave,
+   group reconnect test. Per user across devices waits for accounts (S5).
 5. Tests: automated 20-member scenario (headless sessions, simulated devices, real server)
    checking that everyone hears everyone, join/leave/reconnect; 3 real clients by hand.
 6. Server never transcodes; measure SFU CPU/bandwidth for 20 members.

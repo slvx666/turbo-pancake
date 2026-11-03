@@ -84,8 +84,8 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | ≥ 3 real clients | three desktop clients on real devices (by hand) | **UNVERIFIED** (not run yet); headless 3 sessions: **PASS** | `cargo test -p turbo-pancake-desktop --test session three_members` |
 | Automated 20-participant scenario | headless sessions + real server | **UNVERIFIED** (not written yet, S2 step 5) | |
 | Join / leave | 3-member test: leave → others keep hearing each other, rejoin → all hear all | **PASS (headless)** | same test |
-| Reconnection | signaling outage test (2 members) | **PASS (2 members, headless)**; group reconnect **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects` |
-| New call closes the previous one | — | **UNVERIFIED** (S2 step 4) | |
+| Reconnection | signaling outage: 2 members, and 3 members (server restart → all rejoin, each hears both others as exactly 2 fresh streams) | **PASS (headless)**; real network roaming **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects`, `group_call_reconnects_after_a_server_outage` |
+| New call closes the previous one | server: join of another room → `RoomLeft{old}`, old members `PeerLeft{SWITCHED}`, SFU session ends; repeated join/leave idempotent; full room refuses without ending the current call. Client: 3 sessions, Алиса switches from Боб's room to Вера's — Боб loses her stream at once, Алиса and Вера hear each other, repeated join changes nothing | **PASS (headless, per connection)**; per *user* across devices **UNVERIFIED** until accounts (S5) | `apps/app-server/tests/signaling.rs::{joining_another_room_closes_the_previous_call,switch_to_a_full_room_keeps_the_current_call}`, `apps/desktop/tests/session.rs::joining_another_room_closes_the_previous_call` |
 | No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008) | **PASS (by design)**; CPU/bandwidth for 20 members **UNVERIFIED** (S2 step 6) | `crates/media-sfu/src/lib.rs` |
 | Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
 
@@ -142,6 +142,8 @@ performance results for the target hardware (RTX 4070 Super / M4).
     concealed/underrun ticks) before it rebuffers; Opus PLC fades out, so it is quiet, but
     `concealed_ratio` overstates loss for gated senders. A comfort-noise / end-of-talkspurt
     marker would remove it.
+24. One active call is enforced per connection; the same person on two devices can be in
+    two rooms until accounts (S5) give a user identity to enforce it per user.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -321,6 +323,18 @@ run `voice-trial` (or two clients against one server) and record. Still open on 
 and doable any time: a measured two-homes run with `--call-log` (with/without VPN), the
 DTLS backend benchmark (ADR 0003).
 
+## Session log 2026-11-03 (S2, step 4 — call lifecycle)
+
+Server (`apps/app-server/src/signaling.rs`): `JoinRoom` while in another room leaves it
+first (`PeerLeft{reason=SWITCHED}` to its members, SFU session ended, `RoomLeft{old}` to
+the joiner before `RoomJoined`); a full target room is refused before leaving; repeated
+`JoinRoom` of the current room re-sends `RoomJoined`; `LeaveRoom` of a room we are not in
+just confirms. Proto: `LEAVE_REASON_SWITCHED = 4` (contract test), `ALREADY_IN_ROOM`
+reserved. Client: a server-initiated `RoomLeft` for the current room ends the call.
+Tests: 2 server tests, 2 session tests (room switch with 3 members, group reconnect).
+Local (Windows, `apm-env.ps1`): fmt OK, clippy `-D warnings` OK, `cargo test --workspace
+--locked` 76 passed.
+
 ## Session log 2026-11-03 (S2, step 3 — group call client)
 
 Engine: `VoiceSender::set_voice_gate` (dBFS threshold, 15-frame hangover; below it frames
@@ -368,16 +382,16 @@ session suite 4× green.
 CI run 41503469373 (commit 9af5491): Windows, Ubuntu (incl. the 3-member and outage tests),
 audit green; macOS runner not acquired (cancelled, 0 steps).
 
-## Exact next task — S2 step 4, then step 5 (plan in `docs/STAGES.md` → "S2 plan")
+## Exact next task — S2 step 5 (plan in `docs/STAGES.md` → "S2 plan")
 
-1. Step 4, call lifecycle: one active call per user — joining another room leaves the
-   previous one (server side, by session/user once accounts exist; for now by connection),
-   both sessions notified; idempotent join/leave; group reconnect (3 members, one loses
-   signaling and returns) as a headless test.
-2. Step 5: automated 20-member headless scenario (real app-server, simulated devices,
-   serial run; a few talking, the rest with voice activation): everyone hears every
-   talker, join/leave/reconnect, CPU of the test process recorded. Watch the session-test
-   CPU starvation (known issue 20) — may need a release-mode run or a lighter engine tick.
+1. Automated 20-member headless scenario (real app-server, simulated devices, serial
+   run; a few talking, the rest with voice activation): everyone hears every talker,
+   join/leave/switch/reconnect, CPU of the test process recorded. Watch the session-test
+   CPU starvation (known issue 20) — may need a release-mode run or a lighter engine tick;
+   20 full `Session`s each with its own engine thread may be too heavy for a debug build
+   on a CI runner, so consider a lighter headless client (engine + call driver + signaling
+   without Slint) or `--release` for this one test.
+2. Step 6: SFU CPU and egress for 20 members (bench), speaker cap if needed.
 3. Before any GUI run: resolve known issue 21 (window took the foreground).
 
 ## Previous next-task list — S1 (plan in `docs/STAGES.md` → "S1 plan")

@@ -2,7 +2,9 @@
 //! SDP/ICE with other members of that room through the server.
 //!
 //! Invariants:
-//! * a connection is in at most one room (one active call per user);
+//! * a connection is in at most one room (one active call per user): joining another
+//!   room leaves the current one first (its members get `PeerLeft{reason=SWITCHED}`, the
+//!   joiner gets `RoomLeft` for it before `RoomJoined`); join and leave are idempotent;
 //! * every outbound queue is bounded; a peer that cannot keep up is disconnected;
 //! * the server never inspects or logs SDP/ICE contents or media datagrams;
 //! * media datagrams for a member are dropped, not queued without bound, when its
@@ -139,6 +141,21 @@ impl Hub {
             .map_or(0, HashMap::len)
     }
 
+    /// Members of `room` other than `peer_id`.
+    fn peers_except(&self, room: &str, peer_id: &str) -> Vec<v1::Peer> {
+        let rooms = self.rooms.lock().expect("hub lock poisoned");
+        rooms.get(room).map_or_else(Vec::new, |members| {
+            members
+                .iter()
+                .filter(|(id, _)| id.as_str() != peer_id)
+                .map(|(id, h)| v1::Peer {
+                    peer_id: id.clone(),
+                    display_name: h.display_name.clone(),
+                })
+                .collect()
+        })
+    }
+
     pub fn room_count(&self) -> usize {
         self.rooms.lock().expect("hub lock poisoned").len()
     }
@@ -252,6 +269,18 @@ struct Session {
 }
 
 impl Session {
+    /// Leaves the current room (and its media session), telling the other members why.
+    fn leave_room(&mut self, hub: &Hub, state: &AppState, peer_id: &str, reason: LeaveReason) {
+        let Some(room) = self.room.take() else {
+            return;
+        };
+        hub.leave(&room, peer_id, reason);
+        if let (true, Some(sfu)) = (self.media, &state.sfu) {
+            sfu.leave(peer_id);
+            self.media = false;
+        }
+    }
+
     fn handle(&self) -> PeerHandle {
         PeerHandle {
             display_name: self.display_name.clone(),
@@ -431,13 +460,26 @@ fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
         C::JoinRoom(j) => {
             if let Err(e) = proto::validate_room_id(&j.room_id) {
                 s.reply_error(rid, ErrorCode::BadRequest, &e.to_string());
-            } else if s.room.is_some() {
-                s.reply_error(
+            } else if s.room.as_deref() == Some(j.room_id.as_str()) {
+                // Repeated join (a retry after a lost reply): the current members again,
+                // nothing changes for the others.
+                let peers = hub.peers_except(&j.room_id, &peer_id);
+                s.reply(
                     rid,
-                    ErrorCode::AlreadyInRoom,
-                    "leave the current room first",
+                    S::RoomJoined(v1::RoomJoined {
+                        room_id: j.room_id,
+                        peers,
+                    }),
                 );
+            } else if hub.room_size(&j.room_id) >= cfg.max_room_peers {
+                // Checked before leaving, so a full room does not end the current call.
+                s.reply_error(rid, ErrorCode::RoomFull, "cannot join room");
             } else {
+                // The new call closes the previous one.
+                if let Some(old) = s.room.clone() {
+                    s.leave_room(hub, state, &peer_id, LeaveReason::Switched);
+                    s.reply(0, S::RoomLeft(v1::RoomLeft { room_id: old }));
+                }
                 match hub.join(&j.room_id, &peer_id, s.handle(), rid, cfg.max_room_peers) {
                     Ok(()) => s.room = Some(j.room_id),
                     Err(code) => s.reply_error(rid, code, "cannot join room"),
@@ -445,17 +487,12 @@ fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
             }
         }
         C::LeaveRoom(l) => {
-            if s.room.as_deref() != Some(l.room_id.as_str()) {
-                s.reply_error(rid, ErrorCode::NotInRoom, "not a member of this room");
-            } else {
-                hub.leave(&l.room_id, &peer_id, LeaveReason::Left);
-                s.room = None;
-                if let (true, Some(sfu)) = (s.media, &state.sfu) {
-                    sfu.leave(&peer_id);
-                    s.media = false;
-                }
-                s.reply(rid, S::RoomLeft(v1::RoomLeft { room_id: l.room_id }));
+            // Idempotent: leaving a room we are not in (already left, switched, never
+            // joined) only confirms it.
+            if s.room.as_deref() == Some(l.room_id.as_str()) {
+                s.leave_room(hub, state, &peer_id, LeaveReason::Left);
             }
+            s.reply(rid, S::RoomLeft(v1::RoomLeft { room_id: l.room_id }));
         }
         C::Signal(sig) => {
             if let Err(e) = proto::validate_signal(&sig) {

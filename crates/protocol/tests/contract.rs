@@ -263,3 +263,17 @@ fn media_validation() {
         .is_err()
     );
 }
+
+#[test]
+fn leave_reasons_are_pinned() {
+    assert_eq!(v1::LeaveReason::Left as i32, 1);
+    assert_eq!(v1::LeaveReason::Disconnected as i32, 2);
+    assert_eq!(v1::LeaveReason::Timeout as i32, 3);
+    assert_eq!(v1::LeaveReason::Switched as i32, 4);
+    let left = v1::PeerLeft {
+        room_id: "r".into(),
+        peer_id: "p".into(),
+        reason: 4,
+    };
+    assert_eq!(left.reason(), v1::LeaveReason::Switched);
+}

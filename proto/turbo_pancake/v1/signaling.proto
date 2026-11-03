@@ -117,6 +117,8 @@ enum LeaveReason {
   LEAVE_REASON_LEFT = 1;
   LEAVE_REASON_DISCONNECTED = 2;
   LEAVE_REASON_TIMEOUT = 3;
+  // Joined another room: the new call closed this one (one active call per user).
+  LEAVE_REASON_SWITCHED = 4;
 }
 
 message SessionDescription {
@@ -177,6 +179,7 @@ enum ErrorCode {
   ERROR_CODE_BAD_REQUEST = 2;
   ERROR_CODE_PAYLOAD_TOO_LARGE = 3;
   ERROR_CODE_HELLO_REQUIRED = 4;
+  // No longer sent: joining another room switches to it (one active call per user).
   ERROR_CODE_ALREADY_IN_ROOM = 5;
   ERROR_CODE_NOT_IN_ROOM = 6;
   ERROR_CODE_PEER_NOT_FOUND = 7;

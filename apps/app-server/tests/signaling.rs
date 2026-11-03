@@ -311,20 +311,103 @@ async fn signal_routing_errors() {
     let me = a.peer_id.clone();
     let rid = a.send(offer("r1", &me, "x")).await;
     a.expect_error(rid, ErrorCode::BadRequest).await;
-    // join twice
+    // invalid room id
     let rid = a
         .send(C::JoinRoom(v1::JoinRoom {
-            room_id: "r3".into(),
+            room_id: "bad room!".into(),
         }))
         .await;
-    a.expect_error(rid, ErrorCode::AlreadyInRoom).await;
-    // invalid room id
-    let rid = b
+    a.expect_error(rid, ErrorCode::BadRequest).await;
+}
+
+/// One active call per connection: joining another room closes the current one; join and
+/// leave are idempotent.
+#[tokio::test]
+async fn joining_another_room_closes_the_previous_call() {
+    let addr = start(Config::default()).await;
+    let mut a = Client::hello(addr, "a").await;
+    let mut b = Client::hello(addr, "b").await;
+    let mut c = Client::hello(addr, "c").await;
+    a.join("r1").await;
+    b.join("r1").await;
+    assert!(matches!(a.recv().await.1, S::PeerJoined(_)));
+    c.join("r2").await;
+
+    // Repeated join of the same room: the members again, nobody else hears about it.
+    let peers = a.join("r1").await;
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].peer_id, b.peer_id);
+
+    // a joins r2: RoomLeft{r1} first, then RoomJoined{r2}; b sees a leave (SWITCHED),
+    // c sees a arrive.
+    let rid = a
+        .send(C::JoinRoom(v1::JoinRoom {
+            room_id: "r2".into(),
+        }))
+        .await;
+    let (r, body) = a.recv().await;
+    assert_eq!(r, 0);
+    let S::RoomLeft(left) = body else {
+        panic!("expected RoomLeft, got {body:?}")
+    };
+    assert_eq!(left.room_id, "r1");
+    let (r, body) = a.recv().await;
+    assert_eq!(r, rid);
+    let S::RoomJoined(j) = body else {
+        panic!("expected RoomJoined, got {body:?}")
+    };
+    assert_eq!(j.room_id, "r2");
+    assert_eq!(j.peers.len(), 1);
+    assert_eq!(j.peers[0].peer_id, c.peer_id);
+    let S::PeerLeft(pl) = b.recv().await.1 else {
+        panic!()
+    };
+    assert_eq!(pl.peer_id, a.peer_id);
+    assert_eq!(pl.reason(), LeaveReason::Switched);
+    let S::PeerJoined(pj) = c.recv().await.1 else {
+        panic!()
+    };
+    assert_eq!(pj.peer.unwrap().peer_id, a.peer_id);
+
+    // a is no longer in r1: signaling there is refused.
+    let rid = a.send(offer("r1", &b.peer_id, "x")).await;
+    a.expect_error(rid, ErrorCode::NotInRoom).await;
+
+    // Leaving a room we are not in only confirms it (a stays in r2).
+    let rid = a
         .send(C::LeaveRoom(v1::LeaveRoom {
             room_id: "r1".into(),
         }))
         .await;
-    b.expect_error(rid, ErrorCode::NotInRoom).await;
+    let (r, body) = a.recv().await;
+    assert_eq!(r, rid);
+    assert!(matches!(body, S::RoomLeft(ref l) if l.room_id == "r1"));
+    a.send(offer("r2", &c.peer_id, "x")).await;
+    let S::Signal(_) = c.recv().await.1 else {
+        panic!()
+    };
+}
+
+/// A full room refuses the switch and the current call goes on.
+#[tokio::test]
+async fn switch_to_a_full_room_keeps_the_current_call() {
+    let addr = start(Config {
+        max_room_peers: 1,
+        ..Config::default()
+    })
+    .await;
+    let mut a = Client::hello(addr, "a").await;
+    let mut b = Client::hello(addr, "b").await;
+    a.join("r1").await;
+    b.join("r2").await;
+    let rid = a
+        .send(C::JoinRoom(v1::JoinRoom {
+            room_id: "r2".into(),
+        }))
+        .await;
+    a.expect_error(rid, ErrorCode::RoomFull).await;
+    // Still in r1: a repeated join answers with r1's members.
+    assert!(a.join("r1").await.is_empty());
 }
 
 #[tokio::test]

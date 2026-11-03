@@ -775,7 +775,19 @@ impl Core {
                     self.snap.last_error = Some(msg);
                 }
             }
-            S::Welcome(_) | S::RoomLeft(_) | S::Signal(_) => {}
+            S::RoomLeft(r) => {
+                // Our own leave or switch is already done locally (`joined` was cleared
+                // first). A RoomLeft for the room we are in means the server ended our
+                // membership: the call is over, do not rejoin on our own.
+                if self.joined.as_deref() == Some(r.room_id.as_str()) {
+                    self.leave_room();
+                    self.want_room = None;
+                    self.stop_audio();
+                    self.snap.last_error =
+                        Some(format!("звонок в «{}» завершён сервером", r.room_id));
+                }
+            }
+            S::Welcome(_) | S::Signal(_) => {}
         }
     }
 
