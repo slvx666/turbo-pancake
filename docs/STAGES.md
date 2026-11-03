@@ -15,6 +15,41 @@ verbatim-in-meaning so each session can check them.
 | S7 | Desktop polish + delivery | E2E on Win/macOS/Linux, signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
 
+## S3 plan (started 2026-11-03)
+
+Scope (spec §5.1, §5.2, §14.1–14.3, §17 S3): one sharer per member, whole selected monitor,
+1080p60 H.264 with hardware encode/decode, system audio without our own sound, one viewer.
+Windows first (dev machine); macOS/Linux pieces are written behind `cfg` and stay
+UNVERIFIED until they run on real hardware (owner has none — same blocker shape as S1).
+
+1. **Capture + encode probe** (`tools/screen-probe`): list monitors and hardware encoders;
+   capture a monitor with Windows.Graphics.Capture (D3D11 texture, no CPU copy), scale and
+   convert BGRA → NV12 on the GPU (D3D11 video processor), encode H.264 with the hardware
+   Media Foundation MFT (async, low-latency CBR); report captured / encoded FPS, capture →
+   encoded latency p50/p95/p99, bitrate, keyframes as JSON in `benchmarks/results/`.
+   No pixels are written anywhere. Runs on the secondary monitor only.
+2. **Owner decision (ADR 0009): H.264 licensing.** Options: (a) OS/vendor encoders only
+   (Media Foundation, VideoToolbox, VA-API) — no codec code shipped by us; (b) bundle
+   OpenH264 (Cisco binary, BSD, Cisco pays MPEG LA when downloaded from Cisco) as a CPU
+   fallback; (c) FFmpeg LGPL dynamic. Until decided the code uses (a) only.
+3. **`crates/media-video`**: capture thread → GPU convert → encoder thread with a
+   depth-1 "latest frame wins" slot (no queues that grow), keyframe on request, bitrate
+   change at runtime; decoder (MF H.264 hardware MFT, D3D11 output) → NV12 → BGRA texture.
+4. **Transport**: a video m-line (H.264, packetization-mode 1) on the existing str0m
+   session to the SFU; SFU forwards the sharer's RTP to subscribed viewers only, relays
+   PLI/FIR as keyframe requests; protocol: `ScreenSharePublished/Unpublished`,
+   `SubscribeScreen{peer}`; contract tests.
+5. **Viewer**: the desktop shows the selected share in the call window (Slint image from a
+   CPU copy first; GPU texture import is S4 work), stop/switch monitor from the share menu.
+6. **System audio**: WASAPI process loopback excluding our process tree (Windows 10 2004+
+   / 11), Opus stereo 48 kHz as a second audio track without NS/AEC (spec §4); on macOS
+   ScreenCaptureKit `excludesCurrentProcessAudio`, Linux disabled with a stated limitation
+   until the PipeWire routing is validated.
+7. **Acceptance runs**: real share between two clients on this machine (sharer captures
+   the secondary monitor) with frame counts, end-to-end latency via a timestamp marker
+   drawn in a test pattern window, bitrate; system audio with the client's own playback
+   playing and verified absent from the captured stream; stop / monitor switch tests.
+
 ## S2 plan (done 2026-11-03)
 
 Base already in place from S1 (ADR 0007): every member has one media session with the

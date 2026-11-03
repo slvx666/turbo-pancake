@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S3 — screen share 1080p60 + system audio (NOT_STARTED)
 Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked)
-Last verified commit: 9259594 (branch `main`, CI run 41647867149: Windows, Ubuntu, audit green; macOS arm64 job never got a runner — cancelled with 0 steps in 3 attempts, as in run 41641056166; last macOS run that executed tests: 41588139375, before the SFU burst fix — see known issue 26)
+Last verified commit: 6596928 (branch `main`, CI run 41654959430: Windows, Ubuntu, audit green; macOS arm64 job never got a runner — cancelled with 0 steps, as in runs 41641056166 and 41647867149 ×3; last macOS run that executed tests: 41588139375, before the SFU burst fix — see known issue 26)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-03
 
@@ -159,7 +159,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
     S2 (20 members ≤ 26 % of a core); revisit for 100-member rooms with many simultaneous
     talkers or many busy rooms (S7 load tests).
 26. **macOS CI after the SFU burst fix is UNVERIFIED:** from 2026-11-03 13:00 UTC GitHub did
-    not assign a macOS arm64 runner (runs 41641056166, 41647867149 ×3: cancelled after
+    not assign a macOS arm64 runner (runs 41641056166, 41647867149 ×3, 41654959430: cancelled after
     15 min queued, 0 steps). The failures there are explained by SFU counters (RTP
     overwritten in str0m before forwarding) and the fix is covered by a deterministic test
     that fails on the old code (`crates/media-sfu/tests/burst.rs`), green on Windows and
