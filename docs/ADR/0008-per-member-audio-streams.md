@@ -47,6 +47,11 @@ Option **(c)**.
 
 ### str0m details found on the way
 
+* **Poll after every input.** In RTP mode str0m keeps one received packet until
+  `poll_output`; handing in a second datagram first overwrites it. The SFU polls the
+  member's `Rtc` right after each datagram (UDP or tunnel). Found on the macOS runner,
+  where bursts lost ≈ 35 % of RTP (`crates/media-sfu/tests/burst.rs`).
+
 * **No `mid` header extension.** With several SSRCs on one m-line, str0m's receiver maps
   an unknown SSRC that carries `mid` onto the m-line's existing stream (it treats it as an
   SSRC change), which would steal another member's stream. The SFU answers without the
@@ -68,10 +73,11 @@ Option **(c)**.
   N, using the negotiated audio-level extension) is the planned guard for large rooms;
   measured in S2 step 6.
 * **Measured (S2 step 6, `turbo-pancake-bench sfu`, Windows dev machine, release, loopback):**
-  20 members all talking = 380 forwarded streams, 19 000 packets/s out, 18.7 % of one
+  20 members all talking = 380 forwarded streams, 19 000 packets/s out, 19–25 % of one
   core, 100 % delivered, ≈ 25 Mbit/s egress including headers. The SFU thread costs
-  ≈ 11 µs per forwarded packet under load and saturates one core at ≈ 78 000 packets/s
-  out (50 members all talking: 64 % delivered — it drops, it does not fall over). One SFU
+  ≈ 11–14 µs per forwarded packet under load and saturates one core at ≈ 72–78 000
+  packets/s out (50 members all talking: 59–64 % delivered — it drops, it does not fall
+  over). One SFU
   thread therefore carries about 1 500 concurrently forwarded streams: a 100-member room
   with up to ~15 people talking at once, or many small rooms.
 * **Speaker cap: not implemented in S2.** 20 members (the S2 target) need < 20 % of a

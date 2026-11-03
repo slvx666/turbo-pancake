@@ -81,12 +81,12 @@ performance results for the target hardware (RTX 4070 Super / M4).
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
-| ≥ 3 real clients | three desktop clients on real devices (by hand) | **UNVERIFIED** (not run yet); headless 3 sessions: **PASS** | `cargo test -p turbo-pancake-desktop --test session three_members` |
+| ≥ 3 real clients | `powershell -File benchmarks/scripts/group-trial.ps1 -Seconds 60` — app-server + three release desktop clients (real default microphone and speakers, windows on the 2nd monitor, inactive), C with voice activation at −45 dBFS | **PASS (Windows, one machine, real devices, 2026-11-03)**: all three joined and stayed connected over UDP, each saw the two others; A↔B ≈ 2 200 frames each way in 45 s, 0 concealed, 0 late, 0 decode errors; C received both streams (2 215 / 2 216 frames, 0 concealed) and, its microphone being below the threshold, sent 0 frames (2 222 gated); all exited cleanly (exit 0). The room was quiet (mic ≈ −80 dBFS) and the call volume 0, so **by-ear quality with three people is UNVERIFIED** (by ear: two homes in S1); three separate machines **UNVERIFIED**. Headless 3 sessions: **PASS** | `benchmarks/results/group-trial-windows-20261103.log`, `cargo test -p turbo-pancake-desktop --test session three_members` |
 | Automated 20-participant scenario | 20 desktop `Session`s (simulated devices, real UDP) through one in-process app-server + SFU: 3 talk, 17 listen with voice activation and a silent mic. Everyone hears every talker (listeners 3 streams, talkers 2), speaking indicators match, listeners send 0 frames; a talker leaves + a listener switches rooms → the 17 left hear 2 talkers; both return → all hear 3; server outage → all 20 reconnect and hear 3 again | **PASS (headless, Windows debug build, 3 runs)**: all heard after ≈ 1.97 s, recovered after outage ≈ 2.4 s, worst concealed 0.0 %, test process CPU 9.8–15.2 s over 6.0–7.3 s wall (≈ 1.6 of 12 logical CPUs for 20 clients + server) | `cargo test -p turbo-pancake-desktop --test session twenty -- --nocapture` (prints `TURBO_PANCAKE_TWENTY …`) |
 | Join / leave | 3-member test: leave → others keep hearing each other, rejoin → all hear all | **PASS (headless)** | same test |
 | Reconnection | signaling outage: 2 members, and 3 members (server restart → all rejoin, each hears both others as exactly 2 fresh streams) | **PASS (headless)**; real network roaming **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects`, `group_call_reconnects_after_a_server_outage` |
 | New call closes the previous one | server: join of another room → `RoomLeft{old}`, old members `PeerLeft{SWITCHED}`, SFU session ends; repeated join/leave idempotent; full room refuses without ending the current call. Client: 3 sessions, Алиса switches from Боб's room to Вера's — Боб loses her stream at once, Алиса and Вера hear each other, repeated join changes nothing | **PASS (headless, per connection)**; per *user* across devices **UNVERIFIED** until accounts (S5) | `apps/app-server/tests/signaling.rs::{joining_another_room_closes_the_previous_call,switch_to_a_full_room_keeps_the_current_call}`, `apps/desktop/tests/session.rs::joining_another_room_closes_the_previous_call` |
-| No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008); load measured with `turbo-pancake-bench sfu` (release server process, 20 real call drivers) | **PASS**: no transcoding by design; 20 members, 1 / 3 / 10 / 20 talking → server 6.7 / 6.9 / 13.9 / 18.7 % of one core, 951 – 19 014 packets/s out, 100 % delivered, egress ≈ 1.3 – 25.3 Mbit/s | `crates/media-sfu/src/lib.rs`, `benchmarks/results/sfu-20m-windows-1793678064.json`, `sfu-50m-windows-1793678121.json` |
+| No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008); load measured with `turbo-pancake-bench sfu` (release server process, 20 real call drivers) | **PASS**: no transcoding by design; 20 members, 1 / 3 / 10 / 20 talking → server 6.9 / 6.2 / 14.4 / 25.4 % of one core, 951 – 18 991 packets/s out, 99–100 % delivered, egress ≈ 1.3 – 25.2 Mbit/s (re-measured after the burst fix) | `crates/media-sfu/src/lib.rs`, `benchmarks/results/sfu-20m-windows-1793711275.json`, `sfu-50m-windows-1793711325.json` |
 | Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
 
 ## Known issues and blockers
@@ -123,23 +123,27 @@ performance results for the target hardware (RTX 4070 Super / M4).
 19. **Media goes through the server since 2026-11-02 (ADR 0007):** UDP to the server or a
     WebSocket tunnel. Since S2 step 1 every member hears every other member as its own
     SSRC (ADR 0008). No E2EE (the SFU decrypts SRTP). No speaker cap yet: N·(N−1)
-    forwarded streams (planned guard: last-N speakers, S2 step 6).
+    forwarded streams; speaker cap deferred with measurements (ADR 0008, issue 25).
 20. `apps/desktop/tests/session.rs` runs its tests one at a time (shared mutex): several
     real-time simulated clients in parallel debug builds starved each other (≈ 4 %
     concealed frames, failing the < 3 % bound); serial runs: 0 concealed. One serial run in
     ~10 still failed while the dev machine was busy with other work.
-    On the macOS arm64 runner (CI 41559716784 attempt 1) the two 2-member tests that ran
-    right after the 20-member test failed the same bound (bursty arrival, heavy FEC);
-    the re-run was green. If it recurs: run the 20-member test as its own test binary
-    last, or relax the bound for CI runners with a recorded reason.
-21. **`window-check.ps1` saw the window in the foreground** (2026-11-03: 109 of 110 samples)
-    although it was created with `--no-activate`. No window code changed in this step and
-    Slint only calls `focus_window` on an explicit `bring_to_front`; the likely cause is
-    Windows granting foreground to a process started by the foreground app (the script was
-    launched from the active coding tool). Earlier runs did not show it. GUI checks on the
-    dev machine are paused until the launch path keeps the window inactive (investigate:
-    winit `with_active(false)` on Windows, `WS_EX_NOACTIVATE`, launching via a
-    non-foreground process).
+    **Fixed 2026-11-03:** the macOS failures (CI 41559716784 attempt 1, 41575409729,
+    41584876386, 41588139375: ≈ 35 % of RTP missing, also over the WebSocket tunnel) were
+    not CPU starvation but an SFU bug: str0m in RTP mode keeps one received packet until
+    `poll_output`, and the SFU handed a whole batch of datagrams in before polling, so a
+    member's burst lost all packets but the last (SFU counters: 403 RTP out of str0m for
+    ≈ 645 sent). macOS clients send in bursts (loop gaps up to 56 ms); Windows/Linux
+    rarely. The SFU now polls after every datagram (`crates/media-sfu/tests/burst.rs`:
+    20 → 100 of 100 forwarded).
+21. **Fixed 2026-11-03 — `window-check.ps1` saw the window in the foreground** (109 of 110
+    samples) although it was created with `--no-activate`: `Start-Process` goes through
+    ShellExecute, whose STARTUPINFO show mode (SW_SHOWNORMAL) Windows applies to a
+    process's first `ShowWindow` instead of winit's SW_SHOWNOACTIVATE, and a process
+    started by the foreground app may take the foreground. The script now launches through
+    CreateProcess (`UseShellExecute = false`): 0 of 110. Launchers with redirected output
+    (voice-trial, group-trial, the bench harness) already used CreateProcess. Any new GUI
+    launcher must do the same.
 22. Per-member volumes are keyed by the connection's peer id and reset on reconnect or
     rejoin (accounts with stable ids arrive in S5).
 23. With voice activation the receiver conceals ~200 ms after each talkspurt (counted as
@@ -148,11 +152,12 @@ performance results for the target hardware (RTX 4070 Super / M4).
     marker would remove it.
 24. One active call is enforced per connection; the same person on two devices can be in
     two rooms until accounts (S5) give a user identity to enforce it per user.
-25. **The SFU is one thread:** ≈ 11 µs per forwarded packet, saturates one core at
-    ≈ 78 000 packets/s out (≈ 1 500 concurrent streams); 50 members all talking delivered
-    64 %. No speaker cap yet (ADR 0008: needs the audio-level extension from clients) and
-    no sharding across cores. Fine for S2 (20 members ≤ 19 % of a core); revisit for
-    100-member rooms with many simultaneous talkers or many busy rooms (S7 load tests).
+25. **The SFU is one thread:** ≈ 11–14 µs per forwarded packet, saturates one core at
+    ≈ 72–78 000 packets/s out (≈ 1 500 concurrent streams); 50 members all talking
+    delivered 59–64 % (dev machine shared with other work). No speaker cap yet (ADR 0008:
+    needs the audio-level extension from clients) and no sharding across cores. Fine for
+    S2 (20 members ≤ 26 % of a core); revisit for 100-member rooms with many simultaneous
+    talkers or many busy rooms (S7 load tests).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -331,6 +336,21 @@ Ubuntu and macOS arm64 (simulated devices). Unblock: any Apple Silicon Mac / Lin
 run `voice-trial` (or two clients against one server) and record. Still open on Windows
 and doable any time: a measured two-homes run with `--call-log` (with/without VPN), the
 DTLS backend benchmark (ADR 0003).
+
+## Session log 2026-11-03 (S2 completion — macOS loss, focus, three real clients)
+
+* macOS CI failures traced with new counters (`CallStats.send_errors`,
+  `SfuStats.udp_send_errors`, `GET /v1/media-stats`, session tests print both sides'
+  engine/call counters and the SFU's on failure) to an SFU bug: RTP overwritten in
+  str0m's single pending-packet slot when a member's datagrams were handed in as a batch.
+  Fixed (poll after every datagram), regression test `crates/media-sfu/tests/burst.rs`
+  (old code 20/100, new 100/100). SFU bench re-run: numbers unchanged within noise
+  (20 members all talking 25.4 % of a core, 100 % delivered; 50 talking saturates).
+* Known issue 21 fixed: `window-check.ps1` launches through CreateProcess → 0/110
+  foreground samples (was 109/110).
+* Three real clients: `benchmarks/scripts/group-trial.ps1` (new), 60 s, see the S2 table;
+  `--call-log` now prints per-member `members=name:played:concealed%:speaking`, device
+  names are scrubbed from the committed log.
 
 ## Session log 2026-11-03 (S2, step 6 — SFU load)
 

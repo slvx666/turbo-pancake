@@ -64,5 +64,6 @@ Reports dated before the 2026-11-02 rename reference the old `dsmini-*` executab
 | `signaling-before-ws-buffer-tuning-windows-1793574040.json` | relay p50 76 µs / p99 149 µs; 140 KB per idle WS (128 KiB default buffers) |
 | `signaling-windows-1793574147.json` | relay p50 72 µs / p99 153 µs; 17.9 KB per idle WS; 500 idle → 14.3 MiB total |
 | `media-probe-windows-*.json` | WASAPI, 3 in / 3 out, default mic 192 kHz mono, open test OK |
-| `sfu-20m-windows-1793678064.json` | 20 members; talkers 1 / 3 / 10 / 20 → out 951 / 2852 / 9487 / 19014 pps, server CPU 6.7 / 6.9 / 13.9 / 18.7 % of one core, delivered 100 %, egress ≈ 1.3 / 3.8 / 12.6 / 25.3 Mbit/s |
-| `sfu-50m-windows-1793678121.json` | 50 members; talkers 3 / 10 / 25 / 50 → out 7.3k / 24.5k / 61.2k / 77.9k pps, CPU 11 / 26 / 67 / **100 %** of one core, delivered 100 / 100 / 100 / **64 %** (SFU thread saturated, degrades by dropping); ≈ 11 µs per forwarded packet under load |
+| `sfu-20m-windows-1793711275.json` | 20 members; talkers 1 / 3 / 10 / 20 → out 951 / 2853 / 9425 / 18991 pps, server CPU 6.9 / 6.2 / 14.4 / 25.4 % of one core, delivered 99–100 %, egress ≈ 1.3 / 3.8 / 12.5 / 25.2 Mbit/s |
+| `sfu-50m-windows-1793711325.json` | 50 members; talkers 3 / 10 / 25 / 50 → out 7.3k / 24.5k / 61.3k / 71.8k pps, CPU 16 / 31 / 81 / **97 %** of one core, delivered 100 / 100 / 100 / **59 %** (SFU thread saturated, degrades by dropping); ≈ 13 µs per forwarded packet under load |
+| `group-trial-windows-20261103.log` | three release clients on real devices (one machine), 60 s: all connected, 0 concealed / 0 late / 0 decode errors, voice-activated client sent 0 frames in a quiet room |
