@@ -71,6 +71,8 @@ pub struct UdpPeer {
     send_loss: f32,
     rng: u64,
     pub datagrams_dropped: u64,
+    /// Datagrams the OS refused to send (non-fatal errors: full buffer, no route, …).
+    pub send_errors: u64,
 }
 
 impl UdpPeer {
@@ -113,6 +115,7 @@ impl UdpPeer {
             send_loss: 0.0,
             rng: 0x9e37_79b9_7f4a_7c15,
             datagrams_dropped: 0,
+            send_errors: 0,
         })
     }
 
@@ -139,6 +142,7 @@ impl UdpPeer {
             send_loss: 0.0,
             rng: 0x9e37_79b9_7f4a_7c15,
             datagrams_dropped: 0,
+            send_errors: 0,
         })
     }
 
@@ -341,7 +345,10 @@ impl UdpPeer {
                                     | ErrorKind::InvalidInput
                                     | ErrorKind::AddrNotAvailable
                                     | ErrorKind::PermissionDenied
-                            ) => {}
+                            ) =>
+                        {
+                            self.send_errors += 1;
+                        }
                         Err(e) => return Err(e.into()),
                     }
                 }

@@ -120,6 +120,38 @@ impl Client {
         played(&self.last)
     }
 
+    /// Where frames went, for failure messages: the latest snapshot's engine and call
+    /// counters (sender queues, receiver queue, device rings, sockets).
+    fn diag(&mut self) -> String {
+        while let Ok(s) = self.updates.try_recv() {
+            self.last = s;
+        }
+        let e = self.last.engine.as_ref().map(|e| {
+            format!(
+                "engine sent={} dropped_out={} gated={} dropped_in={} in_xruns={} out_xruns={} ticks={}",
+                e.frames_sent,
+                e.frames_dropped,
+                e.frames_gated,
+                e.packets_dropped,
+                e.input_xruns,
+                e.output_xruns,
+                e.ticks
+            )
+        });
+        let c = self.last.call.as_ref().map(|c| {
+            format!(
+                "call sent={} recv={} not_connected={} impaired={} send_errors={} max_loop_gap_ms={:.1}",
+                c.packets_sent,
+                c.packets_received,
+                c.frames_not_connected,
+                c.impaired_drops,
+                c.send_errors,
+                c.max_loop_gap_ms
+            )
+        });
+        format!("{:?} | {:?}", e, c)
+    }
+
     fn transport(&self) -> Option<MediaTransport> {
         self.last.media.as_ref().map(|m| m.transport)
     }
@@ -220,8 +252,15 @@ fn two_sessions_call_through_the_server() {
     });
     eprintln!("b receiver: {rx:?}\na media: {:?}", a.last.call);
     assert_eq!(rx.decode_errors, 0);
-    assert!(rx.jitter.late <= 3, "{rx:?}");
-    assert!(rx.concealed_ratio() < 0.03, "{rx:?}");
+    let why = format!(
+        "{rx:?}
+a: {}
+b: {}",
+        a.diag(),
+        b.diag()
+    );
+    assert!(rx.jitter.late <= 3, "{why}");
+    assert!(rx.concealed_ratio() < 0.03, "{why}");
     assert!(
         b.state.recent_peak() > 0.2,
         "b speaker {}",
@@ -293,7 +332,14 @@ fn vpn_without_udp_falls_back_to_the_websocket() {
     let rx = b.last.engine.as_ref().unwrap().peers[0].stats;
     eprintln!("b receiver over websocket: {rx:?}");
     assert_eq!(rx.decode_errors, 0);
-    assert!(rx.concealed_ratio() < 0.03, "{rx:?}");
+    let why = format!(
+        "{rx:?}
+a: {}
+b: {}",
+        a.diag(),
+        b.diag()
+    );
+    assert!(rx.concealed_ratio() < 0.03, "{why}");
     assert!(b.state.recent_peak() > 0.2);
     a.quit();
     b.quit();
@@ -383,11 +429,23 @@ fn three_members_each_hear_both_others() {
         x.wait("both others heard", 20, |s| {
             s.members.len() == 2 && heard(s, 100) == 2
         });
+    }
+    let diags: Vec<String> = c.iter_mut().map(Client::diag).collect();
+    for x in &c {
         let e = x.last.engine.as_ref().unwrap();
         assert_eq!(e.peers.len(), 2, "{:?}", e.peers);
         for p in &e.peers {
             assert_eq!(p.stats.decode_errors, 0);
-            assert!(p.stats.concealed_ratio() < 0.03, "{:?}", p.stats);
+            assert!(
+                p.stats.concealed_ratio() < 0.03,
+                "{:?}
+{}",
+                p.stats,
+                diags.join(
+                    "
+"
+                )
+            );
         }
     }
 

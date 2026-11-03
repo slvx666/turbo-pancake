@@ -162,6 +162,8 @@ pub struct CallStats {
     pub bytes_received: u64,
     /// Datagrams dropped by the test impairment.
     pub impaired_drops: u64,
+    /// Datagrams the OS refused to send (non-fatal; a full send buffer shows up here).
+    pub send_errors: u64,
     pub rtt_ms: Option<f64>,
     /// Fraction of our packets the remote reported lost (RTCP), 0–1.
     pub egress_loss: Option<f32>,
@@ -647,6 +649,7 @@ impl Worker {
         self.st.bytes_sent = self.peer.bytes_sent;
         self.st.bytes_received = self.peer.bytes_received;
         self.st.impaired_drops = self.peer.datagrams_dropped;
+        self.st.send_errors = self.peer.send_errors;
         if let Ok(mut s) = self.stats.lock() {
             s.clone_from(&self.st);
         }

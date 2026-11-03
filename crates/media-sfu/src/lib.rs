@@ -77,6 +77,8 @@ pub struct SfuStats {
     pub streams_out: usize,
     pub udp_in: u64,
     pub udp_out: u64,
+    /// UDP datagrams the OS refused to send (full buffer, unreachable, …).
+    pub udp_send_errors: u64,
     pub tunnel_in: u64,
     pub tunnel_out: u64,
     /// Commands dropped because the queue was full.
@@ -506,7 +508,9 @@ impl Worker {
                             m.sink.datagram(t.contents.to_vec());
                         } else if let Some(s) = &self.socket {
                             self.st.udp_out += 1;
-                            let _ = s.send_to(&t.contents, t.destination);
+                            if s.send_to(&t.contents, t.destination).is_err() {
+                                self.st.udp_send_errors += 1;
+                            }
                         }
                     }
                     Ok(Output::Event(e)) => match e {
