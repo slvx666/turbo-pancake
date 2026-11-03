@@ -32,7 +32,7 @@ UNVERIFIED until they run on real hardware (owner has none — same blocker shap
    (Media Foundation, VideoToolbox, VA-API) — no codec code shipped by us; (b) bundle
    OpenH264 (Cisco binary, BSD, Cisco pays MPEG LA when downloaded from Cisco) as a CPU
    fallback; (c) FFmpeg LGPL dynamic. Until decided the code uses (a) only.
-3. **`crates/media-video`**: capture thread → GPU convert → encoder thread with a
+3. **`crates/media-video`** (encoder + decoder done 2026-11-03; capture thread + latest-frame slot still in the probe): capture thread → GPU convert → encoder thread with a
    depth-1 "latest frame wins" slot (no queues that grow), keyframe on request, bitrate
    change at runtime; decoder (MF H.264 hardware MFT, D3D11 output) → NV12 → BGRA texture.
 4. **Transport**: a video m-line (H.264, packetization-mode 1) on the existing str0m

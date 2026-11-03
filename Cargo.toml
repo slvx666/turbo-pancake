@@ -7,6 +7,7 @@ members = [
     "crates/media-transport",
     "crates/media-audio",
     "crates/media-sfu",
+    "crates/media-video",
     "benchmarks/harness",
     "tools/media-probe",
     "tools/screen-probe",

@@ -1,6 +1,6 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
-Current stage: S3 — screen share 1080p60 + system audio (IN_PROGRESS since 2026-11-03: step 1 capture + encode probe on Windows done)
+Current stage: S3 — screen share 1080p60 + system audio (IN_PROGRESS since 2026-11-03: step 1 probe done, step 3 encoder/decoder library on Windows done)
 Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked)
 Last verified commit: 6596928 (branch `main`, CI run 41654959430: Windows, Ubuntu, audit green; macOS arm64 job never got a runner — cancelled with 0 steps, as in runs 41641056166 and 41647867149 ×3; last macOS run that executed tests: 41588139375, before the SFU burst fix — see known issue 26)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
@@ -36,7 +36,8 @@ Last session: 2026-11-03
 | **Desktop session + voice room** (S1): `Session` thread (Tokio current-thread) — `/v1/signal` hello/join/leave/relay/ping, reconnect with backoff 0.5→5 s and rejoin; engine (APM on by default) started on join, `CallDriver` per remote (later joiner offers), restart after `Failed`, `PeerLeft` ends the call, leave releases everything; Slint panel (room id, join/leave, mute, NS/AEC, input/output pickers, remote volume, mic level, state + RTT/loss/jitter stats); CLI `--server --name --room --mute --remote-volume --call-log --test-send-loss` | `apps/desktop/src/{lib,session,view,main}.rs`, `ui/main.slint` | 1 unit + 2 integration tests (`tests/session.rs`, real app-server + WS + UDP, simulated devices); `benchmarks/scripts/voice-trial.ps1` with real devices |
 | **Per-member audio** (S2): SFU assigns an SSRC per member session and forwards every member to every other member (no transcoding, no renegotiation); `TrackPublished`/`TrackUnpublished`; client `CallDriver::expect_source`, engine peer per SSRC | `crates/media-sfu`, `proto/…/signaling.proto`, `crates/media-transport/src/call.rs`, `apps/desktop/src/session.rs` | `tests/session.rs::three_members_each_hear_both_others`, contract test, ADR 0008 |
 | **Group call client** (S2 step 3): member list (peer id → SSRC → engine stream) with a speaking indicator and a volume slider per member (`Command::SetMemberVolume`, on top of the call volume); voice activation with an adjustable threshold (`Command::SetVoiceGate`, dBFS, 300 ms hangover; the sequence number pauses, the RTP timestamp runs on); own speaking indicator and a dB microphone meter with the threshold mark; jitter buffer measures transit by RTP timestamp and starts a talkspurt after a pause instead of discarding it as late | `crates/media-audio/src/{pipeline,jitter,engine}.rs`, `apps/desktop/src/{session,view,main}.rs`, `apps/desktop/ui/main.slint` | unit tests `pipeline::tests::*`, `jitter::tests::{talkspurt_*,short_pause_*}`, `tests/engine.rs::voice_activation_pauses_sending_and_drives_the_indicators`, `tests/session.rs::speaking_indicators_member_volume_and_voice_activation` |
-| ADRs 0001–0008, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
+| **H.264 encode/decode library** (S3 step 3): `H264Encoder` — first working hardware encoder MFT (async, event-driven), else the OS software encoder MFT (sync); low latency, CBR, GOP, no B-frames where accepted; input D3D11 NV12 texture (zero-copy when the MFT takes the device) or NV12 bytes; `ready()` instead of queues (caller drops the frame), `request_keyframe`, `set_bitrate`, `drain`; Annex B output. `H264Decoder` — Microsoft H.264 decoder MFT with the D3D11 manager (DXVA), low latency, output read back through a staging copy into tight NV12 | `crates/media-video` | `tests/loopback.rs`: 90-frame round trip on hardware and on the software encoder (all frames, order, forced keyframe, luma PSNR ≥ 52 dB), hardware 1080p60 real-time run; macOS/Linux `Unsupported` |
+| ADRs 0001–0009, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
 
@@ -95,6 +96,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
 | Real share with measured frames, latency, bitrate | step 1 probe only: `turbo-pancake-screen-probe run --monitor 1 --seconds 10 --pattern` (secondary monitor, 1920×1080 @ 60 Hz, RTX 2060 SUPER, NVIDIA H.264 Encoder MFT, 8 Mbit/s CBR requested) | **UNVERIFIED** (no transport/viewer yet). Probe: capture 54.9 fps, encoded 57.8 fps, capture → encoded p50 18.4 / p95 30.3 / p99 43.0 ms, submit → encoded p50 6.7 / p95 16.3 ms, 983 kbit/s on the simple pattern (encoder does not pad CBR), 10 keyframes / 10 s, process CPU 5.6 % of one core. Static screen: capture 0.3 fps, encoder repeats the last frame at 57 fps | `benchmarks/results/screen-probe-windows-1080p60-pattern-2026-11-03.json`, `…-1080p60-2026-11-03.json` |
+| (step 3) encode → decode 1080p60 | `cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture` | **PASS (Windows, RTX 2060 SUPER, NVENC + DXVA, no network)**: 179 of 180 frames at 59.8 fps, encode p50 3.9 / p95 4.5 ms, encode + decode p50 6.9 / p95 8.0 / p99 9.6 ms; round trip PSNR 55.5 dB hardware, 52.3 dB OS software encoder. macOS/Linux **UNVERIFIED** | `benchmarks/results/media-video-loopback-windows-1080p60-2026-11-03.json` |
 | System audio without echo, own sound excluded | — | **UNVERIFIED** (step 6) | — |
 | Stop / switch monitor | — | **UNVERIFIED** (step 5) | — |
 | Platform limits stated | macOS/Linux probe prints UNVERIFIED; no hardware for trials (same as S1) | **UNVERIFIED** | — |
@@ -184,6 +186,13 @@ performance results for the target hardware (RTX 4070 Super / M4).
     so it changes content faster than the 60 Hz captured monitor — fine for FPS, but the
     end-to-end latency marker (step 7) must be timestamp-based. CBR on NVENC does not pad:
     simple content gives ≈ 1 Mbit/s of 8 requested.
+29. **DXVA output readback:** `IMF2DBuffer::Lock2D` on the decoder's D3D11 surface took
+    ≈ 55 ms per 1080p frame (16 fps); copying the subresource into our own staging texture
+    and mapping it takes ≈ 3 ms. The viewer should eventually draw the decoded texture on the
+    GPU (S4: Slint GPU texture import), the CPU copy is the step 5 path. The OS software
+    encoder rejects `MFT_MESSAGE_COMMAND_FLUSH` before streaming (now ignored). NVENC did not
+    encoder accepted `CODECAPI_AVEncMPVDefaultBPictureCount` on NVENC (low-latency mode
+    already avoids B-frames: decode order == capture order in the test).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -477,7 +486,25 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
   `--pattern` (non-activating moving test window on the captured monitor). Results in the S3
   table above; foreground sampled every 50 ms during a 6 s run: 0 of 112 samples.
 
-## Exact next task — S3 step 2/3
+## Session log 2026-11-03 (S3, step 3 — encoder/decoder library)
+
+* Commit 349cebe (step 1 probe, ADR 0009) pushed. Owner decided H.264 licensing: OS/vendor
+  codecs only (ADR 0009).
+* New `crates/media-video` (Windows): hardware or OS software H.264 encoder MFT, Microsoft
+  decoder MFT with DXVA; loopback tests and 1080p60 numbers in the S3 table; issue 29.
+* Local checks need the APM build environment (vcvars64, meson/ninja venv, clang-cl as
+  CC/CXX, `nm`); with Git's `usr/bin` first on PATH its `link` shadows MSVC's linker.
+
+## Exact next task — S3 step 3 (rest) and step 4
+
+1. Move capture out of the probe into `crates/media-video` (`win::capture`: monitor list,
+   Windows.Graphics.Capture session, BGRA→NV12 video processor) with a capture thread and a
+   depth-1 latest-frame slot feeding an encoder thread; make the probe use the library.
+2. Step 4: H.264 video track on the existing str0m session to the SFU (packetization-mode
+   1, RTP mode like audio), `ScreenSharePublished/Unpublished`, `SubscribeScreen{peer}`,
+   PLI/FIR → `request_keyframe`; contract tests; SFU forwards video only to subscribers.
+
+## Previous next-task list — S3 step 2/3
 
 1. ~~Owner decision on H.264 licensing~~ — done: ADR 0009, OS/vendor codecs only.
 2. S3 step 3 (`docs/STAGES.md`): `crates/media-video` — move the probe's capture → convert →
