@@ -23,7 +23,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Notify, OwnedSemaphorePermit, mpsc};
-use turbo_pancake_media_sfu::{Link, PeerSink};
+use turbo_pancake_media_sfu::{Link, PeerSink, ShareInfo, Track, TrackKind};
 use turbo_pancake_protocol::{self as proto, DecodeError, v1};
 use v1::client_envelope::Body as C;
 use v1::server_envelope::Body as S;
@@ -94,23 +94,46 @@ impl PeerSink for WsSink {
             .send_media(S::MediaDatagram(v1::MediaDatagram { data }));
     }
 
-    fn track(&mut self, peer: &str, ssrc: u32, published: bool) {
+    fn track(&mut self, peer: &str, track: Track, published: bool) {
         let (room_id, peer_id) = (self.room.clone(), peer.to_owned());
+        let kind = match track.kind {
+            TrackKind::Audio => v1::TrackKind::Audio,
+            TrackKind::Screen => v1::TrackKind::Screen,
+            TrackKind::ScreenAudio => v1::TrackKind::ScreenAudio,
+        } as i32;
         let body = if published {
             S::TrackPublished(v1::TrackPublished {
                 room_id,
                 peer_id,
-                ssrc,
+                ssrc: track.ssrc,
+                kind,
+                rtx_ssrc: track.rtx.unwrap_or(0),
             })
         } else {
             S::TrackUnpublished(v1::TrackUnpublished {
                 room_id,
                 peer_id,
-                ssrc,
+                ssrc: track.ssrc,
+                kind,
             })
         };
         // Control events: a member that cannot take them is too slow and gets dropped.
         self.handle.send(0, body);
+    }
+
+    fn screen(&mut self, peer: &str, share: Option<ShareInfo>) {
+        let s = share.unwrap_or_default();
+        self.handle.send(
+            0,
+            S::ScreenShareState(v1::ScreenShareState {
+                room_id: self.room.clone(),
+                peer_id: peer.to_owned(),
+                active: share.is_some(),
+                width: s.width,
+                height: s.height,
+                fps: s.fps,
+            }),
+        );
     }
 }
 
@@ -529,6 +552,34 @@ fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
                 }
             } else {
                 s.reply_error(rid, ErrorCode::Internal, "media unavailable");
+            }
+        }
+        C::ScreenShare(m) => {
+            if let Err(e) = proto::validate_screen_share(&m) {
+                s.reply_error(rid, ErrorCode::BadRequest, &e.to_string());
+            } else if s.room.as_deref() != Some(m.room_id.as_str()) || !s.media {
+                s.reply_error(rid, ErrorCode::NotInRoom, "join the room with media first");
+            } else if let Some(sfu) = &state.sfu {
+                let share = m.active.then_some(ShareInfo {
+                    width: m.width,
+                    height: m.height,
+                    fps: m.fps,
+                });
+                if !sfu.share(&peer_id, share) {
+                    s.reply_error(rid, ErrorCode::Internal, "media server busy");
+                }
+            }
+        }
+        C::SubscribeScreen(m) => {
+            if let Err(e) = proto::validate_subscribe_screen(&m) {
+                s.reply_error(rid, ErrorCode::BadRequest, &e.to_string());
+            } else if s.room.as_deref() != Some(m.room_id.as_str()) || !s.media {
+                s.reply_error(rid, ErrorCode::NotInRoom, "join the room with media first");
+            } else if let Some(sfu) = &state.sfu {
+                let source = (!m.peer_id.is_empty()).then_some(m.peer_id.as_str());
+                if !sfu.subscribe(&peer_id, source) {
+                    s.reply_error(rid, ErrorCode::Internal, "media server busy");
+                }
             }
         }
         C::MediaDatagram(d) => {

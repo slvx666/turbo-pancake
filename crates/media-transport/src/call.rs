@@ -20,8 +20,17 @@
 //! With the SFU (ADR 0008) the server sends every other member as its own SSRC on the one
 //! m-line; [`CallDriver::expect_source`] registers each SSRC the signaling announced, and
 //! [`AudioIn::ssrc`] tells the streams apart.
+//!
+//! Screen share (S3, optional [`VideoIo`]): a second, H.264 video m-line. Outgoing access
+//! units are packetized here (nackable: str0m answers NACKs from its send buffer over
+//! RTX); received packets go to `on_video` unassembled ([`crate::video::FrameAssembler`]
+//! on the owner's side). Keyframe requests travel both ways: the remote's PLI/FIR becomes
+//! [`CallEvent::KeyframeRequested`], [`CallDriver::request_keyframe`] sends one.
+//! The share's system audio (Opus) has its own, third m-line, so it never mixes with the
+//! voice streams; received packets of it arrive through `on_audio` like voice (the owner
+//! tells them apart by SSRC).
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -34,6 +43,7 @@ use str0m::media::{Direction, MediaKind, Mid, Pt};
 use str0m::rtp::{RtpWrite, SeqNo, Ssrc};
 use str0m::{Candidate, Event, IceConnectionState, Rtc};
 
+use crate::video::{VideoIn, VideoOut, VideoPacketizer};
 use crate::{TransportError, TunnelSend, UdpPeer};
 
 /// How the call's datagrams travel.
@@ -78,6 +88,12 @@ pub struct CallConfig {
     pub stun_servers: Vec<String>,
     /// Longest wait for a STUN answer (delays the offer/answer by at most this).
     pub stun_timeout: Duration,
+    /// Video packets leave at most at this rate (bits/s), so a keyframe is not one burst
+    /// of hundreds of packets. str0m NACKs and accepts repairs only within 100 sequence
+    /// numbers of the newest packet, with 33 ms between NACK rounds: at 12 Mbit/s
+    /// (≈ 1 400 packets/s) a loss gets two repair attempts on a LAN. Also caps the
+    /// encoder's average bitrate.
+    pub video_pacing_bps: u32,
 }
 
 impl CallConfig {
@@ -92,6 +108,7 @@ impl CallConfig {
             send_loss: 0.0,
             stun_servers: Vec::new(),
             stun_timeout: Duration::from_millis(1500),
+            video_pacing_bps: 12_000_000,
         }
     }
 }
@@ -115,6 +132,16 @@ pub struct AudioIn {
     pub payload: Vec<u8>,
     /// When the datagram arrived.
     pub arrival: Instant,
+}
+
+/// Screen share channels of a call: encoded access units and system audio frames to send
+/// (drained every loop iteration) and a callback for received video RTP (call thread,
+/// must not block).
+pub struct VideoIo {
+    pub outgoing: Receiver<VideoOut>,
+    pub on_video: Box<dyn FnMut(VideoIn) + Send>,
+    /// System audio of our share (Opus, 20 ms frames).
+    pub audio_out: Receiver<AudioOut>,
 }
 
 /// Call state machine (spec §6, transport part).
@@ -150,6 +177,8 @@ pub enum LocalSignal {
 pub enum CallEvent {
     Signal(LocalSignal),
     State(CallState),
+    /// The remote asked for a keyframe of our video (PLI/FIR).
+    KeyframeRequested,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -174,6 +203,18 @@ pub struct CallStats {
     pub reflexive_addr: Option<SocketAddr>,
     /// Longest gap between two loop iterations (thread starvation shows up here).
     pub max_loop_gap_ms: f64,
+    pub video_frames_sent: u64,
+    pub video_packets_sent: u64,
+    /// Access units dropped because the call or the video m-line was not ready.
+    pub video_frames_not_ready: u64,
+    /// Access units dropped because the pacing queue was full (the encoder outran the
+    /// pacing rate); each drop asks our encoder for a keyframe.
+    pub video_frames_dropped_pacing: u64,
+    pub video_packets_received: u64,
+    pub keyframe_requests_received: u64,
+    /// NACKs we sent for received video / the remote sent for ours (str0m stats, 1 s).
+    pub video_nacks_sent: u64,
+    pub video_nacks_received: u64,
 }
 
 enum Command {
@@ -181,8 +222,31 @@ enum Command {
     RemoteAnswer(String),
     RemoteCandidate(String),
     ExpectSource(u32),
+    ExpectVideoSource(u32, Option<u32>),
+    ExpectScreenAudioSource(u32),
     ForgetSource(u32),
+    RequestKeyframe(u32),
     Stop,
+}
+
+/// Asks for keyframes of one remote video stream; cheap to clone, never blocks.
+#[derive(Clone)]
+pub struct KeyframeRequester {
+    commands: SyncSender<Command>,
+    ssrc: u32,
+}
+
+impl KeyframeRequester {
+    /// `false` when the call ended or its command queue is full.
+    pub fn request(&self) -> bool {
+        self.commands
+            .try_send(Command::RequestKeyframe(self.ssrc))
+            .is_ok()
+    }
+
+    pub fn ssrc(&self) -> u32 {
+        self.ssrc
+    }
 }
 
 /// Handle to a running call. Dropping it ends the call and joins the thread.
@@ -212,10 +276,22 @@ impl CallDriver {
         outgoing: Receiver<AudioOut>,
         on_audio: impl FnMut(AudioIn) + Send + 'static,
     ) -> Result<(CallDriver, Receiver<CallEvent>), TransportError> {
+        Self::start_media(config, link, outgoing, on_audio, None)
+    }
+
+    /// [`CallDriver::start_with`] plus, with `video`, an H.264 video m-line (offerer only).
+    pub fn start_media(
+        config: CallConfig,
+        link: MediaLink,
+        outgoing: Receiver<AudioOut>,
+        on_audio: impl FnMut(AudioIn) + Send + 'static,
+        video: Option<VideoIo>,
+    ) -> Result<(CallDriver, Receiver<CallEvent>), TransportError> {
         let rtc = Rtc::builder()
             .set_rtp_mode(true)
             .clear_codecs()
             .enable_opus(true, false)
+            .enable_h264(video.is_some())
             .set_stats_interval(Some(Duration::from_secs(1)));
         let mut peer = match link {
             MediaLink::Udp => UdpPeer::with_config(config.bind, config.advertise, rtc)?,
@@ -250,6 +326,19 @@ impl CallDriver {
             rx_bytes_seen: 0,
             sources: HashSet::new(),
             sources_pending: Vec::new(),
+            video,
+            video_mid: None,
+            video_pt: None,
+            video_seq: 0,
+            packetizer: VideoPacketizer::default(),
+            video_pending: Vec::new(),
+            video_queue: VecDeque::new(),
+            screen_audio_mid: None,
+            screen_audio_seq: None,
+            screen_audio_pending: Vec::new(),
+            video_queued_bytes: 0,
+            video_budget: 0.0,
+            video_paced_at: Instant::now(),
         };
         let thread = std::thread::Builder::new()
             .name("tp-call".into())
@@ -296,8 +385,31 @@ impl CallDriver {
         self.send(Command::ExpectSource(ssrc))
     }
 
+    /// Accept a remote share's system audio stream (on the screen audio m-line).
+    pub fn expect_screen_audio_source(&self, ssrc: u32) -> Result<(), TransportError> {
+        self.send(Command::ExpectScreenAudioSource(ssrc))
+    }
+
+    /// Accept a remote video stream (and its RTX stream) on the video m-line.
+    pub fn expect_video_source(&self, ssrc: u32, rtx: Option<u32>) -> Result<(), TransportError> {
+        self.send(Command::ExpectVideoSource(ssrc, rtx))
+    }
+
     pub fn forget_source(&self, ssrc: u32) -> Result<(), TransportError> {
         self.send(Command::ForgetSource(ssrc))
+    }
+
+    /// Asks the sender of the remote video stream `ssrc` for a keyframe (PLI).
+    pub fn request_keyframe(&self, ssrc: u32) -> Result<(), TransportError> {
+        self.send(Command::RequestKeyframe(ssrc))
+    }
+
+    /// A handle another thread (e.g. a video decoder) uses to ask for keyframes of `ssrc`.
+    pub fn keyframe_requester(&self, ssrc: u32) -> KeyframeRequester {
+        KeyframeRequester {
+            commands: self.commands.clone(),
+            ssrc,
+        }
     }
 
     pub fn stats(&self) -> CallStats {
@@ -350,6 +462,31 @@ struct Worker {
     /// Remote SSRCs to accept; `sources_pending` waits until the audio m-line exists.
     sources: HashSet<u32>,
     sources_pending: Vec<u32>,
+    video: Option<VideoIo>,
+    video_mid: Option<Mid>,
+    video_pt: Option<Pt>,
+    /// Extended sequence number of the next video packet.
+    video_seq: u64,
+    packetizer: VideoPacketizer,
+    /// Remote video SSRCs (+ RTX) waiting for the video m-line.
+    video_pending: Vec<(u32, Option<u32>)>,
+    /// Packetized video waiting for the pacer.
+    video_queue: VecDeque<PacedPacket>,
+    /// Third m-line: the share's system audio.
+    screen_audio_mid: Option<Mid>,
+    screen_audio_seq: Option<u64>,
+    screen_audio_pending: Vec<u32>,
+    video_queued_bytes: usize,
+    /// Pacer token bucket (bytes).
+    video_budget: f64,
+    video_paced_at: Instant,
+}
+
+struct PacedPacket {
+    seq: u64,
+    timestamp: u32,
+    marker: bool,
+    payload: Vec<u8>,
 }
 
 /// Longest idle sleep of the call loop: bounds the extra latency of an outgoing frame.
@@ -388,6 +525,7 @@ impl Worker {
                 break;
             }
             self.send_audio();
+            self.send_video();
             self.declare_sources();
             match self.peer.step(STEP) {
                 Ok(events) => {
@@ -427,6 +565,12 @@ impl Worker {
     fn create_offer(&mut self) -> Result<(), TransportError> {
         let mut change = self.peer.rtc.sdp_api();
         let mid = change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+        if self.video.is_some() {
+            self.video_mid =
+                Some(change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None));
+            self.screen_audio_mid =
+                Some(change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None));
+        }
         let (offer, pending) = change
             .apply()
             .ok_or_else(|| TransportError::Call("empty offer".into()))?;
@@ -457,13 +601,33 @@ impl Worker {
                     }
                     Ok(())
                 }
+                Command::ExpectScreenAudioSource(ssrc) => {
+                    if self.sources.insert(ssrc) {
+                        self.screen_audio_pending.push(ssrc);
+                    }
+                    Ok(())
+                }
+                Command::ExpectVideoSource(ssrc, rtx) => {
+                    if self.sources.insert(ssrc) {
+                        self.video_pending.push((ssrc, rtx));
+                    }
+                    Ok(())
+                }
                 Command::ForgetSource(ssrc) => {
                     if self.sources.remove(&ssrc) {
                         self.sources_pending.retain(|s| *s != ssrc);
+                        self.video_pending.retain(|(s, _)| *s != ssrc);
+                        self.screen_audio_pending.retain(|s| *s != ssrc);
                         self.peer
                             .rtc
                             .direct_api()
                             .remove_stream_rx(Ssrc::from(ssrc));
+                    }
+                    Ok(())
+                }
+                Command::RequestKeyframe(ssrc) => {
+                    if let Some(rx) = self.peer.rtc.direct_api().stream_rx(&Ssrc::from(ssrc)) {
+                        rx.request_keyframe(str0m::media::KeyframeRequestKind::Pli);
                     }
                     Ok(())
                 }
@@ -502,6 +666,24 @@ impl Worker {
 
     /// Registers pending remote SSRCs once the audio m-line exists.
     fn declare_sources(&mut self) {
+        if !self.screen_audio_pending.is_empty()
+            && let Some(mid) = self
+                .screen_audio_mid
+                .filter(|m| self.peer.rtc.media(*m).is_some())
+        {
+            let mut api = self.peer.rtc.direct_api();
+            for ssrc in self.screen_audio_pending.drain(..) {
+                api.expect_stream_rx(Ssrc::from(ssrc), None, mid, None);
+            }
+        }
+        if !self.video_pending.is_empty()
+            && let Some(mid) = self.video_mid.filter(|m| self.peer.rtc.media(*m).is_some())
+        {
+            let mut api = self.peer.rtc.direct_api();
+            for (ssrc, rtx) in self.video_pending.drain(..) {
+                api.expect_stream_rx(Ssrc::from(ssrc), rtx.map(Ssrc::from), mid, None);
+            }
+        }
         if self.sources_pending.is_empty() {
             return;
         }
@@ -547,6 +729,108 @@ impl Worker {
         }
     }
 
+    /// The share's system audio, like voice but on its own m-line.
+    fn send_screen_audio(&mut self) {
+        let Some(video) = &self.video else {
+            return;
+        };
+        let frames: Vec<AudioOut> = video.audio_out.try_iter().collect();
+        let (Some(mid), Some(pt), true) = (
+            self.screen_audio_mid,
+            self.pt,
+            self.state == CallState::Connected,
+        ) else {
+            return;
+        };
+        for frame in frames {
+            let ext = extend_seq(self.screen_audio_seq, frame.seq);
+            self.screen_audio_seq = Some(ext);
+            let write = RtpWrite::new(
+                pt,
+                SeqNo::from(ext),
+                frame.timestamp,
+                Instant::now(),
+                frame.payload,
+            );
+            let mut api = self.peer.rtc.direct_api();
+            if let Some(tx) = api.stream_tx_by_mid(mid, None) {
+                tx.write_rtp(write);
+            }
+        }
+    }
+
+    fn send_video(&mut self) {
+        self.send_screen_audio();
+        let Some(video) = &self.video else {
+            return;
+        };
+        let frames: Vec<VideoOut> = video.outgoing.try_iter().collect();
+        let rate = f64::from(self.config.video_pacing_bps.max(100_000)) / 8.0;
+        for frame in frames {
+            let ready = self.state == CallState::Connected;
+            if !(ready && self.video_mid.is_some() && self.video_pt.is_some()) {
+                self.st.video_frames_not_ready += 1;
+                continue;
+            }
+            // More than half a second queued: the encoder runs above the pacing rate.
+            // Drop this frame; the next one must be a keyframe (later frames would
+            // reference the dropped one).
+            if self.video_queued_bytes as f64 > rate * 0.5 {
+                self.st.video_frames_dropped_pacing += 1;
+                self.emit(CallEvent::KeyframeRequested);
+                continue;
+            }
+            let parts = self.packetizer.packetize(&frame.data);
+            let count = parts.len();
+            for (i, payload) in parts.into_iter().enumerate() {
+                self.video_queued_bytes += payload.len();
+                self.video_queue.push_back(PacedPacket {
+                    seq: self.video_seq,
+                    timestamp: frame.timestamp,
+                    marker: i + 1 == count,
+                    payload,
+                });
+                self.video_seq += 1;
+            }
+            self.st.video_frames_sent += 1;
+        }
+        self.pace_video(rate);
+    }
+
+    /// Writes queued video packets as the token bucket allows (at most 10 ms of burst).
+    fn pace_video(&mut self, rate: f64) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.video_paced_at).as_secs_f64();
+        self.video_paced_at = now;
+        if self.video_queue.is_empty() {
+            self.video_budget = 0.0;
+            return;
+        }
+        self.video_budget = (self.video_budget + elapsed * rate).min(rate * 0.01 + 1500.0);
+        let (Some(mid), Some(pt)) = (self.video_mid, self.video_pt) else {
+            return;
+        };
+        let mut api = self.peer.rtc.direct_api();
+        let Some(tx) = api.stream_tx_by_mid(mid, None) else {
+            return;
+        };
+        while let Some(p) = self.video_queue.front() {
+            if (p.payload.len() as f64) > self.video_budget {
+                break;
+            }
+            let Some(p) = self.video_queue.pop_front() else {
+                break;
+            };
+            self.video_budget -= p.payload.len() as f64;
+            self.video_queued_bytes -= p.payload.len();
+            let write = RtpWrite::new(pt, SeqNo::from(p.seq), p.timestamp, now, p.payload)
+                .marker(p.marker)
+                .nackable(true);
+            tx.write_rtp(write);
+            self.st.video_packets_sent += 1;
+        }
+    }
+
     fn handle_event(&mut self, e: Event) {
         match e {
             Event::Connected => {
@@ -566,16 +850,44 @@ impl Worker {
                 self.set_state(CallState::Connected);
             }
             Event::MediaAdded(m) => {
-                if m.kind == MediaKind::Audio {
+                if m.kind == MediaKind::Audio && Some(m.mid) == self.screen_audio_mid {
+                    // Our own third m-line (set when the offer was made).
+                } else if m.kind == MediaKind::Audio {
                     self.mid = Some(m.mid);
                     self.try_ready();
+                } else if m.kind == MediaKind::Video && self.video.is_some() {
+                    self.video_mid = Some(m.mid);
                 }
+            }
+            Event::KeyframeRequest(r) if Some(r.mid) == self.video_mid => {
+                self.st.keyframe_requests_received += 1;
+                self.emit(CallEvent::KeyframeRequested);
             }
             Event::RtpPacket(p) => {
                 self.st.packets_received += 1;
                 if self.state == CallState::Reconnecting {
                     self.lost_at = None;
                     self.set_state(CallState::Connected);
+                }
+                let mid = self
+                    .peer
+                    .rtc
+                    .direct_api()
+                    .stream_rx(&p.header.ssrc)
+                    .map(|s| s.mid());
+                if mid.is_some() && mid == self.video_mid {
+                    self.st.video_packets_received += 1;
+                    if let Some(video) = &mut self.video {
+                        (video.on_video)(VideoIn {
+                            ssrc: *p.header.ssrc,
+                            seq: *p.seq_no,
+                            timestamp: p.header.timestamp,
+                            marker: p.header.marker,
+                            payload: p.payload.to_vec(),
+                            arrival: p.timestamp,
+                        });
+                    }
+                    return;
                 }
                 (self.on_audio)(AudioIn {
                     ssrc: *p.header.ssrc,
@@ -585,6 +897,12 @@ impl Worker {
                     payload: p.payload.to_vec(),
                     arrival: p.timestamp,
                 });
+            }
+            Event::MediaIngressStats(s) if Some(s.mid) == self.video_mid => {
+                self.st.video_nacks_sent = s.nacks;
+            }
+            Event::MediaEgressStats(s) if Some(s.mid) == self.video_mid => {
+                self.st.video_nacks_received = s.nacks;
             }
             Event::PeerStats(s) => {
                 self.st.rtt_ms = s.rtt.map(|d| d.as_secs_f64() * 1000.0);
@@ -613,6 +931,16 @@ impl Worker {
         if self.pt.is_none() {
             self.fail("no Opus codec negotiated".into());
             return;
+        }
+        if self.video.is_some() && self.video_pt.is_none() {
+            // A server without video simply leaves the share unavailable.
+            self.video_pt = self
+                .peer
+                .rtc
+                .codec_config()
+                .iter()
+                .find(|p| p.spec().codec == Codec::H264)
+                .map(|p| p.pt());
         }
         if self.mid.is_some() {
             self.st.connected_after_ms = Some(self.started.elapsed().as_millis() as u64);

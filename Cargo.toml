@@ -72,6 +72,9 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.opusic-sys]
 opt-level = 3
+# NV12 → RGBA of every shown screen-share frame.
+[profile.dev.package.turbo-pancake-media-video]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

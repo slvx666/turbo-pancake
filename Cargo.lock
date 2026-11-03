@@ -6210,6 +6210,7 @@ dependencies = [
  "turbo-pancake-app-server",
  "turbo-pancake-media-audio",
  "turbo-pancake-media-transport",
+ "turbo-pancake-media-video",
  "turbo-pancake-protocol",
 ]
 
@@ -6224,6 +6225,8 @@ dependencies = [
  "thiserror 2.0.21",
  "webrtc-audio-processing",
  "webrtc-audio-processing-config",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
@@ -6239,6 +6242,7 @@ dependencies = [
 name = "turbo-pancake-media-sfu"
 version = "0.1.0"
 dependencies = [
+ "socket2",
  "str0m",
  "turbo-pancake-media-transport",
 ]
@@ -6248,6 +6252,7 @@ name = "turbo-pancake-media-transport"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "socket2",
  "str0m",
  "thiserror 2.0.21",
  "turbo-pancake-media-audio",

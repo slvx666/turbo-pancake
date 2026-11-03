@@ -2,11 +2,15 @@
 
 #![allow(unsafe_code)]
 
+pub mod capture;
 mod decoder;
 mod encoder;
+mod share;
 
+pub use capture::monitors;
 pub use decoder::H264Decoder;
 pub use encoder::{EncoderInput, H264Encoder, hardware_encoder_names};
+pub use share::ScreenShare;
 
 use std::sync::Once;
 

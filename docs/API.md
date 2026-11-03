@@ -89,13 +89,31 @@ Server events (ADR 0008, spec §11 `media.track_published/unpublished`):
 
 | Event | Meaning |
 |---|---|
-| `TrackPublished{room_id, peer_id, ssrc}` | The member's audio arrives on this connection's media session as the RTP stream `ssrc`. Sent for every member already sending when the client's media session is accepted, then whenever another member's session starts. |
-| `TrackUnpublished{room_id, peer_id, ssrc}` | That stream ended (member left, its session was replaced or died). |
+| `TrackPublished{room_id, peer_id, ssrc, kind, rtx_ssrc}` | The member's stream arrives on this connection's media session as the RTP stream `ssrc`: `kind` `AUDIO` (0, voice; what S2 servers sent without the field), `SCREEN` (H.264 video, with its RTX stream `rtx_ssrc`) or `SCREEN_AUDIO` (the share's system audio). Sent for every member already present when the client's media session is accepted, then whenever another member's session starts. |
+| `TrackUnpublished{room_id, peer_id, ssrc, kind}` | That stream ended (member left, its session was replaced or died). |
 
 * Every other member is its own SSRC on the one audio m-line; no renegotiation. A
   member's new session gets a new SSRC (its `TrackUnpublished` for the old one comes
   first). The server answers without the RTP `mid` header extension, so streams are told
   apart by SSRC only; packets of an SSRC not announced yet are dropped by the client.
+
+### Screen share (S3, ADR 0010)
+
+The client's offer has three m-lines: voice (Opus), screen video (H.264, packetization
+mode 1, RTX) and the share's system audio (Opus). Requests need a media session in the
+joined room.
+
+| Client request | Effect | Errors |
+|---|---|---|
+| `ScreenShare{room_id, active, width, height, fps}` | Starts/updates (`active`, size 1..=4096, fps 1..=240) or stops this member's share; every other member gets `ScreenShareState`. Send it again after every new `MediaOffer` (a new media session forgets the share). | `BAD_REQUEST` (validation), `NOT_IN_ROOM` (no room or no media session), `INTERNAL` (media server busy) |
+| `SubscribeScreen{room_id, peer_id}` | Watch that member's share (`""` = none); replaces the previous subscription. The server forwards the share's video and system audio only to its subscribers and asks the sharer for a keyframe. | as above |
+
+| Event | Meaning |
+|---|---|
+| `ScreenShareState{room_id, peer_id, active, width, height, fps}` | A member started, changed or stopped sharing. Sent for every active share when the client's media session is accepted, then on every change; a member who leaves or loses its media session stops sharing. |
+
+* Loss repair: NACK/RTX on each leg (client ↔ server), keyframe requests (PLI/FIR) from a
+  viewer reach the sharer. The sending client paces video (12 Mbit/s cap).
 
 ### Error codes
 

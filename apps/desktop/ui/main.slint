@@ -1,4 +1,4 @@
-// turbo-pancake main window (S0 shell + S1/S2 voice room panel).
+// turbo-pancake main window (S0 shell + S1/S2 voice room panel + S3 screen share).
 // Layout follows the spec: conversation list on the left, conversation area on
 // the right, user panel at the bottom-left. No server/channel rail by design.
 
@@ -12,6 +12,14 @@ export struct MemberRow {
     // Local volume, percent (0–200).
     volume: float,
     info: string,
+}
+
+// Another member's active screen share.
+export struct ShareRow {
+    peer-id: string,
+    name: string,
+    info: string,
+    watching: bool,
 }
 
 export global Theme {
@@ -421,9 +429,148 @@ component CallPanel inherits Rectangle {
     }
 }
 
+// S3: share a whole monitor, see who shares, watch one share.
+component ScreenPanel inherits Rectangle {
+    in property <bool> in-room;
+    in property <[string]> monitors;
+    in-out property <int> monitor-index;
+    in-out property <int> quality-index;
+    in-out property <bool> share-audio: true;
+    in property <bool> sharing;
+    in property <string> share-info;
+    in property <[ShareRow]> shares;
+    in property <string> watching;
+    in property <image> picture;
+    in property <bool> has-picture;
+    in property <string> viewer-info;
+    callback start-share(int, int);
+    callback stop-share();
+    callback watch(string);
+    callback share-audio-changed(bool);
+    background: Theme.bg-primary;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 10px;
+        Text {
+            text: "ДЕМОНСТРАЦИЯ ЭКРАНА";
+            color: Theme.text-muted;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            ComboBox {
+                model: root.monitors;
+                current-index <=> root.monitor-index;
+                enabled: root.in-room;
+                selected => {
+                    // Switching the monitor while sharing restarts the share on it.
+                    if root.sharing {
+                        root.start-share(root.monitor-index, root.quality-index);
+                    }
+                }
+            }
+            ComboBox {
+                model: ["1080p · 60 к/с", "720p · 30 к/с"];
+                current-index <=> root.quality-index;
+                enabled: root.in-room;
+                selected => {
+                    if root.sharing {
+                        root.start-share(root.monitor-index, root.quality-index);
+                    }
+                }
+            }
+            Button {
+                text: root.sharing ? "Остановить показ" : "Показать экран";
+                primary: !root.sharing;
+                enabled: root.in-room && root.monitors.length > 0;
+                clicked => {
+                    if root.sharing {
+                        root.stop-share();
+                    } else {
+                        root.start-share(root.monitor-index, root.quality-index);
+                    }
+                }
+            }
+        }
+        CheckBox {
+            text: "Звук компьютера (без звука мессенджера)";
+            checked <=> root.share-audio;
+            toggled => { root.share-audio-changed(root.share-audio); }
+        }
+        if root.share-info != "": Text {
+            text: root.share-info;
+            color: Theme.text-muted;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        for s in root.shares: Rectangle {
+            height: 40px;
+            border-radius: 4px;
+            background: Theme.bg-secondary;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 6px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: s.name;
+                        color: Theme.text-normal;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: s.info;
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: s.watching ? "Не смотреть" : "Смотреть";
+                        clicked => { root.watch(s.watching ? "" : s.peer-id); }
+                    }
+                }
+            }
+        }
+        if root.in-room && root.shares.length == 0: Text {
+            text: "Никто не показывает экран.";
+            color: Theme.text-muted;
+        }
+        // The watched share, letterboxed to the panel.
+        Rectangle {
+            min-height: 120px;
+            vertical-stretch: 1;
+            background: Theme.bg-tertiary;
+            border-radius: 4px;
+            if root.has-picture: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.picture;
+                image-fit: contain;
+                accessible-role: image;
+                accessible-label: "трансляция экрана";
+            }
+            if !root.has-picture: Text {
+                text: root.watching != "" ? "Ожидание трансляции…" : "Выберите трансляцию";
+                color: Theme.text-muted;
+            }
+        }
+        Text {
+            text: root.viewer-info;
+            color: Theme.text-muted;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "turbo-pancake";
-    preferred-width: 1100px;
+    preferred-width: 1280px;
     preferred-height: 700px;
     min-width: 640px;
     min-height: 420px;
@@ -456,6 +603,17 @@ export component MainWindow inherits Window {
     in-out property <int> input-index;
     in-out property <int> output-index;
     in-out property <float> remote-volume: 100;
+    in property <[string]> monitors;
+    in-out property <int> monitor-index;
+    in-out property <int> quality-index;
+    in-out property <bool> share-audio: true;
+    in property <bool> sharing;
+    in property <string> share-info;
+    in property <[ShareRow]> shares;
+    in property <string> watching;
+    in property <image> screen-picture;
+    in property <bool> has-picture;
+    in property <string> viewer-info;
     callback join(string);
     callback leave();
     callback mute-changed(bool);
@@ -465,6 +623,10 @@ export component MainWindow inherits Window {
     callback remote-volume-changed(float);
     callback member-volume-changed(string, float);
     callback vad-changed(bool, float);
+    callback start-share(int, int);
+    callback stop-share();
+    callback watch(string);
+    callback share-audio-changed(bool);
 
     init => {
         Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
@@ -495,7 +657,10 @@ export component MainWindow inherits Window {
                 }
             }
             Rectangle { height: 1px; background: Theme.separator; }
+            HorizontalLayout {
             CallPanel {
+                min-width: 420px;
+                max-width: 560px;
                 room-text <=> root.room-text;
                 in-room: root.in-room;
                 title: root.call-title;
@@ -526,6 +691,26 @@ export component MainWindow inherits Window {
                 remote-volume-changed(v) => { root.remote-volume-changed(v); }
                 member-volume-changed(p, v) => { root.member-volume-changed(p, v); }
                 vad-changed(on, t) => { root.vad-changed(on, t); }
+            }
+            Rectangle { width: 1px; background: Theme.separator; }
+            ScreenPanel {
+                in-room: root.in-room;
+                monitors: root.monitors;
+                monitor-index <=> root.monitor-index;
+                quality-index <=> root.quality-index;
+                share-audio <=> root.share-audio;
+                sharing: root.sharing;
+                share-info: root.share-info;
+                shares: root.shares;
+                watching: root.watching;
+                picture: root.screen-picture;
+                has-picture: root.has-picture;
+                viewer-info: root.viewer-info;
+                start-share(m, q) => { root.start-share(m, q); }
+                stop-share => { root.stop-share(); }
+                watch(p) => { root.watch(p); }
+                share-audio-changed(on) => { root.share-audio-changed(on); }
+            }
             }
             Text {
                 text: root.build-info;

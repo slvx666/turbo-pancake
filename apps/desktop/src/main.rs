@@ -13,6 +13,11 @@
 //!   `--test-block-udp` — test impairment: drop every UDP media datagram (a VPN that
 //!       carries no UDP); with `--media auto` the call must move to the WebSocket.
 //!   `--test-send-loss <0..1>` — test impairment: drop this share of outgoing media.
+//!   `--share <N|synthetic>` — share monitor N (index in the monitor list) or a generated
+//!       test picture once in the room (scripted S3 trials).
+//!   `--share-quality <hd60|hd30>` — 1080p60 at 8 Mbit/s (default) or 720p30.
+//!   `--watch` — watch the first share that appears.
+//!   `--share-no-audio` — share without the computer's sound.
 //!   `--smoke-exit-after-ms <N>` — benchmark/smoke mode: print machine-readable
 //!       markers on stdout and quit after N ms:
 //!       `TURBO_PANCAKE_FIRST_FRAME <ms since main> <renderer>` — after the first painted frame;
@@ -35,9 +40,13 @@ use slint::winit_030::winit::event::WindowEvent;
 use slint::winit_030::winit::event_loop::ActiveEventLoop;
 use slint::winit_030::winit::window::{Window as WinitWindow, WindowId};
 use slint::winit_030::{CustomApplicationHandler, EventResult};
-use turbo_pancake_desktop::session::{Command, Session, SessionConfig, Snapshot, TransportPref};
-use turbo_pancake_desktop::view::{self, MemberView};
+use turbo_pancake_desktop::screen::PictureSlot;
+use turbo_pancake_desktop::session::{
+    Command, CommandSender, Session, SessionConfig, Snapshot, TransportPref,
+};
+use turbo_pancake_desktop::view::{self, MemberView, ShareRowView};
 use turbo_pancake_media_audio::{CpalIo, DspConfig, device};
+use turbo_pancake_media_video::{MonitorInfo, ShareConfig, ShareSource};
 use turbo_pancake_protocol::validate_display_name;
 
 slint::include_modules!();
@@ -58,6 +67,10 @@ struct Args {
     send_loss: f32,
     media: Option<TransportPref>,
     block_udp: bool,
+    share: Option<ShareSource>,
+    share_hd30: bool,
+    watch: bool,
+    share_no_audio: bool,
 }
 
 fn parse_args() -> Args {
@@ -97,6 +110,16 @@ fn parse_args() -> Args {
                 };
             }
             "--test-block-udp" => out.block_udp = true,
+            "--share" => {
+                out.share = match args.next().as_deref() {
+                    Some("synthetic") => Some(ShareSource::Synthetic),
+                    Some(n) => n.parse().ok().map(ShareSource::Monitor),
+                    None => None,
+                };
+            }
+            "--share-quality" => out.share_hd30 = args.next().as_deref() == Some("hd30"),
+            "--watch" => out.watch = true,
+            "--share-no-audio" => out.share_no_audio = true,
             "--test-send-loss" => {
                 out.send_loss = args
                     .next()
@@ -197,6 +220,78 @@ fn show_members(w: &MainWindow, members: Vec<MemberView>) {
     }
 }
 
+fn show_shares(w: &MainWindow, shares: Vec<ShareRowView>) {
+    let rows: Vec<ShareRow> = shares
+        .into_iter()
+        .map(|s| ShareRow {
+            peer_id: s.peer_id.into(),
+            name: s.name.into(),
+            info: s.info.into(),
+            watching: s.watching,
+        })
+        .collect();
+    let model = w.get_shares();
+    match model.as_any().downcast_ref::<slint::VecModel<ShareRow>>() {
+        Some(list) if list.iter().eq(rows.iter().cloned()) => {}
+        Some(list) => list.set_vec(rows),
+        None => w.set_shares(slint::ModelRc::new(slint::VecModel::from(rows))),
+    }
+}
+
+fn monitor_label(m: &MonitorInfo) -> String {
+    format!(
+        "Монитор {} — {}×{} @ {} Гц{}",
+        m.index + 1,
+        m.width,
+        m.height,
+        m.refresh_hz,
+        if m.primary { " (основной)" } else { "" }
+    )
+}
+
+fn share_config(source: ShareSource, quality: i32) -> ShareConfig {
+    if quality == 1 {
+        ShareConfig::hd30(source)
+    } else {
+        ShareConfig::hd60(source)
+    }
+}
+
+/// Shows the newest picture of the watched share (UI thread, ~60 times a second; the
+/// viewer thread decodes and converts, the UI only uploads).
+fn show_pictures(window: &MainWindow, slot: PictureSlot) -> slint::Timer {
+    let timer = slint::Timer::default();
+    let weak = window.as_weak();
+    let mut last_serial = 0;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(16),
+        move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let picture = slot.lock().unwrap().take();
+            match picture {
+                Some(p) if p.serial != last_serial => {
+                    last_serial = p.serial;
+                    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                        &p.rgba, p.width, p.height,
+                    );
+                    w.set_screen_picture(slint::Image::from_rgba8(buffer));
+                    w.set_has_picture(true);
+                }
+                Some(_) => {}
+                None if w.get_watching().is_empty() && w.get_has_picture() => {
+                    w.set_has_picture(false);
+                    w.set_screen_picture(slint::Image::default());
+                }
+                None => {}
+            }
+        },
+    );
+    timer
+}
+
 fn default_name() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
@@ -220,6 +315,8 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     cfg.send_loss = args.send_loss;
     cfg.transport = args.media.unwrap_or(TransportPref::Auto);
     cfg.block_udp = args.block_udp;
+    cfg.share_audio = !args.share_no_audio;
+    window.set_share_audio(cfg.share_audio);
     window.set_muted(args.mute);
     window.set_ns(cfg.engine.dsp.noise_suppression);
     window.set_aec(cfg.engine.dsp.echo_cancellation);
@@ -229,13 +326,29 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     }
     window.set_members(slint::ModelRc::new(slint::VecModel::<MemberRow>::default()));
 
+    let monitors = turbo_pancake_media_video::monitors();
+    let labels: Vec<slint::SharedString> =
+        monitors.iter().map(|m| monitor_label(m).into()).collect();
+    window.set_monitors(slint::ModelRc::new(slint::VecModel::from(labels)));
+    window.set_shares(slint::ModelRc::new(slint::VecModel::<ShareRow>::default()));
+    window.set_quality_index(i32::from(args.share_hd30));
+
     let weak = window.as_weak();
     let call_log = args.call_log;
     let mut last_log: Option<Instant> = None;
+    // `--watch`: the session's own sender, known once it started.
+    let auto_watch: Arc<Mutex<Option<CommandSender>>> = Arc::default();
+    let watcher = auto_watch.clone();
     let on_update = move |s: &Snapshot| {
         if call_log && last_log.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
             last_log = Some(Instant::now());
             println!("{}", view::log_line(s, started.elapsed().as_millis()));
+        }
+        if s.watching.is_none()
+            && let Some(first) = s.shares.first()
+            && let Some(tx) = watcher.lock().unwrap().take()
+        {
+            tx.send(Command::Watch(Some(first.peer_id.clone())));
         }
         let v = view::render(s);
         let _ = weak.upgrade_in_event_loop(move |w| {
@@ -250,6 +363,11 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
             w.set_self_speaking(v.speaking);
             w.set_dsp_available(v.dsp_available);
             show_members(&w, v.members);
+            w.set_sharing(v.sharing);
+            w.set_share_info(v.share_info.into());
+            w.set_watching(v.watching.into());
+            w.set_viewer_info(v.viewer_info.into());
+            show_shares(&w, v.shares);
         });
     };
     let session = match Session::start(cfg, || CpalIo, on_update) {
@@ -301,6 +419,33 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     window.on_vad_changed(move |on, threshold| {
         tx.send(Command::SetVoiceGate(on.then_some(threshold)));
     });
+    let tx = session.sender();
+    let indexes: Vec<usize> = monitors.iter().map(|m| m.index).collect();
+    window.on_start_share(move |monitor, quality| {
+        let Some(index) = usize::try_from(monitor).ok().and_then(|i| indexes.get(i)) else {
+            return;
+        };
+        tx.send(Command::StartShare(share_config(
+            ShareSource::Monitor(*index),
+            quality,
+        )));
+    });
+    let tx = session.sender();
+    window.on_stop_share(move || {
+        tx.send(Command::StopShare);
+    });
+    let tx = session.sender();
+    window.on_share_audio_changed(move |on| {
+        tx.send(Command::SetShareAudio(on));
+    });
+    let tx = session.sender();
+    window.on_watch(move |peer| {
+        let peer = peer.to_string();
+        tx.send(Command::Watch((!peer.is_empty()).then_some(peer)));
+    });
+    if args.watch {
+        *auto_watch.lock().unwrap() = Some(session.sender());
+    }
 
     // Device enumeration can take a while (WASAPI, PulseAudio): keep it off the UI thread.
     let weak = window.as_weak();
@@ -337,6 +482,17 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
         window.set_room_text(room.as_str().into());
         session.send(Command::Join(room.clone()));
     }
+    if let Some(source) = args.share {
+        if let ShareSource::Monitor(i) = source
+            && let Some(pos) = monitors.iter().position(|m| m.index == i)
+        {
+            window.set_monitor_index(pos as i32);
+        }
+        session.send(Command::StartShare(share_config(
+            source,
+            i32::from(args.share_hd30),
+        )));
+    }
     Some(session)
 }
 
@@ -372,13 +528,16 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
     window.set_build_info(
         format!(
-            "turbo-pancake-desktop {} · {} · S2",
+            "turbo-pancake-desktop {} · {} · S3",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS
         )
         .into(),
     );
     let session = start_session(&window, &args, started);
+    let _pictures = session
+        .as_ref()
+        .map(|s| show_pictures(&window, s.picture()));
 
     if let Some(exit_after) = smoke {
         // GPU renderers expose the graphics API; absence means software rendering.

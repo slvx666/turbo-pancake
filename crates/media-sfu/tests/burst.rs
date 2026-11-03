@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 
-use turbo_pancake_media_sfu::{Link, PeerSink, Sfu, SfuConfig};
+use turbo_pancake_media_sfu::{Link, PeerSink, Sfu, SfuConfig, ShareInfo, Track, TrackKind};
 use turbo_pancake_media_transport::call::{
     AudioOut, CallConfig, CallDriver, CallEvent, CallState, LocalSignal, MediaLink, Role,
 };
@@ -33,11 +33,12 @@ impl PeerSink for Sink {
     fn datagram(&mut self, data: Vec<u8>) {
         let _ = self.datagrams.try_send(data);
     }
-    fn track(&mut self, _peer: &str, ssrc: u32, published: bool) {
-        if published {
-            let _ = self.events.send(ToClient::Track(ssrc));
+    fn track(&mut self, _peer: &str, track: Track, published: bool) {
+        if published && track.kind == TrackKind::Audio {
+            let _ = self.events.send(ToClient::Track(track.ssrc));
         }
     }
+    fn screen(&mut self, _peer: &str, _share: Option<ShareInfo>) {}
 }
 
 struct Member {

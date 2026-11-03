@@ -27,9 +27,19 @@
 //! a room is joined by id. Leaving the room stops media and the audio engine, so every
 //! device, thread and socket is released. A lost signaling connection ends the media
 //! session and is retried with backoff; the room is rejoined.
+//!
+//! Screen share (S3, [`crate::screen`]): the media session also carries an H.264 video
+//! m-line. Our share (`ScreenShare`: capture → encode thread) feeds it through a bounded
+//! route like the microphone; the server is told with `ScreenShare` after every media
+//! offer, so a restarted session announces it again. Watching another member's share
+//! subscribes to it (`SubscribeScreen`) and routes its packets to the viewer thread; the
+//! newest decoded picture waits in a [`PictureSlot`] for the UI. The share's system audio
+//! (everything the computer plays except this messenger, `system::SystemAudioCapture`)
+//! travels on its own m-line; a viewer plays it as one more engine stream while watching.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -39,13 +49,19 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::Message;
+use turbo_pancake_media_audio::system::{SystemAudioCapture, SystemAudioStats};
 use turbo_pancake_media_audio::{
     AudioEngine, AudioError, AudioIo, DspConfig, EngineConfig, EngineStatus, IncomingPacket,
     PacketSink, PeerId, PeerStatus, VoiceLink,
 };
 use turbo_pancake_media_transport::call::{
-    AudioOut, CallConfig, CallDriver, CallEvent, CallState, CallStats, LocalSignal, MediaLink, Role,
+    AudioOut, CallConfig, CallDriver, CallEvent, CallState, CallStats, KeyframeRequester,
+    LocalSignal, MediaLink, Role, VideoIo,
 };
+use turbo_pancake_media_transport::video::{VideoIn, VideoOut};
+use turbo_pancake_media_video::{ScreenShare, ShareConfig, ShareStats, VideoError};
+
+use crate::screen::{PictureSlot, Viewer, ViewerStats, rtp_time};
 use turbo_pancake_protocol::{self as proto, v1};
 use v1::{client_envelope::Body as C, server_envelope::Body as S};
 
@@ -88,6 +104,9 @@ pub struct SessionConfig {
     pub send_loss: f32,
     /// Test impairment: every UDP datagram is dropped (a VPN that carries no UDP).
     pub block_udp: bool,
+    /// Share the computer's sound together with the screen (where the OS can exclude
+    /// our own sound; elsewhere the share runs without it and says so).
+    pub share_audio: bool,
     /// STUN servers (`host:port`) asked for a server-reflexive candidate. Not needed with
     /// the SFU (the server answers to whatever address our datagrams come from).
     pub stun_servers: Vec<String>,
@@ -111,6 +130,7 @@ impl SessionConfig {
             udp_attempt_timeout: Duration::from_secs(3),
             send_loss: 0.0,
             block_udp: false,
+            share_audio: true,
             stun_servers: Vec::new(),
             status_interval: Duration::from_millis(250),
         }
@@ -133,6 +153,13 @@ pub enum Command {
     SetMemberVolume(String, f32),
     /// Voice activation threshold in dBFS; `None` = always send.
     SetVoiceGate(Option<f32>),
+    /// Start sharing (or switch monitor / quality: the running share is replaced).
+    StartShare(ShareConfig),
+    StopShare,
+    /// Send the computer's sound with the share (takes effect at once while sharing).
+    SetShareAudio(bool),
+    /// Watch this member's share (`None` = none).
+    Watch(Option<String>),
     Quit,
 }
 
@@ -172,6 +199,16 @@ impl Member {
     }
 }
 
+/// Another member's active share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareView {
+    pub peer_id: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
 /// Everything the UI shows, published by the session thread.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -191,6 +228,18 @@ pub struct Snapshot {
     /// Media sessions started so far (transport switches and restarts included).
     pub media_sessions: u64,
     pub last_error: Option<String>,
+    /// Other members' active shares, in member order.
+    pub shares: Vec<ShareView>,
+    /// Whose share we watch.
+    pub watching: Option<String>,
+    pub viewer: Option<ViewerStats>,
+    /// Our own share: settings and sending-side counters.
+    pub share_config: Option<ShareConfig>,
+    pub sharing: Option<ShareStats>,
+    /// Our share's system audio while it runs.
+    pub share_audio: Option<SystemAudioStats>,
+    /// The watched share's system audio as it plays here.
+    pub watched_audio: Option<PeerStatus>,
 }
 
 impl Snapshot {
@@ -214,6 +263,7 @@ type EngineStarter =
 /// Handle to the session thread. Dropping it quits (leaves the room, releases devices).
 pub struct Session {
     commands: mpsc::Sender<Command>,
+    picture: PictureSlot,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -230,10 +280,13 @@ impl Session {
         turbo_pancake_media_transport::init_crypto();
         let (tx, rx) = mpsc::channel(64);
         let start_engine: EngineStarter = Box::new(move |cfg| AudioEngine::start(io(), cfg));
+        let picture = PictureSlot::default();
+        let core_picture = picture.clone();
         let thread = std::thread::Builder::new()
             .name("tp-session".into())
             .spawn(move || {
                 let mut core = Core::new(config, start_engine, Box::new(on_update));
+                core.picture = core_picture;
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -247,8 +300,14 @@ impl Session {
             })?;
         Ok(Self {
             commands: tx,
+            picture,
             thread: Some(thread),
         })
+    }
+
+    /// The newest picture of the watched share (the UI takes it out).
+    pub fn picture(&self) -> PictureSlot {
+        self.picture.clone()
     }
 
     /// Queues a command; `false` if the queue is full or the session ended.
@@ -314,6 +373,11 @@ struct Media {
     bridge: JoinHandle<()>,
 }
 
+struct Sharing {
+    share: ScreenShare,
+    config: ShareConfig,
+}
+
 struct Core {
     cfg: SessionConfig,
     start_engine: EngineStarter,
@@ -347,6 +411,26 @@ struct Core {
     remote_volume: f32,
     epoch: Instant,
     quit: bool,
+    share: Option<Sharing>,
+    /// Where our share's encoded frames go: the current media session, if any.
+    share_route: Arc<Mutex<Option<SyncSender<VideoOut>>>>,
+    system_audio: Option<SystemAudioCapture>,
+    share_audio_route: Arc<Mutex<Option<SyncSender<AudioOut>>>>,
+    /// Other members' share audio streams: peer id → SSRC.
+    screen_audio_tracks: HashMap<String, u32>,
+    /// The watched share's audio stream, accepted into the engine.
+    watched_audio: Option<u32>,
+    /// Other members' screen streams on our media session: peer id → (SSRC, RTX SSRC).
+    screen_tracks: HashMap<String, (u32, Option<u32>)>,
+    /// Other members' active shares: peer id → (width, height, fps).
+    shares: HashMap<String, (u32, u32, u32)>,
+    watching: Option<String>,
+    viewer: Option<Viewer>,
+    /// SSRC of the watched share (0 = none), checked on the call thread.
+    watched_ssrc: Arc<AtomicU32>,
+    viewer_route: Arc<Mutex<Option<SyncSender<VideoIn>>>>,
+    keyframes: Arc<Mutex<Option<KeyframeRequester>>>,
+    picture: PictureSlot,
 }
 
 type Ws = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -388,6 +472,20 @@ impl Core {
             remote_volume: 1.0,
             epoch: Instant::now(),
             quit: false,
+            share: None,
+            share_route: Arc::default(),
+            system_audio: None,
+            share_audio_route: Arc::default(),
+            screen_audio_tracks: HashMap::new(),
+            watched_audio: None,
+            screen_tracks: HashMap::new(),
+            shares: HashMap::new(),
+            watching: None,
+            viewer: None,
+            watched_ssrc: Arc::default(),
+            viewer_route: Arc::default(),
+            keyframes: Arc::default(),
+            picture: PictureSlot::default(),
         }
     }
 
@@ -432,6 +530,8 @@ impl Core {
                 }
             }
         }
+        self.stop_share();
+        self.unwatch();
         self.stop_audio();
         self.snap.server = ServerStatus::Disconnected("вышли".into());
         self.publish();
@@ -555,7 +655,12 @@ impl Core {
         self.joined = None;
         self.members.clear();
         self.tracks.clear();
-        // Peer ids are per connection (accounts arrive in S5): the volumes cannot follow.
+        self.screen_tracks.clear();
+        self.screen_audio_tracks.clear();
+        self.shares.clear();
+        // Peer ids are per connection (accounts arrive in S5): the volumes and the
+        // watched share cannot follow. Our own share keeps running and is announced again.
+        self.unwatch();
         self.member_volumes.clear();
         self.outbox.clear();
         self.snap.peer_id = None;
@@ -645,6 +750,15 @@ impl Core {
                 self.cfg.engine.voice_gate = g;
                 self.with_engine(|e| e.set_voice_gate(g));
             }
+            Command::StartShare(config) => self.start_share(config),
+            Command::StopShare => self.stop_share(),
+            Command::SetShareAudio(on) => {
+                self.cfg.share_audio = on;
+                if self.share.is_some() {
+                    self.sync_system_audio();
+                }
+            }
+            Command::Watch(peer) => self.watch(peer),
             Command::Quit => {
                 self.leave_room();
                 self.want_room = None;
@@ -667,9 +781,200 @@ impl Core {
         }
     }
 
+    /// Starts (or replaces) our share; announced to the room with the next chance.
+    fn start_share(&mut self, config: ShareConfig) {
+        if self.share.is_some() {
+            // Switching monitor or quality: a new pipeline, the old one stops first.
+            if let Some(old) = self.share.take() {
+                old.share.stop();
+            }
+        }
+        let route = self.share_route.clone();
+        let deliver = Box::new(move |f: turbo_pancake_media_video::EncodedFrame| {
+            let route = route.lock().unwrap();
+            let Some(tx) = route.as_ref() else {
+                return false;
+            };
+            tx.try_send(VideoOut {
+                timestamp: rtp_time(f.timestamp),
+                data: f.data,
+            })
+            .is_ok()
+        });
+        match ScreenShare::start(config, deliver) {
+            Ok(share) => {
+                self.share = Some(Sharing { share, config });
+                self.snap.last_error = None;
+                self.sync_system_audio();
+                self.announce_share();
+            }
+            Err(VideoError::Unsupported) => {
+                self.snap.last_error = Some("показ экрана на этой ОС пока не реализован".into());
+            }
+            Err(e) => self.snap.last_error = Some(format!("показ экрана: {e}")),
+        }
+    }
+
+    fn stop_share(&mut self) {
+        if let Some(s) = self.share.take() {
+            s.share.stop();
+            self.sync_system_audio();
+            self.announce_share();
+        }
+    }
+
+    /// Runs the system audio capture exactly while we share and it is wanted.
+    fn sync_system_audio(&mut self) {
+        let want = self.share.is_some() && self.cfg.share_audio;
+        if !want {
+            if let Some(c) = self.system_audio.take() {
+                c.stop();
+            }
+            return;
+        }
+        if self.system_audio.is_some() {
+            return;
+        }
+        let route = self.share_audio_route.clone();
+        let started = SystemAudioCapture::start(move |f| {
+            if let Some(tx) = route.lock().unwrap().as_ref() {
+                // Full: the call thread is behind; drop like a lost packet.
+                let _ = tx.try_send(AudioOut {
+                    seq: f.seq,
+                    timestamp: f.timestamp,
+                    payload: f.payload,
+                });
+            }
+        });
+        match started {
+            Ok(c) => self.system_audio = Some(c),
+            // The share goes on without sound; the UI says why (spec §5.1: no mixed
+            // capture with our own sound as a fallback).
+            Err(e) => self.snap.last_error = Some(format!("звук компьютера: {e}")),
+        }
+    }
+
+    /// Tells the server whether we share (needs the media session; repeated after every
+    /// new media offer).
+    fn announce_share(&mut self) {
+        let (Some(room), true) = (self.joined.clone(), self.media.is_some()) else {
+            return;
+        };
+        let body = match &self.share {
+            Some(s) => v1::ScreenShare {
+                room_id: room,
+                active: true,
+                width: s.config.width,
+                height: s.config.height,
+                fps: s.config.fps,
+            },
+            None => v1::ScreenShare {
+                room_id: room,
+                ..Default::default()
+            },
+        };
+        self.push(C::ScreenShare(body));
+    }
+
+    fn watch(&mut self, peer: Option<String>) {
+        let Some(peer) = peer else {
+            self.unwatch();
+            self.subscribe();
+            return;
+        };
+        if self.viewer.is_none() {
+            match Viewer::start(self.picture.clone(), self.keyframes.clone()) {
+                Ok(v) => {
+                    *self.viewer_route.lock().unwrap() = Some(v.sender());
+                    self.viewer = Some(v);
+                }
+                Err(e) => {
+                    self.snap.last_error = Some(format!("просмотр: {e}"));
+                    return;
+                }
+            }
+        }
+        self.watching = Some(peer);
+        self.sync_watch();
+        self.subscribe();
+    }
+
+    /// Stops watching: the viewer thread ends and the picture goes away.
+    fn unwatch(&mut self) {
+        self.watching = None;
+        if let Some(old) = self.watched_audio.take()
+            && let Some(a) = &self.audio
+        {
+            a.accepted.lock().unwrap().remove(&old);
+            let _ = a.engine.remove_peer(PeerId::from(old));
+        }
+        self.watched_ssrc.store(0, Ordering::Relaxed);
+        *self.keyframes.lock().unwrap() = None;
+        *self.viewer_route.lock().unwrap() = None;
+        if let Some(v) = self.viewer.take() {
+            v.stop();
+        }
+        *self.picture.lock().unwrap() = None;
+    }
+
+    /// Points the call thread's video filter and the viewer at the watched share's stream.
+    fn sync_watch(&mut self) {
+        let track = self
+            .watching
+            .as_ref()
+            .and_then(|p| self.screen_tracks.get(p).copied());
+        let ssrc = track.map_or(0, |(s, _)| s);
+        if self.watched_ssrc.swap(ssrc, Ordering::Relaxed) != ssrc
+            && let Some(v) = &self.viewer
+        {
+            v.reset();
+        }
+        *self.keyframes.lock().unwrap() = match (&self.media, track) {
+            (Some(m), Some((s, _))) => Some(m.driver.keyframe_requester(s)),
+            _ => None,
+        };
+        // The watched share's sound plays as its own engine stream.
+        let audio = self
+            .watching
+            .as_ref()
+            .and_then(|p| self.screen_audio_tracks.get(p).copied());
+        if self.watched_audio != audio {
+            if let Some(old) = self.watched_audio.take()
+                && let Some(a) = &self.audio
+            {
+                a.accepted.lock().unwrap().remove(&old);
+                let _ = a.engine.remove_peer(PeerId::from(old));
+            }
+            if let (Some(ssrc), Some(a)) = (audio, &self.audio) {
+                a.accepted.lock().unwrap().insert(ssrc);
+                let _ = a
+                    .engine
+                    .set_peer_volume(PeerId::from(ssrc), self.remote_volume);
+            }
+            self.watched_audio = audio;
+        }
+    }
+
+    /// Tells the server whose share we watch (needs the media session).
+    fn subscribe(&mut self) {
+        let (Some(room), true) = (self.joined.clone(), self.media.is_some()) else {
+            return;
+        };
+        let peer_id = self.watching.clone().unwrap_or_default();
+        self.push(C::SubscribeScreen(v1::SubscribeScreen {
+            room_id: room,
+            peer_id,
+        }));
+    }
+
     /// Ends media and tells the server we left (also for a join still in flight).
     fn leave_room(&mut self) {
         self.end_media();
+        self.stop_share();
+        self.unwatch();
+        self.screen_tracks.clear();
+        self.screen_audio_tracks.clear();
+        self.shares.clear();
         self.members.clear();
         self.tracks.clear();
         self.member_volumes.clear();
@@ -716,6 +1021,80 @@ impl Core {
                 // Its stream ends with TrackUnpublished.
                 self.members.remove(&l.peer_id);
                 self.member_volumes.remove(&l.peer_id);
+                self.shares.remove(&l.peer_id);
+                if self.watching.as_deref() == Some(l.peer_id.as_str()) {
+                    self.unwatch();
+                }
+            }
+            S::TrackPublished(t) if t.kind() == v1::TrackKind::Screen => {
+                if self.joined.as_deref() != Some(t.room_id.as_str()) {
+                    return;
+                }
+                let rtx = (t.rtx_ssrc != 0).then_some(t.rtx_ssrc);
+                if let Some((old, _)) = self.screen_tracks.insert(t.peer_id.clone(), (t.ssrc, rtx))
+                    && old != t.ssrc
+                    && let Some(m) = &self.media
+                {
+                    let _ = m.driver.forget_source(old);
+                }
+                if let Some(m) = &self.media {
+                    let _ = m.driver.expect_video_source(t.ssrc, rtx);
+                }
+                if self.watching.as_deref() == Some(t.peer_id.as_str()) {
+                    self.sync_watch();
+                }
+            }
+            S::TrackPublished(t) if t.kind() == v1::TrackKind::ScreenAudio => {
+                if self.joined.as_deref() != Some(t.room_id.as_str()) {
+                    return;
+                }
+                if let Some(old) = self.screen_audio_tracks.insert(t.peer_id.clone(), t.ssrc)
+                    && old != t.ssrc
+                    && let Some(m) = &self.media
+                {
+                    let _ = m.driver.forget_source(old);
+                }
+                if let Some(m) = &self.media {
+                    let _ = m.driver.expect_screen_audio_source(t.ssrc);
+                }
+                if self.watching.as_deref() == Some(t.peer_id.as_str()) {
+                    self.sync_watch();
+                }
+            }
+            S::TrackUnpublished(t) if t.kind() == v1::TrackKind::ScreenAudio => {
+                if self.screen_audio_tracks.get(&t.peer_id) == Some(&t.ssrc) {
+                    self.screen_audio_tracks.remove(&t.peer_id);
+                    if let Some(m) = &self.media {
+                        let _ = m.driver.forget_source(t.ssrc);
+                    }
+                    if self.watching.as_deref() == Some(t.peer_id.as_str()) {
+                        self.sync_watch();
+                    }
+                }
+            }
+            S::TrackUnpublished(t) if t.kind() == v1::TrackKind::Screen => {
+                if self.screen_tracks.get(&t.peer_id).map(|(s, _)| *s) == Some(t.ssrc) {
+                    self.screen_tracks.remove(&t.peer_id);
+                    if let Some(m) = &self.media {
+                        let _ = m.driver.forget_source(t.ssrc);
+                    }
+                    if self.watching.as_deref() == Some(t.peer_id.as_str()) {
+                        self.sync_watch();
+                    }
+                }
+            }
+            S::ScreenShareState(s) => {
+                if self.joined.as_deref() != Some(s.room_id.as_str()) {
+                    return;
+                }
+                if s.active {
+                    self.shares.insert(s.peer_id, (s.width, s.height, s.fps));
+                } else {
+                    self.shares.remove(&s.peer_id);
+                    if self.watching.as_deref() == Some(s.peer_id.as_str()) {
+                        self.unwatch();
+                    }
+                }
             }
             S::TrackPublished(t) => {
                 if self.joined.as_deref() != Some(t.room_id.as_str()) {
@@ -839,9 +1218,18 @@ impl Core {
                 if let Some(m) = &mut self.media {
                     m.offer_rid = rid;
                 }
+                // The server processes these after the offer: a new session learns our
+                // share and our subscription again.
+                if self.share.is_some() {
+                    self.announce_share();
+                }
+                if self.watching.is_some() {
+                    self.subscribe();
+                }
             }
             // The SFU is ICE-lite with its candidates in the answer: nothing to trickle.
             CallEvent::Signal(_) => {}
+            CallEvent::KeyframeRequested => self.keyframe_requested(),
             CallEvent::State(state) => {
                 media.state = state.clone();
                 if let CallState::Failed(reason) = state {
@@ -850,6 +1238,13 @@ impl Core {
                     self.snap.last_error = None;
                 }
             }
+        }
+    }
+
+    /// The server asked for a keyframe of our share (a new viewer, a loss).
+    fn keyframe_requested(&mut self) {
+        if let Some(s) = &self.share {
+            s.share.request_keyframe();
         }
     }
 
@@ -949,8 +1344,8 @@ impl Core {
         let (link, tunnel_in) = match transport {
             MediaTransport::Udp => (MediaLink::Udp, None),
             MediaTransport::Tunnel => {
-                // A few seconds of audio + RTCP from the server.
-                let (in_tx, in_rx) = sync_channel::<Vec<u8>>(256);
+                // Audio + RTCP from the server, and bursts of a watched share's keyframes.
+                let (in_tx, in_rx) = sync_channel::<Vec<u8>>(2048);
                 let out = self.tunnel_tx.clone();
                 let outbound = Box::new(move |d: Vec<u8>| {
                     let _ = out.send((generation, d));
@@ -964,7 +1359,23 @@ impl Core {
                 )
             }
         };
-        let started = CallDriver::start_with(cc, link, rx, move |p| {
+        let (video_tx, video_rx) = sync_channel::<VideoOut>(16);
+        let (share_audio_tx, share_audio_rx) = sync_channel::<AudioOut>(50);
+        let (watched, viewer) = (self.watched_ssrc.clone(), self.viewer_route.clone());
+        let video = VideoIo {
+            audio_out: share_audio_rx,
+            outgoing: video_rx,
+            on_video: Box::new(move |p: VideoIn| {
+                if p.ssrc != watched.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Some(tx) = viewer.lock().unwrap().as_ref() {
+                    // Full: the viewer is behind; drop like a lost packet.
+                    let _ = tx.try_send(p);
+                }
+            }),
+        };
+        let on_audio = move |p: turbo_pancake_media_transport::call::AudioIn| {
             if !accepted.lock().unwrap().contains(&p.ssrc) {
                 return;
             }
@@ -975,7 +1386,8 @@ impl Core {
                 payload: p.payload,
                 arrival: p.arrival,
             });
-        });
+        };
+        let started = CallDriver::start_media(cc, link, rx, on_audio, Some(video));
         let (driver, events) = match started {
             Ok(d) => d,
             Err(e) => {
@@ -1003,6 +1415,8 @@ impl Core {
             }
         };
         *audio.route.lock().unwrap() = Some(tx);
+        *self.share_route.lock().unwrap() = Some(video_tx);
+        *self.share_audio_route.lock().unwrap() = Some(share_audio_tx);
         self.media = Some(Media {
             driver,
             generation,
@@ -1019,6 +1433,15 @@ impl Core {
         for (peer, ssrc) in known {
             self.add_source(&peer, ssrc);
         }
+        if let Some(m) = &self.media {
+            for (ssrc, rtx) in self.screen_tracks.values() {
+                let _ = m.driver.expect_video_source(*ssrc, *rtx);
+            }
+            for ssrc in self.screen_audio_tracks.values() {
+                let _ = m.driver.expect_screen_audio_source(*ssrc);
+            }
+        }
+        self.sync_watch();
     }
 
     fn end_media(&mut self) {
@@ -1027,6 +1450,17 @@ impl Core {
         };
         if let Some(a) = &self.audio {
             *a.route.lock().unwrap() = None;
+        }
+        *self.share_route.lock().unwrap() = None;
+        *self.share_audio_route.lock().unwrap() = None;
+        if let (Some(s), Some(a)) = (self.watched_audio.take(), &self.audio) {
+            let _ = a.engine.remove_peer(PeerId::from(s));
+        }
+        *self.keyframes.lock().unwrap() = None;
+        // The next session's streams start over.
+        self.watched_ssrc.store(0, Ordering::Relaxed);
+        if let Some(v) = &self.viewer {
+            v.reset();
         }
         media.driver.stop();
         // The call thread has exited, so the bridge's receiver is closed; it never
@@ -1043,6 +1477,38 @@ impl Core {
     }
 
     fn publish(&mut self) {
+        // A share that stopped on its own (monitor resolution changed, device lost).
+        if let Some(s) = &self.share
+            && !s.share.is_running()
+        {
+            let why = s.share.stats().error.unwrap_or_else(|| "остановлен".into());
+            self.snap.last_error = Some(format!("показ экрана: {why}"));
+            self.stop_share();
+        }
+        self.snap.sharing = self.share.as_ref().map(|s| s.share.stats());
+        self.snap.share_audio = self.system_audio.as_ref().map(SystemAudioCapture::stats);
+        self.snap.share_config = self.share.as_ref().map(|s| s.config);
+        self.snap.watching = self.watching.clone();
+        self.snap.viewer = self.viewer.as_ref().map(Viewer::stats);
+        let mut shares: Vec<(u64, ShareView)> = self
+            .shares
+            .iter()
+            .filter_map(|(peer, (w, h, fps))| {
+                let (order, name) = self.members.get(peer)?;
+                Some((
+                    *order,
+                    ShareView {
+                        peer_id: peer.clone(),
+                        name: name.clone(),
+                        width: *w,
+                        height: *h,
+                        fps: *fps,
+                    },
+                ))
+            })
+            .collect();
+        shares.sort_by_key(|(o, _)| *o);
+        self.snap.shares = shares.into_iter().map(|(_, s)| s).collect();
         self.snap.room = self.want_room.clone();
         self.snap.joined = self.joined.is_some();
         self.snap.engine = self.audio.as_ref().map(|a| a.engine.status());
@@ -1053,6 +1519,9 @@ impl Core {
             .collect();
         members.sort();
         let streams = self.snap.engine.as_ref().map(|e| e.peers.as_slice());
+        self.snap.watched_audio = self
+            .watched_audio
+            .and_then(|s| streams?.iter().find(|p| p.peer == PeerId::from(s)).cloned());
         self.snap.members = members
             .into_iter()
             .map(|(_, peer, name)| {

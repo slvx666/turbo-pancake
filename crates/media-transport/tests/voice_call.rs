@@ -90,6 +90,7 @@ fn relay(from: &mut Client, to: &Client) {
             CallEvent::Signal(LocalSignal::Answer(s)) => to.driver.remote_answer(s).unwrap(),
             CallEvent::Signal(LocalSignal::Candidate(c)) => to.driver.remote_candidate(c).unwrap(),
             CallEvent::State(s) => from.states.push(s),
+            CallEvent::KeyframeRequested => {}
         }
     }
 }

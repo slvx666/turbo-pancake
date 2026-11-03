@@ -10,8 +10,9 @@ publish.workspace = true
 [dependencies]
 # aws-lc-rs backend (str0m default). `rust-crypto` was dropped: it pulls
 # crypto-bigint 0.5 (RUSTSEC-2026-0387, timing side channels). See ADR 0003.
-str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
+str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs", "unversioned"] }
 thiserror.workspace = true
+socket2 = "0.6"
 
 [dev-dependencies]
 turbo-pancake-media-audio = { path = "../media-audio" }

@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+socket2 = "0.6"
 turbo-pancake-media-transport = { path = "../media-transport" }
 str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 

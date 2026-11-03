@@ -8,6 +8,7 @@
 
 pub mod call;
 pub mod stun;
+pub mod video;
 
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
@@ -29,6 +30,17 @@ pub enum TransportError {
     Candidate(String),
     #[error("call: {0}")]
     Call(String),
+}
+
+/// Socket buffer size for media sockets: a 1080p/1440p keyframe is a burst of a few
+/// hundred datagrams, far more than the 64 KiB Windows default holds.
+pub const MEDIA_SOCKET_BUFFER: usize = 4 << 20;
+
+/// Raises a media socket's send and receive buffers (best effort: the OS may cap them).
+pub fn enlarge_buffers(socket: &UdpSocket) {
+    let s = socket2::SockRef::from(socket);
+    let _ = s.set_recv_buffer_size(MEDIA_SOCKET_BUFFER);
+    let _ = s.set_send_buffer_size(MEDIA_SOCKET_BUFFER);
 }
 
 static CRYPTO: Once = Once::new();
@@ -92,6 +104,7 @@ impl UdpPeer {
         init_crypto();
         let socket = UdpSocket::bind(bind)?;
         socket.set_nonblocking(true)?;
+        enlarge_buffers(&socket);
         let mut local = socket.local_addr()?;
         if local.ip().is_unspecified() {
             let ip = match advertise {

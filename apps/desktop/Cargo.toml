@@ -25,6 +25,7 @@ apm = ["turbo-pancake-media-audio/apm"]
 turbo-pancake-protocol.workspace = true
 turbo-pancake-media-audio = { path = "../../crates/media-audio" }
 turbo-pancake-media-transport = { path = "../../crates/media-transport" }
+turbo-pancake-media-video = { path = "../../crates/media-video" }
 futures-util.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true

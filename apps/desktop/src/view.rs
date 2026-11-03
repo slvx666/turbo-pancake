@@ -25,6 +25,16 @@ pub struct MemberView {
     pub info: String,
 }
 
+/// One active share of another member.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShareRowView {
+    pub peer_id: String,
+    pub name: String,
+    /// "1920×1080 · 60 к/с".
+    pub info: String,
+    pub watching: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CallView {
     pub connection: String,
@@ -40,6 +50,14 @@ pub struct CallView {
     pub speaking: bool,
     pub dsp_available: bool,
     pub members: Vec<MemberView>,
+    pub sharing: bool,
+    /// Our share's settings and sending stats in one line.
+    pub share_info: String,
+    pub shares: Vec<ShareRowView>,
+    /// Peer id of the watched share ("" = none).
+    pub watching: String,
+    /// The watched share's receive stats in one line.
+    pub viewer_info: String,
 }
 
 fn member_view(m: &Member) -> MemberView {
@@ -148,6 +166,67 @@ pub fn render(s: &Snapshot) -> CallView {
             error = format!("аудио: {le}");
         }
     }
+    let share_info = match (&s.share_config, &s.sharing) {
+        (Some(c), Some(st)) => {
+            format!(
+                "Вы показываете экран: {}×{} → {}×{} · {:.0} к/с · {:.1} Мбит/с · кодек {}{}",
+                st.source_width,
+                st.source_height,
+                c.width,
+                c.height,
+                st.encoded_fps,
+                st.bitrate_kbps / 1000.0,
+                st.encoder,
+                if st.hardware {
+                    ""
+                } else {
+                    " (программный)"
+                },
+            ) + &match &s.share_audio {
+                Some(a) => format!(
+                    " · звук компьютера (без звука мессенджера), пик {:.2}",
+                    a.peak
+                ),
+                None => " · без звука компьютера".to_string(),
+            }
+        }
+        _ => String::new(),
+    };
+    let watching = s.watching.clone().unwrap_or_default();
+    let viewer_info = match &s.viewer {
+        Some(v) if v.frames_shown == 0 => match &v.error {
+            Some(e) => e.clone(),
+            None => "Ожидание первого кадра…".to_string(),
+        },
+        Some(v) => format!(
+            "{}×{} · {:.0} к/с · декодер {}{} · потеряно кадров {}",
+            v.width,
+            v.height,
+            v.fps,
+            if v.hardware_decoder {
+                "аппаратный"
+            } else {
+                "программный"
+            },
+            if v.latency_ms_p50 > 0.0 {
+                format!(" · задержка {:.0} мс", v.latency_ms_p50)
+            } else {
+                String::new()
+            },
+            v.frames_dropped,
+        ),
+        None => String::new(),
+    };
+    let shares = s
+        .shares
+        .iter()
+        .map(|sh| ShareRowView {
+            peer_id: sh.peer_id.clone(),
+            name: sh.name.clone(),
+            info: format!("{}×{} · {} к/с", sh.width, sh.height, sh.fps),
+            watching: watching == sh.peer_id,
+        })
+        .collect();
     CallView {
         connection,
         in_room: s.room.is_some(),
@@ -160,6 +239,11 @@ pub fn render(s: &Snapshot) -> CallView {
         speaking,
         dsp_available,
         members: s.members.iter().map(member_view).collect(),
+        sharing: s.sharing.is_some(),
+        share_info,
+        shares,
+        watching,
+        viewer_info,
     }
 }
 
@@ -267,6 +351,80 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
             ));
         }
     }
+    if let Some(st) = &s.sharing {
+        line.push_str(&format!(
+            " share={}x{}@{} share_src={}x{} encoder={:?} hw={} captured={} submitted={} repeat={} encoded={} enc_fps={:.1} share_kbps={:.0} keyframes={} kf_requests={} enc_busy={} undelivered={} enc_ms_p50={:.2} enc_ms_p95={:.2} cap_to_enc_ms_p50={:.2} cap_to_enc_ms_p95={:.2}",
+            st.width,
+            st.height,
+            st.fps,
+            st.source_width,
+            st.source_height,
+            st.encoder,
+            st.hardware,
+            st.captured_frames,
+            st.submitted_frames,
+            st.submitted_repeat,
+            st.encoded_frames,
+            st.encoded_fps,
+            st.bitrate_kbps,
+            st.keyframes,
+            st.keyframe_requests,
+            st.dropped_encoder_busy,
+            st.dropped_delivery,
+            st.encode_ms_p50,
+            st.encode_ms_p95,
+            st.capture_to_encoded_ms_p50,
+            st.capture_to_encoded_ms_p95,
+        ));
+    }
+    if let Some(a) = &s.share_audio {
+        line.push_str(&format!(
+            " share_audio_frames={} share_audio_silent={} share_audio_peak={:.3} share_audio_excludes_self={}",
+            a.frames, a.silent_frames, a.peak, a.excludes_self
+        ));
+    }
+    if let Some(p) = &s.watched_audio {
+        line.push_str(&format!(
+            " watched_audio_played={} watched_audio_concealed={:.1} watched_audio_peak={:.3}",
+            p.stats.jitter.played,
+            p.stats.concealed_ratio() * 100.0,
+            p.stats.last_peak
+        ));
+    }
+    if let Some(c) = &s.call {
+        line.push_str(&format!(
+            " video_sent={} video_pkts_sent={} video_pkts_recv={} video_nacks_sent={} video_nacks_recv={} video_paced_drops={}",
+            c.video_frames_sent,
+            c.video_packets_sent,
+            c.video_packets_received,
+            c.video_nacks_sent,
+            c.video_nacks_received,
+            c.video_frames_dropped_pacing,
+        ));
+    }
+    line.push_str(&format!(
+        " shares={} watching={}",
+        s.shares.len(),
+        s.watching.as_deref().unwrap_or("-")
+    ));
+    if let Some(v) = &s.viewer {
+        line.push_str(&format!(
+            " view={}x{} view_fps={:.1} shown={} decoded={} assembled={} view_dropped={} decode_errors={} view_kf_requests={} decode_ms_p50={:.2} latency_ms_p50={:.1} latency_ms_p95={:.1} hw_decoder={}",
+            v.width,
+            v.height,
+            v.fps,
+            v.frames_shown,
+            v.frames_decoded,
+            v.frames_assembled,
+            v.frames_dropped,
+            v.decode_errors,
+            v.keyframe_requests,
+            v.decode_ms_p50,
+            v.latency_ms_p50,
+            v.latency_ms_p95,
+            v.hardware_decoder,
+        ));
+    }
     if let Some(err) = &s.last_error {
         line.push_str(&format!(" error={err:?}"));
     }
@@ -314,6 +472,20 @@ mod tests {
         assert!(line.contains("media=connected transport=websocket"));
         assert!(line.contains("speaking_members=0"));
         assert!(line.contains(" members=Боб:-"), "{line}");
+        assert!(line.contains(" shares=0 watching=-"), "{line}");
+        s.shares = vec![crate::session::ShareView {
+            peer_id: "p2".into(),
+            name: "Боб".into(),
+            width: 1920,
+            height: 1080,
+            fps: 60,
+        }];
+        s.watching = Some("p2".into());
+        let v = render(&s);
+        assert_eq!(v.shares.len(), 1);
+        assert_eq!(v.shares[0].info, "1920×1080 · 60 к/с");
+        assert!(v.shares[0].watching);
+        assert!(!v.sharing && v.share_info.is_empty());
         assert_eq!(meter_position(-100.0), 0.0);
         assert_eq!(meter_position(-30.0), 0.5);
         assert_eq!(meter_position(3.0), 1.0);

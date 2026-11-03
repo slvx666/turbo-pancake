@@ -22,6 +22,7 @@ pub mod jitter;
 pub mod pipeline;
 pub mod resample;
 pub mod sim;
+pub mod system;
 pub mod testsignal;
 
 pub use codec::{DecodeKind, EncoderConfig, VoiceDecoder, VoiceEncoder};
@@ -59,4 +60,6 @@ pub enum AudioError {
     Dsp(String),
     #[error("audio engine: {0}")]
     Engine(String),
+    #[error("not supported: {0}")]
+    Unsupported(&'static str),
 }

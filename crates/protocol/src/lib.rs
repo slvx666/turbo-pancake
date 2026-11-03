@@ -59,7 +59,14 @@ pub enum ValidationError {
     MediaOffer,
     #[error("media datagram empty or larger than {MAX_DATAGRAM_BYTES} bytes")]
     Datagram,
+    #[error("screen share needs 1..={MAX_SHARE_DIMENSION} px sides and 1..={MAX_SHARE_FPS} fps")]
+    ScreenShare,
 }
+
+/// Largest side of a shared picture (spec §5.1: up to 2560×1440; room for 4K monitors
+/// scaled down by the sender).
+pub const MAX_SHARE_DIMENSION: u32 = 4096;
+pub const MAX_SHARE_FPS: u32 = 240;
 
 /// Decodes and version-checks a client frame.
 pub fn decode_client(bytes: &[u8]) -> Result<v1::ClientEnvelope, DecodeError> {
@@ -184,6 +191,28 @@ pub fn validate_datagram(d: &v1::MediaDatagram) -> Result<(), ValidationError> {
     } else {
         Ok(())
     }
+}
+
+pub fn validate_screen_share(m: &v1::ScreenShare) -> Result<(), ValidationError> {
+    validate_room_id(&m.room_id)?;
+    let side = 1..=MAX_SHARE_DIMENSION;
+    let ok = !m.active
+        || (side.contains(&m.width)
+            && side.contains(&m.height)
+            && (1..=MAX_SHARE_FPS).contains(&m.fps));
+    if ok {
+        Ok(())
+    } else {
+        Err(ValidationError::ScreenShare)
+    }
+}
+
+pub fn validate_subscribe_screen(m: &v1::SubscribeScreen) -> Result<(), ValidationError> {
+    validate_room_id(&m.room_id)?;
+    if m.peer_id.len() > MAX_PEER_ID_LEN {
+        return Err(ValidationError::PeerId);
+    }
+    Ok(())
 }
 
 /// Converts the payload of an incoming `Signal` into its relayed form.

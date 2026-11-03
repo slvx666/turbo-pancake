@@ -31,6 +31,8 @@ message ClientEnvelope {
     Ping ping = 14;
     MediaOffer media_offer = 15;
     MediaDatagram media_datagram = 16;
+    ScreenShare screen_share = 17;
+    SubscribeScreen subscribe_screen = 18;
   }
 }
 
@@ -55,6 +57,7 @@ message ServerEnvelope {
     MediaDatagram media_datagram = 19;
     TrackPublished track_published = 20;
     TrackUnpublished track_unpublished = 21;
+    ScreenShareState screen_share_state = 22;
   }
 }
 
@@ -235,6 +238,22 @@ message TrackPublished {
   string room_id = 1;
   string peer_id = 2;
   uint32 ssrc = 3;
+  // Added in S3; absent (AUDIO) in older servers.
+  TrackKind kind = 4;
+  // Retransmission (RTX, RFC 4588) stream of a SCREEN track; 0 = none.
+  uint32 rtx_ssrc = 5;
+}
+
+enum TrackKind {
+  // The member's voice. Zero so that messages from before S3 keep their meaning.
+  TRACK_KIND_AUDIO = 0;
+  // The member's screen share video (H.264), on the session's video m-line. Announced
+  // for every member like audio; RTP flows only while the receiver subscribes to it
+  // (SubscribeScreen) and the member shares.
+  TRACK_KIND_SCREEN = 1;
+  // The share's system audio (Opus) on the session's second audio m-line; flows like
+  // SCREEN, only to subscribers of the member's share.
+  TRACK_KIND_SCREEN_AUDIO = 2;
 }
 
 // Server -> client (spec §11 media.track_unpublished): the member's stream ended (left
@@ -243,4 +262,40 @@ message TrackUnpublished {
   string room_id = 1;
   string peer_id = 2;
   uint32 ssrc = 3;
+  TrackKind kind = 4;
+}
+
+// ---- Screen share (S3, spec §5) ----
+//
+// A member shares one whole monitor at a time as H.264 on the video m-line of its media
+// session. The SFU forwards a share only to members that subscribed to it.
+
+// Client -> server, in the joined room with a media session: starts, updates or stops
+// this member's share. The server tells every member of the room (ScreenShareState).
+message ScreenShare {
+  string room_id = 1;
+  bool active = 2;
+  // Encoded picture size and frame rate (informational; 0 when stopping).
+  uint32 width = 3;
+  uint32 height = 4;
+  uint32 fps = 5;
+}
+
+// Client -> server: watch this member's share (empty peer_id = watch none). Replaces the
+// previous subscription; the SFU asks the sharer for a keyframe.
+message SubscribeScreen {
+  string room_id = 1;
+  string peer_id = 2;
+}
+
+// Server -> client: a member started, changed or stopped sharing. Sent for every active
+// share when the client's media session is accepted, then on every change (a member who
+// leaves the room or loses its media session stops sharing).
+message ScreenShareState {
+  string room_id = 1;
+  string peer_id = 2;
+  bool active = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  uint32 fps = 6;
 }

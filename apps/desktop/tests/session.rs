@@ -810,3 +810,57 @@ fn twenty_members_hear_every_talker_through_leave_switch_and_reconnect() {
         assert!(x.released());
     }
 }
+
+/// S3: A shares (a synthetic picture through the OS encoder), B watches it through the
+/// SFU and gets decoded pictures; restarting the share (what switching the monitor does)
+/// keeps B watching; stopping ends it for B.
+#[test]
+#[cfg(windows)]
+fn screen_share_is_watched_restarted_and_stopped() {
+    use turbo_pancake_media_video::{ShareConfig, ShareSource};
+    let _serial = serial();
+    let (addr, _server) = server(None, Config::default());
+    let (mut a, mut b) = pair(addr, "s3-room", Opts::default(), Opts::default());
+    let mut share = ShareConfig::hd30(ShareSource::Synthetic);
+    (share.width, share.height) = (640, 360);
+    a.send(Command::StartShare(share));
+    a.wait("a sharing", 10, |s| {
+        s.sharing.as_ref().is_some_and(|st| st.encoded_frames > 0) || s.last_error.is_some()
+    });
+    if a.last.sharing.is_none() {
+        // Windows images without Media Foundation.
+        println!("SKIP: {:?}", a.last.last_error);
+        return;
+    }
+    b.wait("b sees the share", 10, |s| s.shares.len() == 1);
+    let shared = b.last.shares[0].clone();
+    assert_eq!(shared.name, "Алиса");
+    assert_eq!((shared.width, shared.height, shared.fps), (640, 360, 30));
+    b.send(Command::Watch(Some(shared.peer_id.clone())));
+    b.wait("b shows pictures", 15, |s| {
+        s.viewer.as_ref().is_some_and(|v| v.frames_shown >= 30)
+    });
+    let picture = b.session.as_ref().unwrap().picture();
+    let p = picture.lock().unwrap().clone().expect("a picture to show");
+    assert_eq!((p.width, p.height, p.rgba.len()), (640, 360, 640 * 360 * 4));
+    let v = b.last.viewer.clone().unwrap();
+    println!("viewer {v:?}");
+    println!("sharer {:?}", a.last.sharing);
+    assert!(v.error.is_none(), "{:?}", v.error);
+
+    // Switching the monitor restarts the pipeline; the viewer keeps going.
+    let shown = v.frames_shown;
+    a.send(Command::StartShare(share));
+    b.wait("b keeps showing after the restart", 15, |s| {
+        s.viewer
+            .as_ref()
+            .is_some_and(|v| v.frames_shown >= shown + 30)
+    });
+
+    a.send(Command::StopShare);
+    b.wait("the share ended for b", 10, |s| {
+        s.shares.is_empty() && s.watching.is_none() && s.viewer.is_none()
+    });
+    a.wait("a stopped", 5, |s| s.sharing.is_none());
+    assert!(picture.lock().unwrap().is_none(), "no stale picture");
+}

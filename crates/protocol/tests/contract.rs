@@ -199,6 +199,7 @@ fn track_field_numbers_are_pinned() {
             room_id: "r".into(),
             peer_id: "p".into(),
             ssrc: 5,
+            ..Default::default()
         })),
     };
     let bytes = encode(&published);
@@ -215,12 +216,150 @@ fn track_field_numbers_are_pinned() {
             room_id: "r".into(),
             peer_id: "p".into(),
             ssrc: 0xFFFF_FFFF,
+            ..Default::default()
         })),
         ..published
     };
     let bytes = encode(&unpublished);
     assert_eq!(&bytes[..4], &[0x08, 0x01, 0xAA, 0x01]);
     assert_eq!(decode_server(&bytes).unwrap(), unpublished);
+}
+
+#[test]
+fn screen_share_field_numbers_are_pinned() {
+    // TrackPublished for a screen: 4 = kind (SCREEN = 1), 5 = rtx_ssrc.
+    let screen = v1::ServerEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 0,
+        event_id: 0,
+        body: Some(S::TrackPublished(v1::TrackPublished {
+            room_id: "r".into(),
+            peer_id: "p".into(),
+            ssrc: 5,
+            kind: v1::TrackKind::Screen as i32,
+            rtx_ssrc: 6,
+        })),
+    };
+    let bytes = encode(&screen);
+    assert_eq!(
+        &bytes[..5],
+        &[0x08, 0x01, 0xA2, 0x01, 0x0C],
+        "ServerEnvelope field 20, 12 bytes"
+    );
+    assert_eq!(
+        &bytes[5..],
+        &[
+            0x0A, 0x01, b'r', 0x12, 0x01, b'p', 0x18, 0x05, 0x20, 0x01, 0x28, 0x06
+        ]
+    );
+    assert_eq!(decode_server(&bytes).unwrap(), screen);
+    // An S2 TrackPublished (no field 4) still means audio.
+    let old = [0x0A, 0x01, b'r', 0x12, 0x01, b'p', 0x18, 0x05];
+    let t = v1::TrackPublished::decode(&old[..]).unwrap();
+    assert_eq!(t.kind(), v1::TrackKind::Audio);
+
+    // ClientEnvelope 17 = ScreenShare { 1:"r", 2: true, 3: 1920, 4: 1080, 5: 60 }.
+    let share = turbo_pancake_protocol::client(
+        0,
+        C::ScreenShare(v1::ScreenShare {
+            room_id: "r".into(),
+            active: true,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+        }),
+    );
+    let bytes = encode(&share);
+    assert_eq!(
+        bytes,
+        vec![
+            0x08, 0x01, 0x8A, 0x01, 0x0D, 0x0A, 0x01, b'r', 0x10, 0x01, 0x18, 0x80, 0x0F, 0x20,
+            0xB8, 0x08, 0x28, 0x3C
+        ]
+    );
+    assert_eq!(decode_client(&bytes).unwrap(), share);
+    // 18 = SubscribeScreen { 1:"r", 2:"p" }.
+    let sub = turbo_pancake_protocol::client(
+        0,
+        C::SubscribeScreen(v1::SubscribeScreen {
+            room_id: "r".into(),
+            peer_id: "p".into(),
+        }),
+    );
+    assert_eq!(&encode(&sub)[..4], &[0x08, 0x01, 0x92, 0x01]);
+    // ServerEnvelope 22 = ScreenShareState.
+    let state = v1::ServerEnvelope {
+        body: Some(S::ScreenShareState(v1::ScreenShareState {
+            room_id: "r".into(),
+            peer_id: "p".into(),
+            active: true,
+            width: 1280,
+            height: 720,
+            fps: 30,
+        })),
+        ..screen
+    };
+    let bytes = encode(&state);
+    assert_eq!(&bytes[..3], &[0x08, 0x01, 0xB2]);
+    assert_eq!(decode_server(&bytes).unwrap(), state);
+}
+
+#[test]
+fn screen_share_validation() {
+    use turbo_pancake_protocol::{validate_screen_share, validate_subscribe_screen};
+    let ok = v1::ScreenShare {
+        room_id: "r1".into(),
+        active: true,
+        width: 2560,
+        height: 1440,
+        fps: 120,
+    };
+    assert!(validate_screen_share(&ok).is_ok());
+    let stop = v1::ScreenShare {
+        room_id: "r1".into(),
+        ..Default::default()
+    };
+    assert!(
+        validate_screen_share(&stop).is_ok(),
+        "stopping needs no size"
+    );
+    for bad in [
+        v1::ScreenShare {
+            width: 0,
+            ..ok.clone()
+        },
+        v1::ScreenShare {
+            height: 5000,
+            ..ok.clone()
+        },
+        v1::ScreenShare {
+            fps: 0,
+            ..ok.clone()
+        },
+        v1::ScreenShare {
+            fps: 1000,
+            ..ok.clone()
+        },
+        v1::ScreenShare {
+            room_id: "bad id".into(),
+            ..ok.clone()
+        },
+    ] {
+        assert!(validate_screen_share(&bad).is_err(), "{bad:?}");
+    }
+    let sub = v1::SubscribeScreen {
+        room_id: "r1".into(),
+        peer_id: String::new(),
+    };
+    assert!(
+        validate_subscribe_screen(&sub).is_ok(),
+        "empty = watch none"
+    );
+    let long = v1::SubscribeScreen {
+        peer_id: "p".repeat(65),
+        ..sub
+    };
+    assert!(validate_subscribe_screen(&long).is_err());
 }
 
 #[test]
