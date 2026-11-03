@@ -8,14 +8,14 @@ verbatim-in-meaning so each session can check them.
 | S0 | Audit, skeleton, media feasibility | compiles on CI targets or blockers recorded; real native window; toolchain recorded; reproducible benchmark harness; PROJECT_STATE filled; ADRs for UI/codecs/GPU textures/str0m/capture/audio | DONE (2026-11-02, CI run 41364362270) |
 | S1 | 1:1 voice end-to-end | two real clients talk via server; continuity under moderate loss; no audio loop; resources freed after leave; trials recorded | BLOCKED (2026-11-02): Windows done, real-device trials on macOS/Linux need owner hardware (none available) |
 | S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | DONE (2026-11-03; CI 41647867149 Windows/Ubuntu; macOS re-check pending, PROJECT_STATE issue 26) |
-| S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | NOT_STARTED |
+| S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | BLOCKED (2026-11-04): Windows PASS on every criterion; macOS/Linux capture, codecs and system audio not implemented, no hardware to verify (as S1) |
 | S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | NOT_STARTED |
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | NOT_STARTED |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | NOT_STARTED |
 | S7 | Desktop polish + delivery | E2E on Win/macOS/Linux, signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
 
-## S3 plan (started 2026-11-03)
+## S3 plan (2026-11-03; Windows done 2026-11-04, macOS/Linux blocked)
 
 Scope (spec §5.1, §5.2, §14.1–14.3, §17 S3): one sharer per member, whole selected monitor,
 1080p60 H.264 with hardware encode/decode, system audio without our own sound, one viewer.
@@ -32,20 +32,20 @@ UNVERIFIED until they run on real hardware (owner has none — same blocker shap
    (Media Foundation, VideoToolbox, VA-API) — no codec code shipped by us; (b) bundle
    OpenH264 (Cisco binary, BSD, Cisco pays MPEG LA when downloaded from Cisco) as a CPU
    fallback; (c) FFmpeg LGPL dynamic. Until decided the code uses (a) only.
-3. **`crates/media-video`** (encoder + decoder done 2026-11-03; capture thread + latest-frame slot still in the probe): capture thread → GPU convert → encoder thread with a
+3. ~~`crates/media-video`~~ — done 2026-11-04 (capture, converter, `ScreenShare` thread, decoder): capture thread → GPU convert → encoder thread with a
    depth-1 "latest frame wins" slot (no queues that grow), keyframe on request, bitrate
    change at runtime; decoder (MF H.264 hardware MFT, D3D11 output) → NV12 → BGRA texture.
-4. **Transport**: a video m-line (H.264, packetization-mode 1) on the existing str0m
+4. ~~Transport~~ — done 2026-11-04 (ADR 0010): a video m-line (H.264, packetization-mode 1) on the existing str0m
    session to the SFU; SFU forwards the sharer's RTP to subscribed viewers only, relays
    PLI/FIR as keyframe requests; protocol: `ScreenSharePublished/Unpublished`,
    `SubscribeScreen{peer}`; contract tests.
-5. **Viewer**: the desktop shows the selected share in the call window (Slint image from a
+5. ~~Viewer~~ — done 2026-11-04: the desktop shows the selected share in the call window (Slint image from a
    CPU copy first; GPU texture import is S4 work), stop/switch monitor from the share menu.
-6. **System audio**: WASAPI process loopback excluding our process tree (Windows 10 2004+
+6. ~~System audio~~ — done on Windows 2026-11-04 (tone test): WASAPI process loopback excluding our process tree (Windows 10 2004+
    / 11), Opus stereo 48 kHz as a second audio track without NS/AEC (spec §4); on macOS
    ScreenCaptureKit `excludesCurrentProcessAudio`, Linux disabled with a stated limitation
    until the PipeWire routing is validated.
-7. **Acceptance runs**: real share between two clients on this machine (sharer captures
+7. ~~Acceptance runs~~ — done on Windows 2026-11-04 (`screen-trial.ps1`): real share between two clients on this machine (sharer captures
    the secondary monitor) with frame counts, end-to-end latency via a timestamp marker
    drawn in a test pattern window, bitrate; system audio with the client's own playback
    playing and verified absent from the captured stream; stop / monitor switch tests.

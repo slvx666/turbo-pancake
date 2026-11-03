@@ -1,10 +1,10 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
-Current stage: S3 — screen share 1080p60 + system audio (IN_PROGRESS since 2026-11-03: step 1 probe done, step 3 encoder/decoder library on Windows done)
-Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked)
+Current stage: S3 — screen share 1080p60 + system audio: **BLOCKED** (2026-11-04: complete and measured on Windows; macOS/Linux capture, codecs and system audio are not implemented and cannot be verified without the owner's hardware — same formal blocker as S1). Next: S4 (spec §16 allows continuing past a formal blocker).
+Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked); **S3 = BLOCKED** (2026-11-04: Windows PASS on every criterion, macOS/Linux not implemented — see the S3 table)
 Last verified commit: 8a1cd67 (branch `main`, CI run 41696686532: Windows, Ubuntu, audit green; macOS arm64 job again got no runner — see known issue 26; last macOS run that executed tests: 41588139375)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
-Last session: 2026-11-03
+Last session: 2026-11-04
 
 ## Environment (dev machine, Windows)
 
@@ -37,7 +37,10 @@ Last session: 2026-11-03
 | **Per-member audio** (S2): SFU assigns an SSRC per member session and forwards every member to every other member (no transcoding, no renegotiation); `TrackPublished`/`TrackUnpublished`; client `CallDriver::expect_source`, engine peer per SSRC | `crates/media-sfu`, `proto/…/signaling.proto`, `crates/media-transport/src/call.rs`, `apps/desktop/src/session.rs` | `tests/session.rs::three_members_each_hear_both_others`, contract test, ADR 0008 |
 | **Group call client** (S2 step 3): member list (peer id → SSRC → engine stream) with a speaking indicator and a volume slider per member (`Command::SetMemberVolume`, on top of the call volume); voice activation with an adjustable threshold (`Command::SetVoiceGate`, dBFS, 300 ms hangover; the sequence number pauses, the RTP timestamp runs on); own speaking indicator and a dB microphone meter with the threshold mark; jitter buffer measures transit by RTP timestamp and starts a talkspurt after a pause instead of discarding it as late | `crates/media-audio/src/{pipeline,jitter,engine}.rs`, `apps/desktop/src/{session,view,main}.rs`, `apps/desktop/ui/main.slint` | unit tests `pipeline::tests::*`, `jitter::tests::{talkspurt_*,short_pause_*}`, `tests/engine.rs::voice_activation_pauses_sending_and_drives_the_indicators`, `tests/session.rs::speaking_indicators_member_volume_and_voice_activation` |
 | **H.264 encode/decode library** (S3 step 3): `H264Encoder` — first working hardware encoder MFT (async, event-driven), else the OS software encoder MFT (sync); low latency, CBR, GOP, no B-frames where accepted; input D3D11 NV12 texture (zero-copy when the MFT takes the device) or NV12 bytes; `ready()` instead of queues (caller drops the frame), `request_keyframe`, `set_bitrate`, `drain`; Annex B output. `H264Decoder` — Microsoft H.264 decoder MFT with the D3D11 manager (DXVA), low latency, output read back through a staging copy into tight NV12 | `crates/media-video` | `tests/loopback.rs`: 90-frame round trip on hardware and on the software encoder (all frames, order, forced keyframe, luma PSNR ≥ 52 dB), hardware 1080p60 real-time run; macOS/Linux `Unsupported` |
-| ADRs 0001–0009, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
+| **Screen share end to end** (S3): protocol `ScreenShare` / `SubscribeScreen` / `ScreenShareState`, `TrackPublished.kind` (AUDIO/SCREEN/SCREEN_AUDIO) + `rtx_ssrc`; SFU with three m-lines per session (voice, H.264 video, share audio), share audio/video forwarded only to subscribers of an announced share, NACK/RTX on each leg, viewer PLI → sharer; `CallDriver` video m-line with H.264 packetization, paced sending (12 Mbit/s token bucket), `FrameAssembler` (waits ≤ 250 ms for RTX, then skips to a keyframe and asks for one), `KeyframeRequester`; 4 MiB UDP socket buffers | `proto/…/signaling.proto`, `crates/media-sfu`, `crates/media-transport/src/{call,video}.rs`, `apps/app-server/src/signaling.rs` | contract tests (13), `crates/media-sfu/tests/screen.rs` (only subscribers get video + share audio, 120/120 frames, PLI reaches the sharer, stop ends forwarding; 3 % loss both ways → 91–100 % of frames), `video::tests` (5) |
+| **Share pipeline + viewer** (S3): `MonitorCapture` (Windows.Graphics.Capture, whole monitor), GPU `Converter` (BGRA → NV12 + scale), `ScreenShare` thread (fixed rate, newest frame wins, keyframe on request, stats); `Viewer` thread (assembler → OS decoder with DXVA → newest picture of each round → parallel NV12 → RGBA → `PictureSlot`); desktop UI: monitor + quality (1080p60 / 720p30) pickers, show/stop, monitor switch while sharing, list of shares with watch/stop watching, picture view, share-audio checkbox; `--share/--share-quality/--watch/--share-no-audio` for scripted trials | `crates/media-video/src/win/{capture,share}.rs`, `apps/desktop/src/{screen,session,view,main}.rs`, `ui/main.slint` | `crates/media-video/tests/share.rs` (synthetic share 60 fps, all frames decode; real capture of the secondary monitor with `--ignored`), `apps/desktop/tests/session.rs::screen_share_is_watched_restarted_and_stopped`, `benchmarks/scripts/screen-trial.ps1` |
+| **System audio without our sound** (S3): WASAPI process loopback excluding our process tree, 48 kHz stereo → Opus stereo 96 kbit/s (Audio mode, no NS/AEC), nothing sent in silence; viewer plays it as an engine stream while watching | `crates/media-audio/src/system.rs` | `crates/media-audio/tests/system_audio.rs` (tones from own / child / outside processes), share audio in `screen-trial` logs |
+| ADRs 0001–0010, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
 
@@ -91,15 +94,15 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008); load measured with `turbo-pancake-bench sfu` (release server process, 20 real call drivers) | **PASS**: no transcoding by design; 20 members, 1 / 3 / 10 / 20 talking → server 6.9 / 6.2 / 14.4 / 25.4 % of one core, 951 – 18 991 packets/s out, 99–100 % delivered, egress ≈ 1.3 – 25.2 Mbit/s (re-measured after the burst fix) | `crates/media-sfu/src/lib.rs`, `benchmarks/results/sfu-20m-windows-1793711275.json`, `sfu-50m-windows-1793711325.json` |
 | Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
 
-## Acceptance checks — S3 (IN_PROGRESS)
+## Acceptance checks — S3 (BLOCKED 2026-11-04: Windows PASS, macOS/Linux not implemented)
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
-| Real share with measured frames, latency, bitrate | step 1 probe only: `turbo-pancake-screen-probe run --monitor 1 --seconds 10 --pattern` (secondary monitor, 1920×1080 @ 60 Hz, RTX 2060 SUPER, NVIDIA H.264 Encoder MFT, 8 Mbit/s CBR requested) | **UNVERIFIED** (no transport/viewer yet). Probe: capture 54.9 fps, encoded 57.8 fps, capture → encoded p50 18.4 / p95 30.3 / p99 43.0 ms, submit → encoded p50 6.7 / p95 16.3 ms, 983 kbit/s on the simple pattern (encoder does not pad CBR), 10 keyframes / 10 s, process CPU 5.6 % of one core. Static screen: capture 0.3 fps, encoder repeats the last frame at 57 fps | `benchmarks/results/screen-probe-windows-1080p60-pattern-2026-11-03.json`, `…-1080p60-2026-11-03.json` |
-| (step 3) encode → decode 1080p60 | `cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture` | **PASS (Windows, RTX 2060 SUPER, NVENC + DXVA, no network)**: 179 of 180 frames at 59.8 fps, encode p50 3.9 / p95 4.5 ms, encode + decode p50 6.9 / p95 8.0 / p99 9.6 ms; round trip PSNR 55.5 dB hardware, 52.3 dB OS software encoder. macOS/Linux **UNVERIFIED** | `benchmarks/results/media-video-loopback-windows-1080p60-2026-11-03.json` |
-| System audio without echo, own sound excluded | — | **UNVERIFIED** (step 6) | — |
-| Stop / switch monitor | — | **UNVERIFIED** (step 5) | — |
-| Platform limits stated | macOS/Linux probe prints UNVERIFIED; no hardware for trials (same as S1) | **UNVERIFIED** | — |
+| Real share with measured frames, latency, bitrate | `powershell -File benchmarks/scripts/screen-trial.ps1 -Seconds 30` — app-server + two release clients on this machine, windows on the 2nd monitor (inactive), A shares that whole monitor at 1080p60 (8 Mbit/s target, NVENC), B watches; also `-Media tcp` (WebSocket tunnel) and `-Quality hd30` | **PASS (Windows, one machine, real capture, real clients)**: A encodes 54–60 fps (capture → encoded p50 15–23 / p95 23–33 ms), 1.6–3.8 Mbit/s on desktop content; B shows 50–60 fps 1920×1080, decodes every frame (DXVA, 3.2–4.4 ms), 0 frames lost, **capture → decoded picture p50 22–30 / p95 30–51 ms over UDP, p50 28–33 / p95 43–50 ms through the WebSocket tunnel**; 720p30: 29.9 fps, p50 18–22 ms. Display presentation (UI timer ≤ 16 ms + vsync) not included: an instrumental (camera) screen-to-screen measurement is **UNVERIFIED**; two separate machines **UNVERIFIED**. macOS/Linux **not implemented** | `benchmarks/results/screen-trial-windows-1080p60-2026-11-03.log`, `…-1080p60-tcp-2026-11-04.log`, `…-720p30-stop-2026-11-04.log`; headless: `cargo test -p turbo-pancake-desktop --test session screen_share`, `cargo test -p turbo-pancake-media-sfu --test screen` |
+| (step 3) encode → decode 1080p60 | `cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture` | **PASS (Windows)**: 179/180 frames at 59.8 fps, encode p50 3.9 ms, encode + decode p50 6.9 / p95 8.0 ms; PSNR 55.5 dB (hardware), 52.3 dB (OS software encoder) | `benchmarks/results/media-video-loopback-windows-1080p60-2026-11-03.json` |
+| System audio works, own sound excluded, no echo | `cargo test -p turbo-pancake-media-audio --no-default-features --test system_audio -- --nocapture`: quiet tones at once from this process (1000 Hz), a child process (400 Hz) and a process outside the tree (600 Hz, started through WMI); trial: B plays A's share audio | **PASS (Windows)**: outside process captured at full level (9.9e-5 vs 1.0e-4 for a pure tone), own tone 51.6 dB below it, child 23.1 dB below — exact exclusion of the messenger's process tree, so a viewer's voice or the share audio played by the messenger cannot loop back. In the trial B played A's share audio continuously (≈ 1 300 frames, 0.0 % concealed) as an engine stream, i.e. inside the echo canceller's reference. **By-ear check of echo with two people UNVERIFIED** (needs the owner). macOS (ScreenCaptureKit `excludesCurrentProcessAudio`) and Linux (PipeWire) **not implemented**: the share runs without sound and says so | test output `TURBO_PANCAKE_SYSTEM_AUDIO …`; `share_audio_*` / `watched_audio_*` fields in the trial logs |
+| Stop / switch monitor | headless session test: start → watch → restart with a source of another size (what a monitor switch does: a new pipeline) → stop; GUI: `screen-trial.ps1 -StopAfter 12` (A leaves) | **PASS**: the viewer follows the new source (640×360 → 1280×720) and keeps showing; stop removes the share, the subscription and the picture on the viewer; when A leaves, B's share list and viewer clear within a second. The UI restarts the share on monitor/quality change. **GUI switch between two physical monitors UNVERIFIED** (would show the owner's primary monitor; not run during the owner's work) | `apps/desktop/tests/session.rs::screen_share_is_watched_restarted_and_stopped`, `benchmarks/results/screen-trial-windows-720p30-stop-2026-11-04.log` |
+| Platform limits stated | ADR 0005/0009/0010, issue 30, UI messages | **PASS**: Windows only; macOS/Linux report "not implemented" for share, viewer and system audio; Linux system-audio exclusion stays disabled until validated (spec §14.1) | ADR 0010 |
 
 ## Known issues and blockers
 
@@ -193,6 +196,25 @@ performance results for the target hardware (RTX 4070 Super / M4).
     encoder rejects `MFT_MESSAGE_COMMAND_FLUSH` before streaming (now ignored). NVENC did not
     accept `CODECAPI_AVEncMPVDefaultBPictureCount` (low-latency mode
     already avoids B-frames: decode order == capture order in the test).
+30. **S3 platform blocker:** screen capture, H.264 encode/decode and system audio exist for
+    Windows only. macOS (ScreenCaptureKit + VideoToolbox + `excludesCurrentProcessAudio`)
+    and Linux (xdg-desktop-portal + PipeWire + VA-API; system audio exclusion to validate)
+    are not implemented; there is no hardware to verify them (same as issue S1). S3 stays
+    BLOCKED on that; work continues with S4 (spec §16).
+31. **str0m repair window:** NACKs and repairs only within 100 sequence numbers of the
+    newest packet, NACK rounds every 33 ms. Sending is paced at 12 Mbit/s so a 1080p
+    keyframe gets two repair rounds on a LAN; long RTTs or 1440p120 bitrates (S4) need a
+    larger window (str0m change) or our own NACK/RTX. Pacing adds up to ≈ 100 ms to a
+    keyframe.
+32. Viewer converts NV12 → RGBA on the CPU (≈ 4 ms per 1080p picture on 4 threads) and
+    Slint uploads 8 MB per shown picture; GPU texture import is S4 work. Decoder output is
+    read back from the GPU (≈ 3 ms per frame) even for frames that are not shown.
+33. Static screens: Windows.Graphics.Capture delivers frames only on change; the encoder
+    repeats the last picture at the share's rate (small P-frames). Encoder input busy
+    (`enc_busy`) skips ≈ 2–5 % of ticks on the dev GPU.
+34. System audio decodes as mono on the viewer (the voice decoder downmixes the stereo
+    stream); stereo playback is a later improvement. Share audio volume follows the call
+    volume (no separate slider yet).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -209,6 +231,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 * [0007 Media through the SFU, UDP + WebSocket fallback](ADR/0007-media-through-sfu.md) — accepted
 * [0008 Per-member audio: one m-line, one SSRC per member](ADR/0008-per-member-audio-streams.md) — accepted
 * [0009 H.264: OS/vendor codecs only](ADR/0009-h264-os-encoders-only.md) — accepted (owner, 2026-11-03)
+* [0010 Screen share transport, subscriptions, loss repair, system audio](ADR/0010-screen-share-transport.md) — accepted
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -499,14 +522,40 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM build environment (vcvars64, meson/ninja venv, clang-cl as
   CC/CXX, `nm`); with Git's `usr/bin` first on PATH its `link` shadows MSVC's linker.
 
-## Exact next task — S3 step 3 (rest) and step 4
+## Session log 2026-11-04 (S3 — share end to end, system audio, trials)
 
-1. Move capture out of the probe into `crates/media-video` (`win::capture`: monitor list,
-   Windows.Graphics.Capture session, BGRA→NV12 video processor) with a capture thread and a
-   depth-1 latest-frame slot feeding an encoder thread; make the probe use the library.
-2. Step 4: H.264 video track on the existing str0m session to the SFU (packetization-mode
-   1, RTP mode like audio), `ScreenSharePublished/Unpublished`, `SubscribeScreen{peer}`,
-   PLI/FIR → `request_keyframe`; contract tests; SFU forwards video only to subscribers.
+* Protocol + SFU + transport + desktop (see "Implemented"), commit 10e3c8e; ADR 0010, API.md.
+* Found and fixed on the way: (1) a 1080p keyframe sent as one burst lost its early
+  packets for good because str0m only repairs within 100 sequence numbers → paced sending
+  (37 % → 91–100 % of frames at 3 % loss); (2) the frame assembler dropped the whole buffer
+  when the first packet of a frame was lost (unit test added); (3) the viewer fell behind
+  (32 fps, latency growing to 6 s) converting every frame → decode all, convert only the
+  newest, conversion on 4 threads (10 → 3.9 ms); (4) process loopback also excludes child
+  processes — the test plays from a process outside the tree (WMI).
+* Trials on this machine (secondary monitor, no input): UDP 1080p60, WebSocket 1080p60,
+  720p30 with the sharer leaving; numbers in the S3 table.
+* Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
+  `cargo test --workspace --locked --no-fail-fast` all green.
+
+## Exact next task — S4 (S3 stays BLOCKED on macOS/Linux)
+
+1. Check CI for 10e3c8e and the following commits (Linux/macOS build the non-Windows
+   stubs of media-video/system audio for the first time).
+2. Write the S4 plan in `docs/STAGES.md` from spec §5.1–§5.3, §13, §17 S4: two qualities
+   per share (simulcast: a low preview layer 160–320 px / 5–15 fps + the high layer, or two
+   encoder sessions), layer subscriptions in the SFU (`SubscribeScreen` with a layer),
+   adaptive quality (REMB/loss-driven bitrate, prefer FPS over resolution), 1440p120 where
+   the encoder/monitor allow, preview grid with decode limits, separate window for the
+   watched share, GPU texture import in Slint; load scenarios 50 publishers / 50 previews
+   / 1 → 50 viewers (controlled, documented); str0m repair window (issue 31).
+3. Owner-assisted, when possible: two machines share and watch each other (by ear: share
+   audio, no echo), instrumental screen-to-screen latency (camera), GUI switch between two
+   physical monitors.
+
+## Previous next-task list — S3 step 3 (rest) and step 4
+
+1. ~~Move capture into `crates/media-video`~~ — done 2026-11-04 (`win::capture`, `ScreenShare`).
+2. ~~Step 4: H.264 video track through the SFU~~ — done 2026-11-04.
 
 ## Previous next-task list — S3 step 2/3
 

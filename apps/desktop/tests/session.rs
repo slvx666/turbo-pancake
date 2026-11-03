@@ -848,14 +848,22 @@ fn screen_share_is_watched_restarted_and_stopped() {
     println!("sharer {:?}", a.last.sharing);
     assert!(v.error.is_none(), "{:?}", v.error);
 
-    // Switching the monitor restarts the pipeline; the viewer keeps going.
+    // Switching the monitor restarts the pipeline, here onto a source of another size
+    // (what a monitor with a different resolution gives); the viewer follows.
     let shown = v.frames_shown;
-    a.send(Command::StartShare(share));
-    b.wait("b keeps showing after the restart", 15, |s| {
-        s.viewer
-            .as_ref()
-            .is_some_and(|v| v.frames_shown >= shown + 30)
+    let mut bigger = share;
+    (bigger.width, bigger.height) = (1280, 720);
+    a.send(Command::StartShare(bigger));
+    b.wait("b shows the new source", 15, |s| {
+        s.shares.first().is_some_and(|sh| sh.width == 1280)
+            && s.viewer
+                .as_ref()
+                .is_some_and(|v| v.width == 1280 && v.frames_shown >= shown + 30)
     });
+    let p = picture.lock().unwrap().clone();
+    if let Some(p) = p {
+        assert_eq!((p.width, p.height), (1280, 720));
+    }
 
     a.send(Command::StopShare);
     b.wait("the share ended for b", 10, |s| {
