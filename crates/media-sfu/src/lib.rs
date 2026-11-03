@@ -133,6 +133,7 @@ impl Sfu {
             peers: HashMap::new(),
             next_ssrc: first_ssrc(),
             buf: vec![0; 2048],
+            received: Vec::new(),
             st: SfuStats::default(),
             stats: stats.clone(),
         };
@@ -242,6 +243,8 @@ struct Worker {
     peers: HashMap<PeerId, Member>,
     next_ssrc: u32,
     buf: Vec<u8>,
+    /// RTP received since the last forward (collected right after each input).
+    received: Vec<Forward>,
     st: SfuStats,
     stats: Arc<Mutex<SfuStats>>,
 }
@@ -282,7 +285,8 @@ impl Worker {
                     let _ = m.rtc.handle_input(Input::Timeout(now));
                 }
             }
-            let forwards = self.drain();
+            let mut forwards = std::mem::take(&mut self.received);
+            forwards.extend(self.drain());
             if !forwards.is_empty() {
                 busy = true;
                 self.forward(forwards);
@@ -366,6 +370,14 @@ impl Worker {
                     );
                     if m.rtc.accepts(&input) {
                         let _ = m.rtc.handle_input(input);
+                        // RTP mode keeps one received packet: take it before the next.
+                        drain_member(
+                            &peer,
+                            m,
+                            self.socket.as_ref(),
+                            &mut self.st,
+                            &mut self.received,
+                        );
                     }
                 }
             }
@@ -467,7 +479,7 @@ impl Worker {
             };
             any = true;
             self.st.udp_in += 1;
-            for m in self.peers.values_mut().filter(|m| !m.tunnel) {
+            for (id, m) in self.peers.iter_mut().filter(|(_, m)| !m.tunnel) {
                 let Ok(contents) = self.buf[..n].try_into() else {
                     break;
                 };
@@ -485,6 +497,10 @@ impl Worker {
                 );
                 if m.rtc.accepts(&input) {
                     let _ = m.rtc.handle_input(input);
+                    // RTP mode keeps one received packet: a second datagram handed in
+                    // before polling would overwrite it (lost whenever a member's packets
+                    // arrive in a burst).
+                    drain_member(id, m, Some(socket), &mut self.st, &mut self.received);
                     break;
                 }
             }
@@ -496,52 +512,7 @@ impl Worker {
     fn drain(&mut self) -> Vec<Forward> {
         let mut forwards = Vec::new();
         for (id, m) in self.peers.iter_mut() {
-            loop {
-                match m.rtc.poll_output() {
-                    Ok(Output::Timeout(t)) => {
-                        m.next_timeout = t;
-                        break;
-                    }
-                    Ok(Output::Transmit(t)) => {
-                        if m.tunnel {
-                            self.st.tunnel_out += 1;
-                            m.sink.datagram(t.contents.to_vec());
-                        } else if let Some(s) = &self.socket {
-                            self.st.udp_out += 1;
-                            if s.send_to(&t.contents, t.destination).is_err() {
-                                self.st.udp_send_errors += 1;
-                            }
-                        }
-                    }
-                    Ok(Output::Event(e)) => match e {
-                        Event::Connected => {
-                            m.connected = true;
-                            m.pt = m
-                                .rtc
-                                .codec_config()
-                                .find(|p| p.spec().codec == Codec::Opus)
-                                .map(|p| p.pt());
-                        }
-                        Event::MediaAdded(a) if a.kind == MediaKind::Audio => m.mid = Some(a.mid),
-                        Event::RtpPacket(p) => {
-                            self.st.rtp_in += 1;
-                            forwards.push(Forward {
-                                from: id.clone(),
-                                room: m.room.clone(),
-                                ssrc: m.ssrc,
-                                seq: *p.seq_no,
-                                timestamp: p.header.timestamp,
-                                payload: p.payload.to_vec(),
-                            });
-                        }
-                        _ => {}
-                    },
-                    Err(_) => {
-                        m.rtc.disconnect();
-                        break;
-                    }
-                }
-            }
+            drain_member(id, m, self.socket.as_ref(), &mut self.st, &mut forwards);
         }
         forwards
     }
@@ -600,6 +571,62 @@ impl Worker {
             let dropped = s.dropped_commands;
             *s = self.st.clone();
             s.dropped_commands = dropped;
+        }
+    }
+}
+
+/// Sends what one member's Rtc wants to send and collects the RTP it received.
+fn drain_member(
+    id: &PeerId,
+    m: &mut Member,
+    socket: Option<&UdpSocket>,
+    st: &mut SfuStats,
+    forwards: &mut Vec<Forward>,
+) {
+    loop {
+        match m.rtc.poll_output() {
+            Ok(Output::Timeout(t)) => {
+                m.next_timeout = t;
+                break;
+            }
+            Ok(Output::Transmit(t)) => {
+                if m.tunnel {
+                    st.tunnel_out += 1;
+                    m.sink.datagram(t.contents.to_vec());
+                } else if let Some(s) = socket {
+                    st.udp_out += 1;
+                    if s.send_to(&t.contents, t.destination).is_err() {
+                        st.udp_send_errors += 1;
+                    }
+                }
+            }
+            Ok(Output::Event(e)) => match e {
+                Event::Connected => {
+                    m.connected = true;
+                    m.pt = m
+                        .rtc
+                        .codec_config()
+                        .find(|p| p.spec().codec == Codec::Opus)
+                        .map(|p| p.pt());
+                }
+                Event::MediaAdded(a) if a.kind == MediaKind::Audio => m.mid = Some(a.mid),
+                Event::RtpPacket(p) => {
+                    st.rtp_in += 1;
+                    forwards.push(Forward {
+                        from: id.clone(),
+                        room: m.room.clone(),
+                        ssrc: m.ssrc,
+                        seq: *p.seq_no,
+                        timestamp: p.header.timestamp,
+                        payload: p.payload.to_vec(),
+                    });
+                }
+                _ => {}
+            },
+            Err(_) => {
+                m.rtc.disconnect();
+                break;
+            }
         }
     }
 }
