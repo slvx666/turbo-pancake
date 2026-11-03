@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S2 — group audio + SFU
 Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
-Last verified commit: ecb505e (branch `main`, CI run 41551356643: Windows, Ubuntu, macOS arm64 and audit all green)
+Last verified commit: 7de3154 (branch `main`, CI run 41559716784 attempt 2: Windows, Ubuntu, macOS arm64, audit all green; attempt 1 macOS failed two 2-member session tests on concealment — see known issue 20)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-03
 
@@ -128,6 +128,10 @@ performance results for the target hardware (RTX 4070 Super / M4).
     real-time simulated clients in parallel debug builds starved each other (≈ 4 %
     concealed frames, failing the < 3 % bound); serial runs: 0 concealed. One serial run in
     ~10 still failed while the dev machine was busy with other work.
+    On the macOS arm64 runner (CI 41559716784 attempt 1) the two 2-member tests that ran
+    right after the 20-member test failed the same bound (bursty arrival, heavy FEC);
+    the re-run was green. If it recurs: run the 20-member test as its own test binary
+    last, or relax the bound for CI runners with a recorded reason.
 21. **`window-check.ps1` saw the window in the foreground** (2026-11-03: 109 of 110 samples)
     although it was created with `--no-activate`. No window code changed in this step and
     Slint only calls `focus_window` on an explicit `bring_to_front`; the likely cause is
@@ -334,6 +338,12 @@ measured from outside (`TotalProcessorTime`): 15.16 / 9.91 / 9.75 s for 7.3 / 6.
 wall. Full workspace: fmt OK, clippy OK, 77 tests passed twice in a row.
 Not covered: all 20 talking at once (decode load N·(N−1)) — measured in step 6 together
 with SFU CPU/egress.
+CI run 41559716784 (commit 7de3154): attempt 1 — Windows, Ubuntu green; macOS passed the
+20-member test but the two tests that ran right after it failed the < 3 % concealment
+bound (`two_sessions_call_through_the_server` 10 %: 200 played, 113 by FEC, 20 concealed;
+`vpn_without_udp_falls_back_to_the_websocket` ≈ 18 %), i.e. packets arrived in bursts.
+Not reproduced locally with the whole session suite pinned to 3 logical CPUs (2 runs,
+9/9). Attempt 2 (failed jobs re-run): all green incl. macOS. Recorded under issue 20.
 
 ## Session log 2026-11-03 (S2, step 4 — call lifecycle)
 
