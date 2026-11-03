@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S2 — group audio + SFU
 Stage status: IN_PROGRESS (S0 = DONE; **S1 = BLOCKED** on 2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker, so S2 starts per spec §16)
-Last verified commit: 7c36c8d (branch `main`, CI run 41540292365: Windows, Ubuntu, audit green; macOS job cancelled — no macOS arm64 runner acquired in 15 min (0 steps), as in runs 41480272959/41500008299/41503469373; last green macOS: run 41457062573)
+Last verified commit: ecb505e (branch `main`, CI run 41551356643: Windows, Ubuntu, macOS arm64 and audit all green)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-03
 
@@ -334,6 +334,8 @@ reserved. Client: a server-initiated `RoomLeft` for the current room ends the ca
 Tests: 2 server tests, 2 session tests (room switch with 3 members, group reconnect).
 Local (Windows, `apm-env.ps1`): fmt OK, clippy `-D warnings` OK, `cargo test --workspace
 --locked` 76 passed.
+CI run 41551356643 (commit ecb505e): Windows, Ubuntu, macOS arm64 (first green macOS since
+run 41457062573, so the S2 code incl. steps 1–3 now passes on macOS too) and audit green.
 
 ## Session log 2026-11-03 (S2, step 3 — group call client)
 
