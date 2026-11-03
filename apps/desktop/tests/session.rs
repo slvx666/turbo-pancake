@@ -174,6 +174,22 @@ fn played(s: &Snapshot) -> u64 {
         .map_or(0, |p| p.stats.jitter.played)
 }
 
+/// The server's SFU counters (`GET /v1/media-stats`), for failure messages.
+fn media_stats(addr: SocketAddr) -> String {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(addr) else {
+        return "no connection".into();
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = write!(
+        s,
+        "GET /v1/media-stats HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    );
+    let mut body = String::new();
+    let _ = s.read_to_string(&mut body);
+    body.rsplit("\r\n\r\n").next().unwrap_or("").to_owned()
+}
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -253,11 +269,10 @@ fn two_sessions_call_through_the_server() {
     eprintln!("b receiver: {rx:?}\na media: {:?}", a.last.call);
     assert_eq!(rx.decode_errors, 0);
     let why = format!(
-        "{rx:?}
-a: {}
-b: {}",
+        "{rx:?}\na: {}\nb: {}\nsfu: {}",
         a.diag(),
-        b.diag()
+        b.diag(),
+        media_stats(addr)
     );
     assert!(rx.jitter.late <= 3, "{why}");
     assert!(rx.concealed_ratio() < 0.03, "{why}");
@@ -333,11 +348,10 @@ fn vpn_without_udp_falls_back_to_the_websocket() {
     eprintln!("b receiver over websocket: {rx:?}");
     assert_eq!(rx.decode_errors, 0);
     let why = format!(
-        "{rx:?}
-a: {}
-b: {}",
+        "{rx:?}\na: {}\nb: {}\nsfu: {}",
         a.diag(),
-        b.diag()
+        b.diag(),
+        media_stats(addr)
     );
     assert!(rx.concealed_ratio() < 0.03, "{why}");
     assert!(b.state.recent_peak() > 0.2);
@@ -430,7 +444,8 @@ fn three_members_each_hear_both_others() {
             s.members.len() == 2 && heard(s, 100) == 2
         });
     }
-    let diags: Vec<String> = c.iter_mut().map(Client::diag).collect();
+    let mut diags: Vec<String> = c.iter_mut().map(Client::diag).collect();
+    diags.push(format!("sfu: {}", media_stats(addr)));
     for x in &c {
         let e = x.last.engine.as_ref().unwrap();
         assert_eq!(e.peers.len(), 2, "{:?}", e.peers);
@@ -438,13 +453,9 @@ fn three_members_each_hear_both_others() {
             assert_eq!(p.stats.decode_errors, 0);
             assert!(
                 p.stats.concealed_ratio() < 0.03,
-                "{:?}
-{}",
+                "{:?}\n{}",
                 p.stats,
-                diags.join(
-                    "
-"
-                )
+                diags.join("\n")
             );
         }
     }

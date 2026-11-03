@@ -28,7 +28,16 @@ public static class W {
 }
 "@
 if ($Backend) { $env:SLINT_BACKEND = $Backend } else { Remove-Item Env:SLINT_BACKEND -ErrorAction SilentlyContinue }
-$proc = Start-Process -FilePath $Exe -ArgumentList "--smoke-exit-after-ms","4000","--window-pos","$X,$Y","--no-activate" -PassThru
+# CreateProcess without a show mode (UseShellExecute = false). Start-Process goes through
+# ShellExecute, whose STARTUPINFO carries SW_SHOWNORMAL; Windows applies that to the
+# process's first ShowWindow call instead of winit's SW_SHOWNOACTIVATE, and a process
+# started from the foreground app may take the foreground — the window got focus that way.
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $Exe
+$psi.Arguments = "--smoke-exit-after-ms 4000 --window-pos $X,$Y --no-activate"
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$proc = [System.Diagnostics.Process]::Start($psi)
 $ourFg = 0; $samples = 0; $win = $null; $best = 0
 $deadline = (Get-Date).AddMilliseconds(3500)
 while ((Get-Date) -lt $deadline) {

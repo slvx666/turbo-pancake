@@ -557,6 +557,12 @@ async fn health_ready_version_endpoints() {
     assert!(r.starts_with("HTTP/1.1 200"), "{r}");
     let v = http_get(addr, "/v1/version").await;
     assert!(v.contains("\"protocol_version\":1"), "{v}");
+    let m = http_get(addr, "/v1/media-stats").await;
+    assert!(m.starts_with("HTTP/1.1 200"), "{m}");
+    assert!(
+        m.contains("\"rtp_in\":0") && m.contains("\"udp_send_errors\":0"),
+        "{m}"
+    );
 }
 
 #[tokio::test]

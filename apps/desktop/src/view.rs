@@ -209,6 +209,22 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
         " speaking_members={}",
         s.members.iter().filter(|m| m.speaking()).count()
     ));
+    // Per member: name:frames played:concealed %:speaking (0/1), "-" before their stream.
+    let per_member: Vec<String> = s
+        .members
+        .iter()
+        .map(|m| match &m.stream {
+            Some(p) => format!(
+                "{}:{}:{:.1}:{}",
+                m.name.replace([' ', ','], "_"),
+                p.stats.jitter.played,
+                p.stats.concealed_ratio() * 100.0,
+                u8::from(p.stats.speaking)
+            ),
+            None => format!("{}:-", m.name.replace([' ', ','], "_")),
+        })
+        .collect();
+    line.push_str(&format!(" members={}", per_member.join(",")));
     if let Some(e) = &s.engine {
         line.push_str(&format!(
             " streams={} speaking={} vad_db={} frames_gated={} mic_db={:.1}",
@@ -297,6 +313,7 @@ mod tests {
         assert!(line.starts_with("TURBO_PANCAKE_CALL t_ms=5 server=disconnected room=r1"));
         assert!(line.contains("media=connected transport=websocket"));
         assert!(line.contains("speaking_members=0"));
+        assert!(line.contains(" members=Боб:-"), "{line}");
         assert_eq!(meter_position(-100.0), 0.0);
         assert_eq!(meter_position(-30.0), 0.5);
         assert_eq!(meter_position(3.0), 1.0);

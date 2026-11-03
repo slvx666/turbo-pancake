@@ -121,6 +121,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
         .route("/v1/version", get(version))
+        .route("/v1/media-stats", get(media_stats))
         .route("/v1/signal", get(signaling::ws_handler))
         .with_state(state)
 }
@@ -131,6 +132,29 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "connection limit reached")
     }
+}
+
+/// SFU counters (numbers only, no member data) for diagnostics and load tests.
+async fn media_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(sfu) = &state.sfu else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "media unavailable").into_response();
+    };
+    let s = sfu.stats();
+    axum::Json(serde_json::json!({
+        "peers": s.peers,
+        "tunnel_peers": s.tunnel_peers,
+        "connected_peers": s.connected_peers,
+        "rtp_in": s.rtp_in,
+        "rtp_out": s.rtp_out,
+        "streams_out": s.streams_out,
+        "udp_in": s.udp_in,
+        "udp_out": s.udp_out,
+        "udp_send_errors": s.udp_send_errors,
+        "tunnel_in": s.tunnel_in,
+        "tunnel_out": s.tunnel_out,
+        "dropped_commands": s.dropped_commands,
+    }))
+    .into_response()
 }
 
 async fn version() -> impl IntoResponse {
