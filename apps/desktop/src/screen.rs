@@ -153,7 +153,8 @@ impl Drop for Viewer {
     }
 }
 
-/// A decoded picture before colour conversion.
+/// A decoded picture before colour conversion (built by the OS decoder: Windows only yet).
+#[cfg_attr(not(windows), allow(dead_code))]
 struct Nv12Picture {
     width: u32,
     height: u32,

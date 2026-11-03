@@ -11,6 +11,9 @@
 //! macOS (ScreenCaptureKit `excludesCurrentProcessAudio`) and Linux (PipeWire routing)
 //! report [`AudioError::Unsupported`] until implemented and verified on real hardware.
 
+// The frame packer is used only by the Windows capture (and the tests) for now.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
