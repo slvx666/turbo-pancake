@@ -35,8 +35,9 @@ mixes up to 100 peers with per-peer volume and jitter buffers.
 4. ~~Call lifecycle~~ — done 2026-11-03: joining another room closes the previous call
    (`PeerLeft{SWITCHED}` to its members, `RoomLeft` to the joiner), idempotent join/leave,
    group reconnect test. Per user across devices waits for accounts (S5).
-5. Tests: automated 20-member scenario (headless sessions, simulated devices, real server)
-   checking that everyone hears everyone, join/leave/reconnect; 3 real clients by hand.
+5. ~~Tests~~ — automated 20-member scenario done 2026-11-03 (3 talkers + 17 listeners with
+   voice activation; leave, switch, rejoin, server outage). Still open: 3 real clients by
+   hand.
 6. Server never transcodes; measure SFU CPU/bandwidth for 20 members.
 
 ## S1 plan (Windows done; macOS/Linux trials blocked on hardware; step 1 done 2026-11-02 except APM; AudioEngine with device rebuild done)

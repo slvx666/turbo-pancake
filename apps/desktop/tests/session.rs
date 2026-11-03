@@ -620,3 +620,124 @@ fn group_call_reconnects_after_a_server_outage() {
         assert!(x.released());
     }
 }
+
+/// S2 acceptance: 20 members through one real server. Three talk all the time, the other
+/// 17 have voice activation and a silent microphone (so they send nothing, like people
+/// listening). Checks that everyone hears every talker, through leave, room switch,
+/// rejoin and a server outage.
+#[test]
+fn twenty_members_hear_every_talker_through_leave_switch_and_reconnect() {
+    let _serial = serial();
+    const N: usize = 20;
+    const TALKERS: usize = 3;
+    let started = Instant::now();
+    let (addr, server_stop) = server(None, Config::default());
+    let mut c: Vec<Client> = (0..N)
+        .map(|i| {
+            let o = if i < TALKERS {
+                talking(Opts::default())
+            } else {
+                Opts {
+                    voice_gate: Some(-40.0),
+                    ..Opts::default()
+                }
+            };
+            Client::start(addr, &format!("m{i:02}"), o)
+        })
+        .collect();
+    for x in &c {
+        x.send(Command::Join("twenty".into()));
+    }
+    // Talkers hear the other two talkers, listeners hear all three; only talkers send.
+    let hears_all = |talkers: usize| {
+        move |i: usize, s: &Snapshot| {
+            let want = if i < talkers { talkers - 1 } else { talkers };
+            heard(s, 50) == want && s.engine.as_ref().is_some_and(|e| e.peers.len() == want)
+        }
+    };
+    for (i, x) in c.iter_mut().enumerate() {
+        let f = hears_all(TALKERS);
+        x.wait("hears every talker", 60, |s| {
+            s.members.len() == N - 1 && f(i, s)
+        });
+        let speaking: Vec<String> = x
+            .last
+            .members
+            .iter()
+            .filter(|m| m.speaking())
+            .map(|m| m.name.clone())
+            .collect();
+        let want = (0..TALKERS).filter(|t| *t != i).count();
+        assert_eq!(speaking.len(), want, "{i}: {speaking:?}");
+        for p in &x.last.engine.as_ref().unwrap().peers {
+            assert_eq!(p.stats.decode_errors, 0, "{i}");
+        }
+    }
+    let joined_after = started.elapsed();
+    for x in &c[TALKERS..] {
+        let e = x.last.engine.as_ref().unwrap();
+        assert_eq!(e.frames_sent, 0, "a silent listener sends nothing");
+        assert!(e.frames_gated > 0);
+    }
+
+    // Talker m02 leaves, listener m19 takes another call: 17 remain, two talkers.
+    c[2].send(Command::Leave);
+    c[N - 1].send(Command::Join("elsewhere".into()));
+    for (i, x) in c.iter_mut().enumerate() {
+        if i == 2 || i == N - 1 {
+            continue;
+        }
+        let f = hears_all(2);
+        x.wait("two talkers left", 20, |s| {
+            s.members.len() == N - 3 && f(i, s)
+        });
+    }
+    c[N - 1].wait("in the other room", 20, |s| {
+        s.room.as_deref() == Some("elsewhere") && s.joined && s.members.is_empty()
+    });
+
+    // Both come back.
+    c[2].send(Command::Join("twenty".into()));
+    c[N - 1].send(Command::Join("twenty".into()));
+    for (i, x) in c.iter_mut().enumerate() {
+        let f = hears_all(TALKERS);
+        x.wait("all three talkers again", 30, |s| {
+            s.room.as_deref() == Some("twenty") && s.members.len() == N - 1 && f(i, s)
+        });
+    }
+
+    // Server outage: everyone reconnects, rejoins and hears every talker again.
+    drop(server_stop);
+    for x in &mut c {
+        x.wait("offline", 15, |s| {
+            matches!(s.server, ServerStatus::Disconnected(_))
+        });
+    }
+    let (_addr, _server) = server(Some(addr), Config::default());
+    let back = Instant::now();
+    for (i, x) in c.iter_mut().enumerate() {
+        let f = hears_all(TALKERS);
+        x.wait("everyone back", 60, |s| {
+            s.server == ServerStatus::Connected && s.members.len() == N - 1 && f(i, s)
+        });
+    }
+    let recovered_after = back.elapsed();
+
+    let mut worst = 0.0f64;
+    for x in &c {
+        for p in &x.last.engine.as_ref().unwrap().peers {
+            worst = worst.max(p.stats.concealed_ratio());
+        }
+    }
+    println!(
+        "TURBO_PANCAKE_TWENTY members={N} talkers={TALKERS} all_heard_after_ms={} \
+         recovered_after_ms={} worst_concealed={worst:.4} total_ms={}",
+        joined_after.as_millis(),
+        recovered_after.as_millis(),
+        started.elapsed().as_millis()
+    );
+    for mut x in c {
+        x.quit();
+        assert!(x.released());
+    }
+}

@@ -82,7 +82,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
 | ≥ 3 real clients | three desktop clients on real devices (by hand) | **UNVERIFIED** (not run yet); headless 3 sessions: **PASS** | `cargo test -p turbo-pancake-desktop --test session three_members` |
-| Automated 20-participant scenario | headless sessions + real server | **UNVERIFIED** (not written yet, S2 step 5) | |
+| Automated 20-participant scenario | 20 desktop `Session`s (simulated devices, real UDP) through one in-process app-server + SFU: 3 talk, 17 listen with voice activation and a silent mic. Everyone hears every talker (listeners 3 streams, talkers 2), speaking indicators match, listeners send 0 frames; a talker leaves + a listener switches rooms → the 17 left hear 2 talkers; both return → all hear 3; server outage → all 20 reconnect and hear 3 again | **PASS (headless, Windows debug build, 3 runs)**: all heard after ≈ 1.97 s, recovered after outage ≈ 2.4 s, worst concealed 0.0 %, test process CPU 9.8–15.2 s over 6.0–7.3 s wall (≈ 1.6 of 12 logical CPUs for 20 clients + server) | `cargo test -p turbo-pancake-desktop --test session twenty -- --nocapture` (prints `TURBO_PANCAKE_TWENTY …`) |
 | Join / leave | 3-member test: leave → others keep hearing each other, rejoin → all hear all | **PASS (headless)** | same test |
 | Reconnection | signaling outage: 2 members, and 3 members (server restart → all rejoin, each hears both others as exactly 2 fresh streams) | **PASS (headless)**; real network roaming **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects`, `group_call_reconnects_after_a_server_outage` |
 | New call closes the previous one | server: join of another room → `RoomLeft{old}`, old members `PeerLeft{SWITCHED}`, SFU session ends; repeated join/leave idempotent; full room refuses without ending the current call. Client: 3 sessions, Алиса switches from Боб's room to Вера's — Боб loses her stream at once, Алиса and Вера hear each other, repeated join changes nothing | **PASS (headless, per connection)**; per *user* across devices **UNVERIFIED** until accounts (S5) | `apps/app-server/tests/signaling.rs::{joining_another_room_closes_the_previous_call,switch_to_a_full_room_keeps_the_current_call}`, `apps/desktop/tests/session.rs::joining_another_room_closes_the_previous_call` |
@@ -323,6 +323,18 @@ run `voice-trial` (or two clients against one server) and record. Still open on 
 and doable any time: a measured two-homes run with `--call-log` (with/without VPN), the
 DTLS backend benchmark (ADR 0003).
 
+## Session log 2026-11-03 (S2, step 5 — 20-member scenario)
+
+New test `twenty_members_hear_every_talker_through_leave_switch_and_reconnect` in
+`apps/desktop/tests/session.rs` (full client sessions, no lighter harness needed: with only
+three senders each client decodes at most three streams). Local runs (Windows, debug):
+`TURBO_PANCAKE_TWENTY members=20 talkers=3 all_heard_after_ms=1964..1976
+recovered_after_ms=2379..2423 worst_concealed=0.0000 total_ms≈5.7 s`; test process CPU
+measured from outside (`TotalProcessorTime`): 15.16 / 9.91 / 9.75 s for 7.3 / 6.0 / 6.0 s
+wall. Full workspace: fmt OK, clippy OK, 77 tests passed twice in a row.
+Not covered: all 20 talking at once (decode load N·(N−1)) — measured in step 6 together
+with SFU CPU/egress.
+
 ## Session log 2026-11-03 (S2, step 4 — call lifecycle)
 
 Server (`apps/app-server/src/signaling.rs`): `JoinRoom` while in another room leaves it
@@ -384,17 +396,15 @@ session suite 4× green.
 CI run 41503469373 (commit 9af5491): Windows, Ubuntu (incl. the 3-member and outage tests),
 audit green; macOS runner not acquired (cancelled, 0 steps).
 
-## Exact next task — S2 step 5 (plan in `docs/STAGES.md` → "S2 plan")
+## Exact next task — S2 step 6 (plan in `docs/STAGES.md` → "S2 plan")
 
-1. Automated 20-member headless scenario (real app-server, simulated devices, serial
-   run; a few talking, the rest with voice activation): everyone hears every talker,
-   join/leave/switch/reconnect, CPU of the test process recorded. Watch the session-test
-   CPU starvation (known issue 20) — may need a release-mode run or a lighter engine tick;
-   20 full `Session`s each with its own engine thread may be too heavy for a debug build
-   on a CI runner, so consider a lighter headless client (engine + call driver + signaling
-   without Slint) or `--release` for this one test.
-2. Step 6: SFU CPU and egress for 20 members (bench), speaker cap if needed.
-3. Before any GUI run: resolve known issue 21 (window took the foreground).
+1. SFU CPU and egress for 20 members: a bench (`turbo-pancake-bench`) or an ignored test
+   with N members all talking (worst case N·(N−1) forwarded streams) and with 3 talkers;
+   record server CPU per forwarded stream, packets/s, egress Mbit/s; client decode CPU for
+   19 streams. Decide on a speaker cap (loudest/most recent N by the negotiated
+   audio-level extension) from the numbers; ADR 0008 consequence update.
+2. Then the remaining S2 criterion that needs people: three real clients on real devices
+   (by hand, owner-assisted) — after known issue 21 (window took the foreground) is fixed.
 
 ## Previous next-task list — S1 (plan in `docs/STAGES.md` → "S1 plan")
 
