@@ -168,9 +168,22 @@ fn percentile(values: &mut [f64], p: f64) -> f64 {
 /// encode + decode latency. Skips on machines without a hardware encoder (CI).
 #[test]
 fn hardware_1080p60_real_time() {
+    real_time(1920, 1080, 60, 8000, 180);
+}
+
+/// S4 top mode: 1440p120 paced in real time for 3 s (encoder + DXVA decoder only; the
+/// pictures are uploaded from memory, the share itself hands the encoder GPU textures).
+#[test]
+fn hardware_1440p120_real_time() {
+    real_time(2560, 1440, 120, 20_000, 360);
+}
+
+fn real_time(width: u32, height: u32, fps: u32, kbps: u32, frames: u32) {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
     startup().expect("Media Foundation");
     let (device, _context, _) = create_device().expect("D3D11 device");
-    let mut config = EncoderConfig::new(1920, 1080, 60, 8000);
+    let mut config = EncoderConfig::new(width, height, fps, kbps);
     config.require_hardware = true;
     let mut encoder = match H264Encoder::new(&device, &config) {
         Ok(e) => e,
@@ -179,39 +192,52 @@ fn hardware_1080p60_real_time() {
             return;
         }
     };
-    let use_dxva = std::env::var_os("TURBO_PANCAKE_SW_DECODE").is_none();
-    let mut decoder = H264Decoder::new(use_dxva.then_some(&device)).expect("decoder");
-    let frames = 180u32;
-    let pictures: Vec<Vec<u8>> = (0..8).map(|n| picture(1920, 1080, n * 20)).collect();
-    let duration = 10_000_000 / 60;
-    let interval = Duration::from_nanos(1_000_000_000 / 60);
-    let submitted_at = std::cell::RefCell::new(std::collections::HashMap::new());
-    let (mut encode_ms, mut total_ms, mut decode_call_ms) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut skipped, mut decoded, mut bytes) = (0u32, 0u32, 0usize);
+    // The decoder runs on its own thread (as on a viewer: another thread, usually another
+    // machine), so encode and decode overlap like in a call.
+    let submitted_at: Arc<Mutex<HashMap<i64, i64>>> = Arc::default();
+    let (tx, rx) = std::sync::mpsc::channel::<EncodedFrame>();
+    let at = submitted_at.clone();
+    let decoder_thread = std::thread::spawn(move || {
+        startup().expect("Media Foundation");
+        let (device, _, _) = create_device().expect("D3D11 device");
+        let use_dxva = std::env::var_os("TURBO_PANCAKE_SW_DECODE").is_none();
+        let mut decoder = H264Decoder::new(use_dxva.then_some(&device)).expect("decoder");
+        let (mut total_ms, mut decode_call_ms) = (Vec::new(), Vec::new());
+        let mut decoded = 0u32;
+        for frame in rx {
+            let d0 = Instant::now();
+            decoder
+                .decode(&frame.data, frame.timestamp)
+                .expect("decode");
+            decode_call_ms.push(d0.elapsed().as_secs_f64() * 1000.0);
+            while let Some(p) = decoder.poll_output() {
+                decoded += 1;
+                if let Some(t0) = at.lock().unwrap().get(&p.timestamp).copied() {
+                    total_ms.push((qpc_100ns() - t0) as f64 / 10_000.0);
+                }
+            }
+        }
+        decoded += decoder.drain().expect("decoder drain").len() as u32;
+        (decoded, decoder.is_hardware(), total_ms, decode_call_ms)
+    });
+    let pictures: Vec<Vec<u8>> = (0..8).map(|n| picture(width, height, n * 20)).collect();
+    let duration = 10_000_000 / i64::from(fps);
+    let interval = Duration::from_nanos(1_000_000_000 / u64::from(fps));
+    let mut encode_ms = Vec::new();
+    let (mut skipped, mut bytes) = (0u32, 0usize);
     let start = Instant::now();
-    let mut handle = |frame: EncodedFrame, decoder: &mut H264Decoder| {
-        let t0 = submitted_at.borrow().get(&frame.timestamp).copied();
-        if let Some(t0) = t0 {
+    let mut handle = |frame: EncodedFrame| {
+        if let Some(t0) = submitted_at.lock().unwrap().get(&frame.timestamp).copied() {
             encode_ms.push((qpc_100ns() - t0) as f64 / 10_000.0);
         }
         bytes += frame.data.len();
-        let d0 = Instant::now();
-        decoder
-            .decode(&frame.data, frame.timestamp)
-            .expect("decode");
-        decode_call_ms.push(d0.elapsed().as_secs_f64() * 1000.0);
-        while let Some(p) = decoder.poll_output() {
-            decoded += 1;
-            if let Some(t0) = submitted_at.borrow().get(&p.timestamp).copied() {
-                total_ms.push((qpc_100ns() - t0) as f64 / 10_000.0);
-            }
-        }
+        tx.send(frame).expect("decoder thread");
     };
     for n in 0..frames {
         let due = start + interval * n;
         while Instant::now() < due {
             while let Some(f) = encoder.poll_output().expect("encoder output") {
-                handle(f, &mut decoder);
+                handle(f);
             }
             std::thread::sleep(Duration::from_micros(500));
         }
@@ -219,8 +245,8 @@ fn hardware_1080p60_real_time() {
             skipped += 1;
             continue;
         }
-        let ts = n as i64 * duration;
-        submitted_at.borrow_mut().insert(ts, qpc_100ns());
+        let ts = i64::from(n) * duration;
+        submitted_at.lock().unwrap().insert(ts, qpc_100ns());
         encoder
             .encode(
                 EncoderInput::Nv12(&pictures[n as usize % pictures.len()]),
@@ -230,14 +256,15 @@ fn hardware_1080p60_real_time() {
             .expect("encode");
     }
     for f in encoder.drain().expect("drain") {
-        handle(f, &mut decoder);
+        handle(f);
     }
-    decoded += decoder.drain().expect("decoder drain").len() as u32;
     let wall = start.elapsed().as_secs_f64();
+    drop(handle);
+    drop(tx);
+    let (decoded, dxva, mut total_ms, mut decode_call_ms) = decoder_thread.join().unwrap();
     println!(
-        "TURBO_PANCAKE_VIDEO {{\"encoder\":{:?},\"decoder_dxva\":{},\"adapter\":{:?},\"frames\":{frames},\"skipped\":{skipped},\"decoded\":{decoded},\"fps\":{:.1},\"kbps\":{:.0},\"encode_ms_p50\":{:.2},\"encode_ms_p95\":{:.2},\"encode_decode_ms_p50\":{:.2},\"encode_decode_ms_p95\":{:.2},\"encode_decode_ms_p99\":{:.2},\"decode_call_ms_p50\":{:.2},\"decode_call_ms_p95\":{:.2}}}",
+        "TURBO_PANCAKE_VIDEO {{\"mode\":\"{width}x{height}@{fps}\",\"encoder\":{:?},\"decoder_dxva\":{dxva},\"adapter\":{:?},\"frames\":{frames},\"skipped\":{skipped},\"decoded\":{decoded},\"fps\":{:.1},\"kbps\":{:.0},\"encode_ms_p50\":{:.2},\"encode_ms_p95\":{:.2},\"encode_decode_ms_p50\":{:.2},\"encode_decode_ms_p95\":{:.2},\"encode_decode_ms_p99\":{:.2},\"decode_call_ms_p50\":{:.2},\"decode_call_ms_p95\":{:.2}}}",
         encoder.name(),
-        decoder.is_hardware(),
         adapter_name(&device),
         decoded as f64 / wall,
         bytes as f64 * 8.0 / wall / 1000.0,
@@ -252,6 +279,6 @@ fn hardware_1080p60_real_time() {
     assert_eq!(decoded + skipped, frames, "every submitted frame decoded");
     assert!(
         skipped <= frames / 20,
-        "encoder kept up with 60 fps: {skipped} skipped"
+        "encoder kept up with {fps} fps: {skipped} skipped"
     );
 }

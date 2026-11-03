@@ -1,4 +1,4 @@
-// turbo-pancake main window (S0 shell + S1/S2 voice room panel + S3 screen share).
+// turbo-pancake main window (S0 shell + S1/S2 voice room panel + S3/S4 screen share).
 // Layout follows the spec: conversation list on the left, conversation area on
 // the right, user panel at the bottom-left. No server/channel rail by design.
 
@@ -20,6 +20,11 @@ export struct ShareRow {
     name: string,
     info: string,
     watching: bool,
+    // Its preview picture (S4) while one is received.
+    preview: image,
+    has-preview: bool,
+    // Preview stream id (SSRC as int; 0 = none) to match decoded pictures.
+    preview-ssrc: int,
 }
 
 export global Theme {
@@ -429,12 +434,14 @@ component CallPanel inherits Rectangle {
     }
 }
 
-// S3: share a whole monitor, see who shares, watch one share.
+// S3/S4: share a whole monitor, see who shares (previews), watch one share in the
+// quality you pick, full screen or in its own window.
 component ScreenPanel inherits Rectangle {
     in property <bool> in-room;
     in property <[string]> monitors;
     in-out property <int> monitor-index;
     in-out property <int> quality-index;
+    in-out property <bool> adaptive: true;
     in-out property <bool> share-audio: true;
     in property <bool> sharing;
     in property <string> share-info;
@@ -443,15 +450,26 @@ component ScreenPanel inherits Rectangle {
     in property <image> picture;
     in property <bool> has-picture;
     in property <string> viewer-info;
-    callback start-share(int, int);
+    in-out property <int> layer-index;
+    in property <string> layer-info;
+    in-out property <bool> previews-visible: true;
+    in-out property <float> tile-width: 160;
+    in property <int> preview-page;
+    in property <int> preview-pages;
+    in property <string> preview-info;
+    in property <bool> share-window-open;
+    callback start-share(int, int, bool);
     callback stop-share();
     callback watch(string);
     callback share-audio-changed(bool);
+    callback layer-selected(int);
+    callback previews-changed(bool, int);
+    callback open-share-window(bool);
     background: Theme.bg-primary;
 
     VerticalLayout {
         padding: 24px;
-        spacing: 10px;
+        spacing: 8px;
         Text {
             text: "ДЕМОНСТРАЦИЯ ЭКРАНА";
             color: Theme.text-muted;
@@ -467,17 +485,17 @@ component ScreenPanel inherits Rectangle {
                 selected => {
                     // Switching the monitor while sharing restarts the share on it.
                     if root.sharing {
-                        root.start-share(root.monitor-index, root.quality-index);
+                        root.start-share(root.monitor-index, root.quality-index, root.adaptive);
                     }
                 }
             }
             ComboBox {
-                model: ["1080p · 60 к/с", "720p · 30 к/с"];
+                model: ["1440p · 120 к/с", "1080p · 60 к/с", "720p · 30 к/с"];
                 current-index <=> root.quality-index;
                 enabled: root.in-room;
                 selected => {
                     if root.sharing {
-                        root.start-share(root.monitor-index, root.quality-index);
+                        root.start-share(root.monitor-index, root.quality-index, root.adaptive);
                     }
                 }
             }
@@ -489,15 +507,27 @@ component ScreenPanel inherits Rectangle {
                     if root.sharing {
                         root.stop-share();
                     } else {
-                        root.start-share(root.monitor-index, root.quality-index);
+                        root.start-share(root.monitor-index, root.quality-index, root.adaptive);
                     }
                 }
             }
         }
-        CheckBox {
-            text: "Звук компьютера (без звука мессенджера)";
-            checked <=> root.share-audio;
-            toggled => { root.share-audio-changed(root.share-audio); }
+        HorizontalLayout {
+            spacing: 16px;
+            CheckBox {
+                text: "Подстраивать под сеть";
+                checked <=> root.adaptive;
+                toggled => {
+                    if root.sharing {
+                        root.start-share(root.monitor-index, root.quality-index, root.adaptive);
+                    }
+                }
+            }
+            CheckBox {
+                text: "Звук компьютера (без звука мессенджера)";
+                checked <=> root.share-audio;
+                toggled => { root.share-audio-changed(root.share-audio); }
+            }
         }
         if root.share-info != "": Text {
             text: root.share-info;
@@ -505,48 +535,144 @@ component ScreenPanel inherits Rectangle {
             font-size: 12px;
             wrap: word-wrap;
         }
-        for s in root.shares: Rectangle {
-            height: 40px;
-            border-radius: 4px;
-            background: Theme.bg-secondary;
-            HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 6px;
-                spacing: 8px;
-                VerticalLayout {
-                    alignment: center;
-                    Text {
-                        text: s.name;
-                        color: Theme.text-normal;
-                        font-weight: 600;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: s.info;
-                        color: Theme.text-muted;
-                        font-size: 11px;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    Button {
-                        text: s.watching ? "Не смотреть" : "Смотреть";
-                        clicked => { root.watch(s.watching ? "" : s.peer-id); }
-                    }
-                }
+        // Previews: every share as a thumbnail (its low layer); click to watch.
+        HorizontalLayout {
+            spacing: 10px;
+            CheckBox {
+                text: "Миниатюры";
+                checked <=> root.previews-visible;
+                toggled => { root.previews-changed(root.previews-visible, root.preview-page); }
+            }
+            Text {
+                text: "Размер";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            Slider {
+                minimum: 96;
+                maximum: 320;
+                value <=> root.tile-width;
+                enabled: root.previews-visible;
+            }
+            if root.preview-pages > 1: Button {
+                text: "◀";
+                enabled: root.preview-page > 0;
+                clicked => { root.previews-changed(true, root.preview-page - 1); }
+            }
+            if root.preview-pages > 1: Text {
+                text: (root.preview-page + 1) + " / " + root.preview-pages;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            if root.preview-pages > 1: Button {
+                text: "▶";
+                enabled: root.preview-page + 1 < root.preview-pages;
+                clicked => { root.previews-changed(true, root.preview-page + 1); }
             }
         }
         if root.in-room && root.shares.length == 0: Text {
             text: "Никто не показывает экран.";
             color: Theme.text-muted;
         }
+        grid := Flickable {
+            property <length> tile-w: root.tile-width * 1px;
+            property <length> tile-h: self.tile-w * 9 / 16 + 34px;
+            property <int> cols: max(1, floor((self.width + 8px) / (self.tile-w + 8px)));
+            height: root.shares.length == 0 ? 0px : min(2 * (self.tile-h + 8px), ceil(root.shares.length / self.cols) * (self.tile-h + 8px));
+            content-height: ceil(root.shares.length / self.cols) * (self.tile-h + 8px);
+            for s[i] in root.shares: Rectangle {
+                x: mod(i, grid.cols) * (grid.tile-w + 8px);
+                y: floor(i / grid.cols) * (grid.tile-h + 8px);
+                width: grid.tile-w;
+                height: grid.tile-h;
+                border-radius: 4px;
+                background: s.watching ? Theme.accent.darker(0.4) : Theme.bg-secondary;
+                TouchArea {
+                    clicked => { root.watch(s.watching ? "" : s.peer-id); }
+                }
+                VerticalLayout {
+                    padding: 4px;
+                    spacing: 2px;
+                    Rectangle {
+                        background: Theme.bg-tertiary;
+                        border-radius: 3px;
+                        if s.has-preview: Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: s.preview;
+                            image-fit: contain;
+                            accessible-role: image;
+                            accessible-label: "миниатюра трансляции " + s.name;
+                        }
+                        if !s.has-preview: Text {
+                            text: s.watching ? "Смотрите крупно" : (root.previews-visible ? "Миниатюра…" : "Миниатюры скрыты");
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 24px;
+                        spacing: 4px;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: s.name;
+                                color: Theme.text-normal;
+                                font-weight: 600;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: s.info;
+                                color: Theme.text-muted;
+                                font-size: 10px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if root.preview-info != "": Text {
+            text: root.preview-info;
+            color: Theme.text-muted;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
         // The watched share, letterboxed to the panel.
+        if root.watching != "": HorizontalLayout {
+            spacing: 8px;
+            ComboBox {
+                model: ["Качество: авто", "Высокое", "Низкое"];
+                current-index <=> root.layer-index;
+                selected => { root.layer-selected(root.layer-index); }
+            }
+            Button {
+                text: "Во весь экран";
+                clicked => { root.open-share-window(true); }
+            }
+            Button {
+                text: root.share-window-open ? "Окно открыто" : "В отдельном окне";
+                enabled: !root.share-window-open;
+                clicked => { root.open-share-window(false); }
+            }
+            Button {
+                text: "Не смотреть";
+                clicked => { root.watch(""); }
+            }
+        }
+        if root.layer-info != "": Text {
+            text: root.layer-info;
+            color: Theme.text-muted;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
         Rectangle {
             min-height: 120px;
             vertical-stretch: 1;
             background: Theme.bg-tertiary;
             border-radius: 4px;
-            if root.has-picture: Image {
+            if root.has-picture && !root.share-window-open: Image {
                 width: parent.width;
                 height: parent.height;
                 source: root.picture;
@@ -554,7 +680,11 @@ component ScreenPanel inherits Rectangle {
                 accessible-role: image;
                 accessible-label: "трансляция экрана";
             }
-            if !root.has-picture: Text {
+            if root.share-window-open: Text {
+                text: "Трансляция показана в отдельном окне";
+                color: Theme.text-muted;
+            }
+            if !root.has-picture && !root.share-window-open: Text {
                 text: root.watching != "" ? "Ожидание трансляции…" : "Выберите трансляцию";
                 color: Theme.text-muted;
             }
@@ -564,6 +694,65 @@ component ScreenPanel inherits Rectangle {
             color: Theme.text-muted;
             font-size: 12px;
             wrap: word-wrap;
+        }
+    }
+}
+
+// The watched share in its own ordinary window (spec §5.1), optionally full screen.
+export component ShareWindow inherits Window {
+    title: "turbo-pancake — " + root.share-name;
+    preferred-width: 1280px;
+    preferred-height: 720px;
+    min-width: 320px;
+    min-height: 180px;
+    background: #000000;
+    in property <string> share-name;
+    in property <image> picture;
+    in property <bool> has-picture;
+    in property <string> info;
+    in-out property <bool> fullscreen;
+    callback fullscreen-changed(bool);
+    callback close-window();
+    if root.has-picture: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.picture;
+        image-fit: contain;
+        accessible-role: image;
+        accessible-label: "трансляция экрана " + root.share-name;
+    }
+    if !root.has-picture: Text {
+        text: "Ожидание трансляции…";
+        color: #b5bac1;
+    }
+    TouchArea {
+        double-clicked => {
+            root.fullscreen = !root.fullscreen;
+            root.fullscreen-changed(root.fullscreen);
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        y: 0px;
+        height: 36px;
+        padding: 4px;
+        spacing: 4px;
+        Text {
+            text: root.info;
+            color: #b5bac1;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Button {
+            text: root.fullscreen ? "Обычное окно" : "Во весь экран";
+            clicked => {
+                root.fullscreen = !root.fullscreen;
+                root.fullscreen-changed(root.fullscreen);
+            }
+        }
+        Button {
+            text: "Закрыть";
+            clicked => { root.close-window(); }
         }
     }
 }
@@ -614,6 +803,16 @@ export component MainWindow inherits Window {
     in property <image> screen-picture;
     in property <bool> has-picture;
     in property <string> viewer-info;
+    in-out property <bool> adaptive: true;
+    in-out property <int> layer-index;
+    in property <string> layer-info;
+    in-out property <bool> previews-visible: true;
+    in-out property <float> tile-width: 160;
+    in property <int> preview-page;
+    in property <int> preview-pages;
+    in property <string> preview-info;
+    in property <bool> share-window-open;
+    in property <string> watching-name;
     callback join(string);
     callback leave();
     callback mute-changed(bool);
@@ -623,10 +822,13 @@ export component MainWindow inherits Window {
     callback remote-volume-changed(float);
     callback member-volume-changed(string, float);
     callback vad-changed(bool, float);
-    callback start-share(int, int);
+    callback start-share(int, int, bool);
     callback stop-share();
     callback watch(string);
     callback share-audio-changed(bool);
+    callback layer-selected(int);
+    callback previews-changed(bool, int);
+    callback open-share-window(bool);
 
     init => {
         Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
@@ -706,10 +908,22 @@ export component MainWindow inherits Window {
                 picture: root.screen-picture;
                 has-picture: root.has-picture;
                 viewer-info: root.viewer-info;
-                start-share(m, q) => { root.start-share(m, q); }
+                adaptive <=> root.adaptive;
+                layer-index <=> root.layer-index;
+                layer-info: root.layer-info;
+                previews-visible <=> root.previews-visible;
+                tile-width <=> root.tile-width;
+                preview-page: root.preview-page;
+                preview-pages: root.preview-pages;
+                preview-info: root.preview-info;
+                share-window-open: root.share-window-open;
+                start-share(m, q, a) => { root.start-share(m, q, a); }
                 stop-share => { root.stop-share(); }
                 watch(p) => { root.watch(p); }
                 share-audio-changed(on) => { root.share-audio-changed(on); }
+                layer-selected(i) => { root.layer-selected(i); }
+                previews-changed(v, page) => { root.previews-changed(v, page); }
+                open-share-window(f) => { root.open-share-window(f); }
             }
             }
             Text {

@@ -36,6 +36,14 @@
 //! newest decoded picture waits in a [`PictureSlot`] for the UI. The share's system audio
 //! (everything the computer plays except this messenger, `system::SystemAudioCapture`)
 //! travels on its own m-line; a viewer plays it as one more engine stream while watching.
+//!
+//! Layers (S4, ADR 0011): our share also sends a low preview layer (fourth m-line), and
+//! its high layer adapts to the uplink (`adapt::Adapter`: bitrate, then size, the frame
+//! rate last; pacing follows the bitrate). We show other shares as previews: the visible
+//! page of at most `max_previews` shares is subscribed (`SubscribePreviews`) and decoded
+//! on one thread ([`PreviewDecoder`]); the rest is not received at all. The watched share
+//! asks for a layer (`WatchLayer`); the server says which one flows and why
+//! (`ScreenSubscription`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -59,9 +67,12 @@ use turbo_pancake_media_transport::call::{
     LocalSignal, MediaLink, Role, VideoIo,
 };
 use turbo_pancake_media_transport::video::{VideoIn, VideoOut};
+use turbo_pancake_media_video::adapt::{Adapter, Rung};
 use turbo_pancake_media_video::{ScreenShare, ShareConfig, ShareStats, VideoError};
 
-use crate::screen::{PictureSlot, Viewer, ViewerStats, rtp_time};
+use crate::screen::{
+    PictureSlot, PreviewDecoder, PreviewSlots, PreviewStats, Viewer, ViewerStats, rtp_time,
+};
 use turbo_pancake_protocol::{self as proto, v1};
 use v1::{client_envelope::Body as C, server_envelope::Body as S};
 
@@ -111,6 +122,8 @@ pub struct SessionConfig {
     /// the SFU (the server answers to whatever address our datagrams come from).
     pub stun_servers: Vec<String>,
     pub status_interval: Duration,
+    /// Most previews received and decoded at once (one page of the grid, spec §5.3).
+    pub max_previews: usize,
 }
 
 impl SessionConfig {
@@ -133,6 +146,7 @@ impl SessionConfig {
             share_audio: true,
             stun_servers: Vec::new(),
             status_interval: Duration::from_millis(250),
+            max_previews: 24,
         }
     }
 }
@@ -160,7 +174,31 @@ pub enum Command {
     SetShareAudio(bool),
     /// Watch this member's share (`None` = none).
     Watch(Option<String>),
+    /// The layer to ask for as the watched picture.
+    SetWatchLayer(WatchLayer),
+    /// Show previews (`false` = receive none), starting at this share of the list.
+    SetPreviews {
+        visible: bool,
+        first: usize,
+    },
     Quit,
+}
+
+/// Which layer of the watched share to ask for (spec §5.1: per viewer, auto or manual).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WatchLayer {
+    #[default]
+    Auto,
+    High,
+    Low,
+}
+
+/// What the server says about the watched share's layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerState {
+    /// The high layer flows (else the low one).
+    pub high: bool,
+    pub reason: v1::LayerReason,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -207,6 +245,12 @@ pub struct ShareView {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    pub bitrate_kbps: u32,
+    /// The share has a preview layer.
+    pub has_preview: bool,
+    /// Its preview stream on our media session while we receive it (key of the
+    /// preview pictures).
+    pub preview_ssrc: Option<u32>,
 }
 
 /// Everything the UI shows, published by the session thread.
@@ -240,6 +284,14 @@ pub struct Snapshot {
     pub share_audio: Option<SystemAudioStats>,
     /// The watched share's system audio as it plays here.
     pub watched_audio: Option<PeerStatus>,
+    pub watch_layer: WatchLayer,
+    /// The layer the server forwards for the watched share.
+    pub layer: Option<LayerState>,
+    pub previews_visible: bool,
+    /// First share of the visible preview page, and how many fit on a page.
+    pub preview_first: usize,
+    pub max_previews: usize,
+    pub previews: Option<PreviewStats>,
 }
 
 impl Snapshot {
@@ -264,6 +316,7 @@ type EngineStarter =
 pub struct Session {
     commands: mpsc::Sender<Command>,
     picture: PictureSlot,
+    previews: PreviewSlots,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -282,11 +335,14 @@ impl Session {
         let start_engine: EngineStarter = Box::new(move |cfg| AudioEngine::start(io(), cfg));
         let picture = PictureSlot::default();
         let core_picture = picture.clone();
+        let previews = PreviewSlots::default();
+        let core_previews = previews.clone();
         let thread = std::thread::Builder::new()
             .name("tp-session".into())
             .spawn(move || {
                 let mut core = Core::new(config, start_engine, Box::new(on_update));
                 core.picture = core_picture;
+                core.preview_slots = core_previews;
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -301,8 +357,14 @@ impl Session {
         Ok(Self {
             commands: tx,
             picture,
+            previews,
             thread: Some(thread),
         })
+    }
+
+    /// The newest preview pictures, by preview SSRC (`ShareView::preview_ssrc`).
+    pub fn previews(&self) -> PreviewSlots {
+        self.previews.clone()
     }
 
     /// The newest picture of the watched share (the UI takes it out).
@@ -376,6 +438,29 @@ struct Media {
 struct Sharing {
     share: ScreenShare,
     config: ShareConfig,
+    /// Automatic quality (when `config.adaptive`), created once the source size is known.
+    adapter: Option<Adapter>,
+    last_adapt: Instant,
+    /// Pacer drops seen at the last adaptation step.
+    pacing_drops: u64,
+    /// What the server was told (size, fps, bitrate).
+    announced: (u32, u32, u32, u32),
+}
+
+/// Another member's announced share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShareState {
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate_kbps: u32,
+    preview: bool,
+}
+
+/// Pacing of our main video for a target bitrate: room for keyframes above the average,
+/// at least the S3 rate (two repair rounds inside str0m's window on a LAN).
+fn pacing_bps(kbps: u32) -> u32 {
+    (kbps.saturating_mul(1600)).max(12_000_000)
 }
 
 struct Core {
@@ -422,8 +507,22 @@ struct Core {
     watched_audio: Option<u32>,
     /// Other members' screen streams on our media session: peer id → (SSRC, RTX SSRC).
     screen_tracks: HashMap<String, (u32, Option<u32>)>,
-    /// Other members' active shares: peer id → (width, height, fps).
-    shares: HashMap<String, (u32, u32, u32)>,
+    /// Other members' active shares.
+    shares: HashMap<String, ShareState>,
+    /// Other members' preview streams on our media session: peer id → (SSRC, RTX SSRC).
+    preview_tracks: HashMap<String, (u32, Option<u32>)>,
+    preview_decoder: Option<PreviewDecoder>,
+    /// Preview SSRCs routed to the decoder (checked on the call thread).
+    preview_ssrcs: Arc<Mutex<HashSet<u32>>>,
+    preview_route: Arc<Mutex<Option<SyncSender<VideoIn>>>>,
+    preview_slots: PreviewSlots,
+    /// The shares whose previews we asked the server for (and decode).
+    previewed: Vec<String>,
+    previews_visible: bool,
+    preview_first: usize,
+    share_preview_route: Arc<Mutex<Option<SyncSender<VideoOut>>>>,
+    watch_layer: WatchLayer,
+    layer: Option<LayerState>,
     watching: Option<String>,
     viewer: Option<Viewer>,
     /// SSRC of the watched share (0 = none), checked on the call thread.
@@ -480,6 +579,17 @@ impl Core {
             watched_audio: None,
             screen_tracks: HashMap::new(),
             shares: HashMap::new(),
+            preview_tracks: HashMap::new(),
+            preview_decoder: None,
+            preview_ssrcs: Arc::default(),
+            preview_route: Arc::default(),
+            preview_slots: PreviewSlots::default(),
+            previewed: Vec::new(),
+            previews_visible: true,
+            preview_first: 0,
+            share_preview_route: Arc::default(),
+            watch_layer: WatchLayer::Auto,
+            layer: None,
             watching: None,
             viewer: None,
             watched_ssrc: Arc::default(),
@@ -759,6 +869,17 @@ impl Core {
                 }
             }
             Command::Watch(peer) => self.watch(peer),
+            Command::SetWatchLayer(layer) => {
+                self.watch_layer = layer;
+                if self.watching.is_some() {
+                    self.subscribe();
+                }
+            }
+            Command::SetPreviews { visible, first } => {
+                self.previews_visible = visible;
+                self.preview_first = first;
+                self.sync_previews();
+            }
             Command::Quit => {
                 self.leave_room();
                 self.want_room = None;
@@ -801,9 +922,34 @@ impl Core {
             })
             .is_ok()
         });
-        match ScreenShare::start(config, deliver) {
+        let preview_route = self.share_preview_route.clone();
+        let preview = Box::new(move |f: turbo_pancake_media_video::EncodedFrame| {
+            let route = preview_route.lock().unwrap();
+            let Some(tx) = route.as_ref() else {
+                return false;
+            };
+            tx.try_send(VideoOut {
+                timestamp: rtp_time(f.timestamp),
+                data: f.data,
+            })
+            .is_ok()
+        });
+        match ScreenShare::start_layers(config, deliver, Some(preview)) {
             Ok(share) => {
-                self.share = Some(Sharing { share, config });
+                if let Some(m) = &self.media {
+                    let _ = m.driver.set_video_pacing(pacing_bps(config.bitrate_kbps));
+                }
+                self.share = Some(Sharing {
+                    share,
+                    config,
+                    adapter: None,
+                    last_adapt: Instant::now(),
+                    pacing_drops: self
+                        .media
+                        .as_ref()
+                        .map_or(0, |m| m.driver.stats().video_frames_dropped_pacing),
+                    announced: (0, 0, 0, 0),
+                });
                 self.snap.last_error = None;
                 self.sync_system_audio();
                 self.announce_share();
@@ -860,14 +1006,31 @@ impl Core {
         let (Some(room), true) = (self.joined.clone(), self.media.is_some()) else {
             return;
         };
-        let body = match &self.share {
-            Some(s) => v1::ScreenShare {
-                room_id: room,
-                active: true,
-                width: s.config.width,
-                height: s.config.height,
-                fps: s.config.fps,
-            },
+        let body = match &mut self.share {
+            Some(s) => {
+                let st = s.share.stats();
+                // Before the first stats the configured values (fitted later).
+                let (w, h, fps, kbps) = if st.width > 0 {
+                    (st.width, st.height, st.fps, st.bitrate_kbps_target)
+                } else {
+                    (
+                        s.config.width,
+                        s.config.height,
+                        s.config.fps,
+                        s.config.bitrate_kbps,
+                    )
+                };
+                s.announced = (w, h, fps, kbps);
+                v1::ScreenShare {
+                    room_id: room,
+                    active: true,
+                    width: w,
+                    height: h,
+                    fps,
+                    bitrate_kbps: kbps,
+                    preview: s.config.preview.is_some(),
+                }
+            }
             None => v1::ScreenShare {
                 room_id: room,
                 ..Default::default()
@@ -880,6 +1043,7 @@ impl Core {
         let Some(peer) = peer else {
             self.unwatch();
             self.subscribe();
+            self.sync_previews();
             return;
         };
         if self.viewer.is_none() {
@@ -894,14 +1058,19 @@ impl Core {
                 }
             }
         }
+        if self.watching.as_ref() != Some(&peer) {
+            self.layer = None;
+        }
         self.watching = Some(peer);
         self.sync_watch();
         self.subscribe();
+        self.sync_previews();
     }
 
     /// Stops watching: the viewer thread ends and the picture goes away.
     fn unwatch(&mut self) {
         self.watching = None;
+        self.layer = None;
         if let Some(old) = self.watched_audio.take()
             && let Some(a) = &self.audio
         {
@@ -961,10 +1130,124 @@ impl Core {
             return;
         };
         let peer_id = self.watching.clone().unwrap_or_default();
+        let layer = match self.watch_layer {
+            WatchLayer::Auto => v1::ScreenLayer::Auto,
+            WatchLayer::High => v1::ScreenLayer::High,
+            WatchLayer::Low => v1::ScreenLayer::Low,
+        };
         self.push(C::SubscribeScreen(v1::SubscribeScreen {
             room_id: room,
             peer_id,
+            layer: layer as i32,
         }));
+    }
+
+    /// The previews we want: the visible page of other members' shares (member order,
+    /// the watched one left out: it is shown large). Tells the server and the decoder
+    /// when it changed.
+    fn sync_previews(&mut self) {
+        let mut order: Vec<(u64, String)> = self
+            .shares
+            .iter()
+            .filter(|(p, st)| st.preview && self.watching.as_deref() != Some(p.as_str()))
+            .filter_map(|(p, _)| self.members.get(p).map(|(o, _)| (*o, p.clone())))
+            .collect();
+        order.sort();
+        let want: Vec<String> = if self.previews_visible {
+            order
+                .into_iter()
+                .map(|(_, p)| p)
+                .skip(self.preview_first)
+                .take(self.cfg.max_previews)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // The decoder follows what we receive (streams the server announced).
+        let streams: Vec<(u32, Option<KeyframeRequester>)> = want
+            .iter()
+            .filter_map(|p| self.preview_tracks.get(p))
+            .map(|(ssrc, _)| {
+                (
+                    *ssrc,
+                    self.media
+                        .as_ref()
+                        .map(|m| m.driver.keyframe_requester(*ssrc)),
+                )
+            })
+            .collect();
+        *self.preview_ssrcs.lock().unwrap() = streams.iter().map(|(s, _)| *s).collect();
+        if streams.is_empty() {
+            *self.preview_route.lock().unwrap() = None;
+            if let Some(d) = self.preview_decoder.take() {
+                d.stop();
+            }
+            self.preview_slots.lock().unwrap().clear();
+        } else {
+            if self.preview_decoder.is_none() {
+                match PreviewDecoder::start(self.preview_slots.clone()) {
+                    Ok(d) => {
+                        *self.preview_route.lock().unwrap() = Some(d.sender());
+                        self.preview_decoder = Some(d);
+                    }
+                    Err(e) => self.snap.last_error = Some(format!("превью: {e}")),
+                }
+            }
+            if let Some(d) = &self.preview_decoder {
+                d.set_streams(streams);
+            }
+        }
+        if want != self.previewed
+            && let (Some(room), true) = (self.joined.clone(), self.media.is_some())
+        {
+            self.previewed = want.clone();
+            self.push(C::SubscribePreviews(v1::SubscribePreviews {
+                room_id: room,
+                peer_ids: want,
+            }));
+        }
+    }
+
+    /// Once a second while sharing: adapts the high layer to what the uplink reports.
+    fn adapt_share(&mut self) {
+        let Some(stats) = self.media.as_ref().map(|m| m.driver.stats()) else {
+            return;
+        };
+        let Some(s) = self.share.as_mut() else {
+            return;
+        };
+        if !s.config.adaptive || s.last_adapt.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        s.last_adapt = Instant::now();
+        let st = s.share.stats();
+        if st.width == 0 {
+            return;
+        }
+        let adapter = s.adapter.get_or_insert_with(|| {
+            Adapter::new(
+                (st.source_width, st.source_height),
+                Rung {
+                    width: st.width,
+                    height: st.height,
+                    fps: st.fps,
+                },
+                s.config.bitrate_kbps,
+            )
+        });
+        let drops = stats.video_frames_dropped_pacing;
+        let dropped = drops > s.pacing_drops;
+        s.pacing_drops = drops;
+        let Some(t) = adapter.update(Instant::now(), stats.video_egress_loss, dropped) else {
+            return;
+        };
+        if (t.rung.width, t.rung.height, t.rung.fps) != (st.width, st.height, st.fps) {
+            s.share.reconfigure(t.rung.width, t.rung.height, t.rung.fps);
+        }
+        s.share.set_bitrate(t.bitrate_kbps);
+        if let Some(m) = &self.media {
+            let _ = m.driver.set_video_pacing(pacing_bps(t.bitrate_kbps));
+        }
     }
 
     /// Ends media and tells the server we left (also for a join still in flight).
@@ -974,7 +1257,11 @@ impl Core {
         self.unwatch();
         self.screen_tracks.clear();
         self.screen_audio_tracks.clear();
+        self.preview_tracks.clear();
         self.shares.clear();
+        self.previewed.clear();
+        self.layer = None;
+        self.sync_previews();
         self.members.clear();
         self.tracks.clear();
         self.member_volumes.clear();
@@ -1024,6 +1311,40 @@ impl Core {
                 self.shares.remove(&l.peer_id);
                 if self.watching.as_deref() == Some(l.peer_id.as_str()) {
                     self.unwatch();
+                }
+                self.sync_previews();
+            }
+            S::TrackPublished(t) if t.kind() == v1::TrackKind::ScreenPreview => {
+                if self.joined.as_deref() != Some(t.room_id.as_str()) {
+                    return;
+                }
+                let rtx = (t.rtx_ssrc != 0).then_some(t.rtx_ssrc);
+                if let Some((old, _)) = self.preview_tracks.insert(t.peer_id.clone(), (t.ssrc, rtx))
+                    && old != t.ssrc
+                    && let Some(m) = &self.media
+                {
+                    let _ = m.driver.forget_source(old);
+                }
+                if let Some(m) = &self.media {
+                    let _ = m.driver.expect_preview_source(t.ssrc, rtx);
+                }
+                self.sync_previews();
+            }
+            S::TrackUnpublished(t) if t.kind() == v1::TrackKind::ScreenPreview => {
+                if self.preview_tracks.get(&t.peer_id).map(|(s, _)| *s) == Some(t.ssrc) {
+                    self.preview_tracks.remove(&t.peer_id);
+                    if let Some(m) = &self.media {
+                        let _ = m.driver.forget_source(t.ssrc);
+                    }
+                    self.sync_previews();
+                }
+            }
+            S::ScreenSubscription(sub) => {
+                if self.watching.as_deref() == Some(sub.peer_id.as_str()) {
+                    self.layer = Some(LayerState {
+                        high: sub.layer() == v1::ScreenLayer::High,
+                        reason: sub.reason(),
+                    });
                 }
             }
             S::TrackPublished(t) if t.kind() == v1::TrackKind::Screen => {
@@ -1088,13 +1409,23 @@ impl Core {
                     return;
                 }
                 if s.active {
-                    self.shares.insert(s.peer_id, (s.width, s.height, s.fps));
+                    self.shares.insert(
+                        s.peer_id,
+                        ShareState {
+                            width: s.width,
+                            height: s.height,
+                            fps: s.fps,
+                            bitrate_kbps: s.bitrate_kbps,
+                            preview: s.preview,
+                        },
+                    );
                 } else {
                     self.shares.remove(&s.peer_id);
                     if self.watching.as_deref() == Some(s.peer_id.as_str()) {
                         self.unwatch();
                     }
                 }
+                self.sync_previews();
             }
             S::TrackPublished(t) => {
                 if self.joined.as_deref() != Some(t.room_id.as_str()) {
@@ -1226,10 +1557,18 @@ impl Core {
                 if self.watching.is_some() {
                     self.subscribe();
                 }
+                // A new session receives no previews until asked again.
+                self.previewed.clear();
+                self.sync_previews();
             }
             // The SFU is ICE-lite with its candidates in the answer: nothing to trickle.
             CallEvent::Signal(_) => {}
             CallEvent::KeyframeRequested => self.keyframe_requested(),
+            CallEvent::PreviewKeyframeRequested => {
+                if let Some(s) = &self.share {
+                    s.share.request_preview_keyframe();
+                }
+            }
             CallEvent::State(state) => {
                 media.state = state.clone();
                 if let CallState::Failed(reason) = state {
@@ -1360,12 +1699,25 @@ impl Core {
             }
         };
         let (video_tx, video_rx) = sync_channel::<VideoOut>(16);
+        let (preview_tx, preview_rx) = sync_channel::<VideoOut>(8);
+        let (preview_ssrcs, preview_route) =
+            (self.preview_ssrcs.clone(), self.preview_route.clone());
         let (share_audio_tx, share_audio_rx) = sync_channel::<AudioOut>(50);
         let (watched, viewer) = (self.watched_ssrc.clone(), self.viewer_route.clone());
         let video = VideoIo {
             audio_out: share_audio_rx,
             outgoing: video_rx,
+            preview: preview_rx,
             on_video: Box::new(move |p: VideoIn| {
+                if p.preview {
+                    if preview_ssrcs.lock().unwrap().contains(&p.ssrc)
+                        && let Some(tx) = preview_route.lock().unwrap().as_ref()
+                    {
+                        // Full: the decoder is behind; drop like a lost packet.
+                        let _ = tx.try_send(p);
+                    }
+                    return;
+                }
                 if p.ssrc != watched.load(Ordering::Relaxed) {
                     return;
                 }
@@ -1416,6 +1768,7 @@ impl Core {
         };
         *audio.route.lock().unwrap() = Some(tx);
         *self.share_route.lock().unwrap() = Some(video_tx);
+        *self.share_preview_route.lock().unwrap() = Some(preview_tx);
         *self.share_audio_route.lock().unwrap() = Some(share_audio_tx);
         self.media = Some(Media {
             driver,
@@ -1440,6 +1793,16 @@ impl Core {
             for ssrc in self.screen_audio_tracks.values() {
                 let _ = m.driver.expect_screen_audio_source(*ssrc);
             }
+            for (ssrc, rtx) in self.preview_tracks.values() {
+                let _ = m.driver.expect_preview_source(*ssrc, *rtx);
+            }
+            if let Some(s) = &self.share {
+                let kbps = s
+                    .adapter
+                    .as_ref()
+                    .map_or(s.config.bitrate_kbps, |a| a.target().bitrate_kbps);
+                let _ = m.driver.set_video_pacing(pacing_bps(kbps));
+            }
         }
         self.sync_watch();
     }
@@ -1452,7 +1815,9 @@ impl Core {
             *a.route.lock().unwrap() = None;
         }
         *self.share_route.lock().unwrap() = None;
+        *self.share_preview_route.lock().unwrap() = None;
         *self.share_audio_route.lock().unwrap() = None;
+        self.layer = None;
         if let (Some(s), Some(a)) = (self.watched_audio.take(), &self.audio) {
             let _ = a.engine.remove_peer(PeerId::from(s));
         }
@@ -1485,7 +1850,22 @@ impl Core {
             self.snap.last_error = Some(format!("показ экрана: {why}"));
             self.stop_share();
         }
+        self.adapt_share();
+        // The size, rate or bitrate the server knows is behind (adaptation, fitting).
+        if let Some(s) = &self.share {
+            let st = s.share.stats();
+            let now = (st.width, st.height, st.fps, st.bitrate_kbps_target);
+            if st.width > 0 && now != s.announced {
+                self.announce_share();
+            }
+        }
         self.snap.sharing = self.share.as_ref().map(|s| s.share.stats());
+        self.snap.watch_layer = self.watch_layer;
+        self.snap.layer = self.layer.clone();
+        self.snap.previews_visible = self.previews_visible;
+        self.snap.preview_first = self.preview_first;
+        self.snap.max_previews = self.cfg.max_previews;
+        self.snap.previews = self.preview_decoder.as_ref().map(PreviewDecoder::stats);
         self.snap.share_audio = self.system_audio.as_ref().map(SystemAudioCapture::stats);
         self.snap.share_config = self.share.as_ref().map(|s| s.config);
         self.snap.watching = self.watching.clone();
@@ -1493,16 +1873,23 @@ impl Core {
         let mut shares: Vec<(u64, ShareView)> = self
             .shares
             .iter()
-            .filter_map(|(peer, (w, h, fps))| {
+            .filter_map(|(peer, st)| {
                 let (order, name) = self.members.get(peer)?;
                 Some((
                     *order,
                     ShareView {
                         peer_id: peer.clone(),
                         name: name.clone(),
-                        width: *w,
-                        height: *h,
-                        fps: *fps,
+                        width: st.width,
+                        height: st.height,
+                        fps: st.fps,
+                        bitrate_kbps: st.bitrate_kbps,
+                        has_preview: st.preview,
+                        preview_ssrc: self
+                            .previewed
+                            .contains(peer)
+                            .then(|| self.preview_tracks.get(peer).map(|(s, _)| *s))
+                            .flatten(),
                     },
                 ))
             })

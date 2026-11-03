@@ -61,7 +61,16 @@ pub enum ValidationError {
     Datagram,
     #[error("screen share needs 1..={MAX_SHARE_DIMENSION} px sides and 1..={MAX_SHARE_FPS} fps")]
     ScreenShare,
+    #[error("at most {MAX_PREVIEWS} distinct preview subscriptions with valid peer ids")]
+    Previews,
+    #[error("unknown screen layer")]
+    Layer,
 }
+
+/// Most previews one member may subscribe to (spec §5.1: a grid of up to 50 shares).
+pub const MAX_PREVIEWS: usize = 50;
+/// Largest high-layer bitrate a share may announce (1440p120 needs ≈ 20–40 Mbit/s).
+pub const MAX_SHARE_BITRATE_KBPS: u32 = 100_000;
 
 /// Largest side of a shared picture (spec §5.1: up to 2560×1440; room for 4K monitors
 /// scaled down by the sender).
@@ -199,7 +208,8 @@ pub fn validate_screen_share(m: &v1::ScreenShare) -> Result<(), ValidationError>
     let ok = !m.active
         || (side.contains(&m.width)
             && side.contains(&m.height)
-            && (1..=MAX_SHARE_FPS).contains(&m.fps));
+            && (1..=MAX_SHARE_FPS).contains(&m.fps)
+            && m.bitrate_kbps <= MAX_SHARE_BITRATE_KBPS);
     if ok {
         Ok(())
     } else {
@@ -212,7 +222,24 @@ pub fn validate_subscribe_screen(m: &v1::SubscribeScreen) -> Result<(), Validati
     if m.peer_id.len() > MAX_PEER_ID_LEN {
         return Err(ValidationError::PeerId);
     }
+    if v1::ScreenLayer::try_from(m.layer).is_err() {
+        return Err(ValidationError::Layer);
+    }
     Ok(())
+}
+
+pub fn validate_subscribe_previews(m: &v1::SubscribePreviews) -> Result<(), ValidationError> {
+    validate_room_id(&m.room_id)?;
+    let mut seen = std::collections::HashSet::new();
+    let ok = m.peer_ids.len() <= MAX_PREVIEWS
+        && m.peer_ids
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= MAX_PEER_ID_LEN && seen.insert(p.as_str()));
+    if ok {
+        Ok(())
+    } else {
+        Err(ValidationError::Previews)
+    }
 }
 
 /// Converts the payload of an incoming `Signal` into its relayed form.

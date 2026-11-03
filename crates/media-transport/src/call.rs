@@ -29,6 +29,11 @@
 //! The share's system audio (Opus) has its own, third m-line, so it never mixes with the
 //! voice streams; received packets of it arrive through `on_audio` like voice (the owner
 //! tells them apart by SSRC).
+//!
+//! Layers (S4, ADR 0011): a fourth m-line (H.264) carries the low preview layer of our
+//! share ([`VideoIo::preview`]) and, received, other members' previews
+//! ([`VideoIn::preview`]). The main layer is paced ([`CallDriver::set_video_pacing`]);
+//! the preview layer is small and goes out as it comes.
 
 use std::collections::{HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -83,6 +88,8 @@ pub struct CallConfig {
     pub silence_timeout: Duration,
     /// Test impairment: share of outgoing datagrams dropped.
     pub send_loss: f32,
+    /// Test impairment: share of incoming datagrams dropped.
+    pub recv_loss: f32,
     /// STUN servers (`host:port`) asked for our public address before the SDP is
     /// created; empty = host candidates only (one LAN).
     pub stun_servers: Vec<String>,
@@ -106,6 +113,7 @@ impl CallConfig {
             reconnect_timeout: Duration::from_secs(10),
             silence_timeout: Duration::from_secs(3),
             send_loss: 0.0,
+            recv_loss: 0.0,
             stun_servers: Vec::new(),
             stun_timeout: Duration::from_millis(1500),
             video_pacing_bps: 12_000_000,
@@ -142,6 +150,8 @@ pub struct VideoIo {
     pub on_video: Box<dyn FnMut(VideoIn) + Send>,
     /// System audio of our share (Opus, 20 ms frames).
     pub audio_out: Receiver<AudioOut>,
+    /// The low preview layer of our share (on the fourth m-line).
+    pub preview: Receiver<VideoOut>,
 }
 
 /// Call state machine (spec §6, transport part).
@@ -179,6 +189,8 @@ pub enum CallEvent {
     State(CallState),
     /// The remote asked for a keyframe of our video (PLI/FIR).
     KeyframeRequested,
+    /// The remote asked for a keyframe of our preview layer.
+    PreviewKeyframeRequested,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -215,6 +227,13 @@ pub struct CallStats {
     /// NACKs we sent for received video / the remote sent for ours (str0m stats, 1 s).
     pub video_nacks_sent: u64,
     pub video_nacks_received: u64,
+    /// Loss of our main video as the remote reports it (RTCP, last report window), 0–1.
+    pub video_egress_loss: Option<f32>,
+    /// Current pacing rate of the main video, bits/s.
+    pub video_pacing_bps: u32,
+    pub preview_frames_sent: u64,
+    pub preview_packets_sent: u64,
+    pub preview_packets_received: u64,
 }
 
 enum Command {
@@ -224,6 +243,9 @@ enum Command {
     ExpectSource(u32),
     ExpectVideoSource(u32, Option<u32>),
     ExpectScreenAudioSource(u32),
+    ExpectPreviewSource(u32, Option<u32>),
+    SetVideoPacing(u32),
+    SetTestLoss(f32, f32),
     ForgetSource(u32),
     RequestKeyframe(u32),
     Stop,
@@ -300,6 +322,9 @@ impl CallDriver {
         if config.send_loss > 0.0 {
             peer.set_send_loss(config.send_loss, 0x5eed);
         }
+        if config.recv_loss > 0.0 {
+            peer.set_recv_loss(config.recv_loss);
+        }
         let local_addr = peer.local_addr();
         // Room for a whole room's sources announced at once (≤ 100 members).
         let (cmd_tx, cmd_rx) = sync_channel(256);
@@ -339,6 +364,11 @@ impl CallDriver {
             video_queued_bytes: 0,
             video_budget: 0.0,
             video_paced_at: Instant::now(),
+            preview_mid: None,
+            preview_pt: None,
+            preview_seq: 0,
+            preview_packetizer: VideoPacketizer::default(),
+            preview_pending: Vec::new(),
         };
         let thread = std::thread::Builder::new()
             .name("tp-call".into())
@@ -397,6 +427,21 @@ impl CallDriver {
 
     pub fn forget_source(&self, ssrc: u32) -> Result<(), TransportError> {
         self.send(Command::ForgetSource(ssrc))
+    }
+
+    /// Accept a remote preview stream (and its RTX stream) on the preview m-line.
+    pub fn expect_preview_source(&self, ssrc: u32, rtx: Option<u32>) -> Result<(), TransportError> {
+        self.send(Command::ExpectPreviewSource(ssrc, rtx))
+    }
+
+    /// Test impairment at runtime: share of outgoing / incoming datagrams dropped.
+    pub fn set_test_loss(&self, send: f32, recv: f32) -> Result<(), TransportError> {
+        self.send(Command::SetTestLoss(send, recv))
+    }
+
+    /// Changes the pacing rate (and so the bitrate ceiling) of our main video.
+    pub fn set_video_pacing(&self, bps: u32) -> Result<(), TransportError> {
+        self.send(Command::SetVideoPacing(bps))
     }
 
     /// Asks the sender of the remote video stream `ssrc` for a keyframe (PLI).
@@ -480,6 +525,12 @@ struct Worker {
     /// Pacer token bucket (bytes).
     video_budget: f64,
     video_paced_at: Instant,
+    /// Fourth m-line: preview layer.
+    preview_mid: Option<Mid>,
+    preview_pt: Option<Pt>,
+    preview_seq: u64,
+    preview_packetizer: VideoPacketizer,
+    preview_pending: Vec<(u32, Option<u32>)>,
 }
 
 struct PacedPacket {
@@ -570,6 +621,8 @@ impl Worker {
                 Some(change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None));
             self.screen_audio_mid =
                 Some(change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None));
+            self.preview_mid =
+                Some(change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None));
         }
         let (offer, pending) = change
             .apply()
@@ -607,6 +660,21 @@ impl Worker {
                     }
                     Ok(())
                 }
+                Command::ExpectPreviewSource(ssrc, rtx) => {
+                    if self.sources.insert(ssrc) {
+                        self.preview_pending.push((ssrc, rtx));
+                    }
+                    Ok(())
+                }
+                Command::SetTestLoss(send, recv) => {
+                    self.peer.set_send_loss(send, 0x5eed);
+                    self.peer.set_recv_loss(recv);
+                    Ok(())
+                }
+                Command::SetVideoPacing(bps) => {
+                    self.config.video_pacing_bps = bps.max(100_000);
+                    Ok(())
+                }
                 Command::ExpectVideoSource(ssrc, rtx) => {
                     if self.sources.insert(ssrc) {
                         self.video_pending.push((ssrc, rtx));
@@ -617,6 +685,7 @@ impl Worker {
                     if self.sources.remove(&ssrc) {
                         self.sources_pending.retain(|s| *s != ssrc);
                         self.video_pending.retain(|(s, _)| *s != ssrc);
+                        self.preview_pending.retain(|(s, _)| *s != ssrc);
                         self.screen_audio_pending.retain(|s| *s != ssrc);
                         self.peer
                             .rtc
@@ -674,6 +743,16 @@ impl Worker {
             let mut api = self.peer.rtc.direct_api();
             for ssrc in self.screen_audio_pending.drain(..) {
                 api.expect_stream_rx(Ssrc::from(ssrc), None, mid, None);
+            }
+        }
+        if !self.preview_pending.is_empty()
+            && let Some(mid) = self
+                .preview_mid
+                .filter(|m| self.peer.rtc.media(*m).is_some())
+        {
+            let mut api = self.peer.rtc.direct_api();
+            for (ssrc, rtx) in self.preview_pending.drain(..) {
+                api.expect_stream_rx(Ssrc::from(ssrc), rtx.map(Ssrc::from), mid, None);
             }
         }
         if !self.video_pending.is_empty()
@@ -759,8 +838,49 @@ impl Worker {
         }
     }
 
+    /// The preview layer: small frames, written as they come (nackable, no pacing).
+    fn send_preview(&mut self) {
+        let Some(video) = &self.video else {
+            return;
+        };
+        let frames: Vec<VideoOut> = video.preview.try_iter().collect();
+        let (Some(mid), Some(pt), true) = (
+            self.preview_mid,
+            self.preview_pt,
+            self.state == CallState::Connected,
+        ) else {
+            return;
+        };
+        let now = Instant::now();
+        for frame in frames {
+            let parts = self.preview_packetizer.packetize(&frame.data);
+            let count = parts.len();
+            let mut api = self.peer.rtc.direct_api();
+            let Some(tx) = api.stream_tx_by_mid(mid, None) else {
+                return;
+            };
+            for (i, payload) in parts.into_iter().enumerate() {
+                let write = RtpWrite::new(
+                    pt,
+                    SeqNo::from(self.preview_seq),
+                    frame.timestamp,
+                    now,
+                    payload,
+                )
+                .marker(i + 1 == count)
+                .nackable(true);
+                tx.write_rtp(write);
+                self.preview_seq += 1;
+                self.st.preview_packets_sent += 1;
+            }
+            self.st.preview_frames_sent += 1;
+        }
+    }
+
     fn send_video(&mut self) {
         self.send_screen_audio();
+        self.send_preview();
+        self.st.video_pacing_bps = self.config.video_pacing_bps;
         let Some(video) = &self.video else {
             return;
         };
@@ -855,6 +975,8 @@ impl Worker {
                 } else if m.kind == MediaKind::Audio {
                     self.mid = Some(m.mid);
                     self.try_ready();
+                } else if m.kind == MediaKind::Video && Some(m.mid) == self.preview_mid {
+                    // Our own fourth m-line (set when the offer was made).
                 } else if m.kind == MediaKind::Video && self.video.is_some() {
                     self.video_mid = Some(m.mid);
                 }
@@ -862,6 +984,9 @@ impl Worker {
             Event::KeyframeRequest(r) if Some(r.mid) == self.video_mid => {
                 self.st.keyframe_requests_received += 1;
                 self.emit(CallEvent::KeyframeRequested);
+            }
+            Event::KeyframeRequest(r) if Some(r.mid) == self.preview_mid => {
+                self.emit(CallEvent::PreviewKeyframeRequested);
             }
             Event::RtpPacket(p) => {
                 self.st.packets_received += 1;
@@ -875,8 +1000,13 @@ impl Worker {
                     .direct_api()
                     .stream_rx(&p.header.ssrc)
                     .map(|s| s.mid());
-                if mid.is_some() && mid == self.video_mid {
-                    self.st.video_packets_received += 1;
+                let preview = mid.is_some() && mid == self.preview_mid;
+                if mid.is_some() && (mid == self.video_mid || preview) {
+                    if preview {
+                        self.st.preview_packets_received += 1;
+                    } else {
+                        self.st.video_packets_received += 1;
+                    }
                     if let Some(video) = &mut self.video {
                         (video.on_video)(VideoIn {
                             ssrc: *p.header.ssrc,
@@ -885,6 +1015,7 @@ impl Worker {
                             marker: p.header.marker,
                             payload: p.payload.to_vec(),
                             arrival: p.timestamp,
+                            preview,
                         });
                     }
                     return;
@@ -903,6 +1034,9 @@ impl Worker {
             }
             Event::MediaEgressStats(s) if Some(s.mid) == self.video_mid => {
                 self.st.video_nacks_received = s.nacks;
+                if s.loss.is_some() {
+                    self.st.video_egress_loss = s.loss;
+                }
             }
             Event::PeerStats(s) => {
                 self.st.rtt_ms = s.rtt.map(|d| d.as_secs_f64() * 1000.0);
@@ -941,6 +1075,7 @@ impl Worker {
                 .iter()
                 .find(|p| p.spec().codec == Codec::H264)
                 .map(|p| p.pt());
+            self.preview_pt = self.video_pt;
         }
         if self.mid.is_some() {
             self.st.connected_after_ms = Some(self.started.elapsed().as_millis() as u64);

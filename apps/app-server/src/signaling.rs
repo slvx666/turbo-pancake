@@ -23,7 +23,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Notify, OwnedSemaphorePermit, mpsc};
-use turbo_pancake_media_sfu::{Link, PeerSink, ShareInfo, Track, TrackKind};
+use turbo_pancake_media_sfu::{
+    Layer, LayerChoice, LayerReason, Link, PeerSink, ShareInfo, Subscription, Track, TrackKind,
+};
 use turbo_pancake_protocol::{self as proto, DecodeError, v1};
 use v1::client_envelope::Body as C;
 use v1::server_envelope::Body as S;
@@ -100,6 +102,7 @@ impl PeerSink for WsSink {
             TrackKind::Audio => v1::TrackKind::Audio,
             TrackKind::Screen => v1::TrackKind::Screen,
             TrackKind::ScreenAudio => v1::TrackKind::ScreenAudio,
+            TrackKind::ScreenPreview => v1::TrackKind::ScreenPreview,
         } as i32;
         let body = if published {
             S::TrackPublished(v1::TrackPublished {
@@ -132,8 +135,39 @@ impl PeerSink for WsSink {
                 width: s.width,
                 height: s.height,
                 fps: s.fps,
+                bitrate_kbps: s.bitrate_kbps,
+                preview: s.preview,
             }),
         );
+    }
+
+    fn subscription(&mut self, sub: &Subscription) {
+        self.handle.send(
+            0,
+            S::ScreenSubscription(v1::ScreenSubscription {
+                room_id: self.room.clone(),
+                peer_id: sub.source.clone(),
+                requested: layer_choice_to_wire(sub.requested) as i32,
+                layer: match sub.layer {
+                    Layer::High => v1::ScreenLayer::High,
+                    Layer::Low => v1::ScreenLayer::Low,
+                } as i32,
+                reason: match sub.reason {
+                    LayerReason::Requested => v1::LayerReason::Requested,
+                    LayerReason::Network => v1::LayerReason::Network,
+                    LayerReason::Admission => v1::LayerReason::Admission,
+                    LayerReason::SingleLayer => v1::LayerReason::SingleLayer,
+                } as i32,
+            }),
+        );
+    }
+}
+
+fn layer_choice_to_wire(c: LayerChoice) -> v1::ScreenLayer {
+    match c {
+        LayerChoice::Auto => v1::ScreenLayer::Auto,
+        LayerChoice::High => v1::ScreenLayer::High,
+        LayerChoice::Low => v1::ScreenLayer::Low,
     }
 }
 
@@ -564,6 +598,8 @@ fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
                     width: m.width,
                     height: m.height,
                     fps: m.fps,
+                    bitrate_kbps: m.bitrate_kbps,
+                    preview: m.preview,
                 });
                 if !sfu.share(&peer_id, share) {
                     s.reply_error(rid, ErrorCode::Internal, "media server busy");
@@ -577,9 +613,25 @@ fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
                 s.reply_error(rid, ErrorCode::NotInRoom, "join the room with media first");
             } else if let Some(sfu) = &state.sfu {
                 let source = (!m.peer_id.is_empty()).then_some(m.peer_id.as_str());
-                if !sfu.subscribe(&peer_id, source) {
+                let layer = match m.layer() {
+                    v1::ScreenLayer::Auto => LayerChoice::Auto,
+                    v1::ScreenLayer::High => LayerChoice::High,
+                    v1::ScreenLayer::Low => LayerChoice::Low,
+                };
+                if !sfu.subscribe_layer(&peer_id, source, layer) {
                     s.reply_error(rid, ErrorCode::Internal, "media server busy");
                 }
+            }
+        }
+        C::SubscribePreviews(m) => {
+            if let Err(e) = proto::validate_subscribe_previews(&m) {
+                s.reply_error(rid, ErrorCode::BadRequest, &e.to_string());
+            } else if s.room.as_deref() != Some(m.room_id.as_str()) || !s.media {
+                s.reply_error(rid, ErrorCode::NotInRoom, "join the room with media first");
+            } else if let Some(sfu) = &state.sfu
+                && !sfu.previews(&peer_id, m.peer_ids)
+            {
+                s.reply_error(rid, ErrorCode::Internal, "media server busy");
             }
         }
         C::MediaDatagram(d) => {

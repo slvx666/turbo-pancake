@@ -7,7 +7,10 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use turbo_pancake_media_sfu::{Link, PeerSink, Sfu, SfuConfig, ShareInfo, Track, TrackKind};
+use turbo_pancake_media_sfu::{
+    Layer, LayerChoice, LayerReason, Link, PeerSink, Sfu, SfuConfig, ShareInfo, Subscription,
+    Track, TrackKind,
+};
 use turbo_pancake_media_transport::call::{
     AudioOut, CallConfig, CallDriver, CallEvent, CallState, LocalSignal, MediaLink, Role, VideoIo,
 };
@@ -17,6 +20,7 @@ enum ToClient {
     Answer(String),
     Track(String, Track, bool),
     Screen(String, Option<ShareInfo>),
+    Subscription(Subscription),
 }
 
 struct Sink {
@@ -38,12 +42,16 @@ impl PeerSink for Sink {
     fn screen(&mut self, peer: &str, share: Option<ShareInfo>) {
         let _ = self.events.send(ToClient::Screen(peer.to_owned(), share));
     }
+    fn subscription(&mut self, sub: &Subscription) {
+        let _ = self.events.send(ToClient::Subscription(sub.clone()));
+    }
 }
 
 struct Member {
     driver: CallDriver,
     _audio: SyncSender<AudioOut>,
     video: SyncSender<VideoOut>,
+    preview: SyncSender<VideoOut>,
     screen_audio: SyncSender<AudioOut>,
     /// SSRCs of received audio packets (voice or share audio).
     audio_in: Arc<Mutex<Vec<u32>>>,
@@ -56,6 +64,7 @@ fn member(sfu: &Sfu, name: &str, send_loss: f32) -> Member {
     let (events_tx, sfu_events) = sync_channel::<ToClient>(256);
     let (audio, outgoing) = sync_channel::<AudioOut>(16);
     let (video, video_out) = sync_channel::<VideoOut>(8);
+    let (preview, preview_out) = sync_channel::<VideoOut>(8);
     let received = Arc::new(Mutex::new(Vec::new()));
     let sink_rx = received.clone();
     let mut config = CallConfig::new(Role::Offerer, "127.0.0.1:0".parse().unwrap());
@@ -66,6 +75,7 @@ fn member(sfu: &Sfu, name: &str, send_loss: f32) -> Member {
     let io = VideoIo {
         audio_out,
         outgoing: video_out,
+        preview: preview_out,
         on_video: Box::new(move |p| sink_rx.lock().unwrap().push(p)),
     };
     let (driver, calls) = CallDriver::start_media(
@@ -103,6 +113,7 @@ fn member(sfu: &Sfu, name: &str, send_loss: f32) -> Member {
         driver,
         _audio: audio,
         video,
+        preview,
         screen_audio,
         audio_in,
         received,
@@ -143,7 +154,7 @@ fn screen_track_of(viewer: &Member, peer: &str) -> (u32, Option<u32>, u32) {
             match t.kind {
                 TrackKind::Screen => video = Some((t.ssrc, t.rtx)),
                 TrackKind::ScreenAudio => audio = Some(t.ssrc),
-                TrackKind::Audio => {}
+                TrackKind::Audio | TrackKind::ScreenPreview => {}
             }
         }
     }
@@ -247,6 +258,7 @@ fn sfu() -> Sfu {
     turbo_pancake_media_transport::init_crypto();
     Sfu::start(SfuConfig {
         udp_bind: Some("127.0.0.1:0".parse().unwrap()),
+        ..Default::default()
     })
     .unwrap()
 }
@@ -268,6 +280,7 @@ fn a_subscriber_receives_the_share_and_others_do_not() {
         width: 1920,
         height: 1080,
         fps: 60,
+        ..Default::default()
     };
     assert!(sfu.share("a", Some(info)));
     assert!(sfu.subscribe("b", Some("a")));
@@ -368,7 +381,8 @@ fn losses_are_repaired_by_retransmission() {
         Some(ShareInfo {
             width: 1920,
             height: 1080,
-            fps: 60
+            fps: 60,
+            ..Default::default()
         })
     ));
     assert!(sfu.subscribe("b", Some("a")));
@@ -381,4 +395,252 @@ fn losses_are_repaired_by_retransmission() {
     println!("viewer {:?}", b.driver.stats());
     println!("SFU {:?}", sfu.stats());
     check_frames(&run, 0.85);
+}
+
+/// Every track `viewer` was told about for `peer`, once all four kinds are known.
+fn tracks_of(viewer: &Member, peer: &str) -> std::collections::HashMap<&'static str, Track> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut out = std::collections::HashMap::new();
+    while out.len() < 4 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if let ToClient::Track(p, t, true) = viewer.sfu_events.recv_timeout(left).unwrap()
+            && p == peer
+        {
+            let k = match t.kind {
+                TrackKind::Audio => "audio",
+                TrackKind::Screen => "screen",
+                TrackKind::ScreenAudio => "screen_audio",
+                TrackKind::ScreenPreview => "preview",
+            };
+            out.insert(k, t);
+        }
+    }
+    out
+}
+
+/// The next subscription update `m` gets (other events are skipped).
+fn next_subscription(m: &Member, within: Duration) -> Option<Subscription> {
+    let deadline = Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match m.sfu_events.recv_timeout(left) {
+            Ok(ToClient::Subscription(s)) => return Some(s),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+const HIGH_LEN: usize = 3000;
+const LOW_LEN: usize = 600;
+
+/// What one viewer assembled from its main stream and from previews.
+#[derive(Default)]
+struct Seen {
+    main: FrameAssembler,
+    main_frames: Vec<AssembledFrame>,
+    preview: FrameAssembler,
+    preview_frames: Vec<AssembledFrame>,
+}
+
+type ViewerSlot<'a> = (&'a Member, u32, u32, &'a mut Seen);
+
+/// A shares both layers (high 30 fps, low every third frame) for `dur`, answering
+/// keyframe requests per layer; every viewer assembles its main stream (`main` SSRC) and
+/// the preview stream (`preview` SSRC).
+fn pump(a: &Member, viewers: &mut [ViewerSlot<'_>], n0: &mut u32, dur: Duration) {
+    let end = Instant::now() + dur;
+    let (mut key_high, mut key_low) = (true, true);
+    let mut next = Instant::now();
+    while Instant::now() < end {
+        while let Ok(ev) = a.calls.try_recv() {
+            match ev {
+                CallEvent::KeyframeRequested => key_high = true,
+                CallEvent::PreviewKeyframeRequested => key_low = true,
+                _ => {}
+            }
+        }
+        if Instant::now() >= next {
+            let n = *n0;
+            *n0 += 1;
+            let ts = n * 3000;
+            let kh = key_high || n.is_multiple_of(60);
+            key_high = false;
+            let _ = a.video.try_send(VideoOut {
+                timestamp: ts,
+                data: access_unit(kh, if kh { 20_000 } else { HIGH_LEN }, n as u8),
+            });
+            if n.is_multiple_of(3) {
+                let kl = key_low || n.is_multiple_of(60);
+                key_low = false;
+                let _ = a.preview.try_send(VideoOut {
+                    timestamp: ts,
+                    data: access_unit(kl, if kl { 2_000 } else { LOW_LEN }, n as u8),
+                });
+            }
+            next += Duration::from_millis(33);
+        }
+        for (m, main, preview, seen) in viewers.iter_mut() {
+            let packets: Vec<VideoIn> = std::mem::take(&mut *m.received.lock().unwrap());
+            for p in packets {
+                if p.preview && p.ssrc == *preview {
+                    seen.preview_frames.extend(seen.preview.push(p));
+                } else if !p.preview && p.ssrc == *main {
+                    seen.main_frames.extend(seen.main.push(p));
+                }
+            }
+            let now = Instant::now();
+            seen.main_frames.extend(seen.main.poll(now));
+            seen.preview_frames.extend(seen.preview.poll(now));
+            if seen.main.take_keyframe_request() {
+                m.driver.request_keyframe(*main).ok();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Main-stream P-frames by layer (sizes tell them apart; keyframes are skipped).
+fn layers(frames: &[AssembledFrame]) -> (usize, usize) {
+    let high = frames
+        .iter()
+        .filter(|f| !f.keyframe && f.data.len() > HIGH_LEN)
+        .count();
+    let low = frames
+        .iter()
+        .filter(|f| !f.keyframe && f.data.len() < HIGH_LEN && f.data.len() > LOW_LEN)
+        .count();
+    (high, low)
+}
+
+#[test]
+fn layers_switch_previews_flow_and_the_budget_admits() {
+    turbo_pancake_media_transport::init_crypto();
+    // Room for one 4 Mbit/s high stream.
+    let sfu = Sfu::start(SfuConfig {
+        udp_bind: Some("127.0.0.1:0".parse().unwrap()),
+        max_high_egress_kbps: Some(5000),
+    })
+    .unwrap();
+    let a = member(&sfu, "a", 0.0);
+    let b = member(&sfu, "b", 0.0);
+    let c = member(&sfu, "c", 0.0);
+    let d = member(&sfu, "d", 0.0);
+    let mut ids = Vec::new();
+    for m in [&b, &c, &d] {
+        let t = tracks_of(m, "a");
+        let (s, p) = (t["screen"], t["preview"]);
+        m.driver.expect_video_source(s.ssrc, s.rtx).unwrap();
+        m.driver.expect_preview_source(p.ssrc, p.rtx).unwrap();
+        ids.push((s.ssrc, p.ssrc));
+    }
+    let info = ShareInfo {
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        bitrate_kbps: 4000,
+        preview: true,
+    };
+    assert!(sfu.share("a", Some(info)));
+    assert!(sfu.subscribe_layer("b", Some("a"), LayerChoice::Auto));
+    let sb = next_subscription(&b, Duration::from_secs(3)).expect("b told");
+    assert_eq!((sb.layer, sb.reason), (Layer::High, LayerReason::Requested));
+    assert!(sfu.subscribe_layer("c", Some("a"), LayerChoice::Auto));
+    let sc = next_subscription(&c, Duration::from_secs(3)).expect("c told");
+    assert_eq!(
+        (sc.layer, sc.reason),
+        (Layer::Low, LayerReason::Admission),
+        "the budget holds one high stream"
+    );
+    assert!(sfu.previews("d", vec!["a".into()]));
+
+    let (mut seen_b, mut seen_c, mut seen_d) = (Seen::default(), Seen::default(), Seen::default());
+    let mut n = 0;
+    {
+        let mut v = [
+            (&b, ids[0].0, ids[0].1, &mut seen_b),
+            (&c, ids[1].0, ids[1].1, &mut seen_c),
+            (&d, ids[2].0, ids[2].1, &mut seen_d),
+        ];
+        pump(&a, &mut v, &mut n, Duration::from_millis(2500));
+    }
+    let (bh, bl) = layers(&seen_b.main_frames);
+    let (ch, cl) = layers(&seen_c.main_frames);
+    println!(
+        "TURBO_PANCAKE_LAYERS phase1 b high {bh} low {bl}; c high {ch} low {cl}; d previews {}",
+        seen_d.preview_frames.len()
+    );
+    assert!(bh >= 50 && bl == 0, "b gets the high layer: {bh}/{bl}");
+    assert!(cl >= 15 && ch == 0, "c gets the low layer: {ch}/{cl}");
+    assert!(seen_d.preview_frames.len() >= 15, "d gets the preview");
+    assert!(
+        seen_d.main_frames.is_empty(),
+        "no main stream for a preview-only member"
+    );
+    assert!(
+        seen_b.preview_frames.is_empty() && seen_c.preview_frames.is_empty(),
+        "no previews without a preview subscription"
+    );
+
+    // B asks for the low layer: the budget frees and C (auto) moves up.
+    assert!(sfu.subscribe_layer("b", Some("a"), LayerChoice::Low));
+    let sb = next_subscription(&b, Duration::from_secs(3)).expect("b told");
+    assert_eq!((sb.layer, sb.reason), (Layer::Low, LayerReason::Requested));
+    let sc = next_subscription(&c, Duration::from_secs(3)).expect("c told");
+    assert_eq!((sc.layer, sc.reason), (Layer::High, LayerReason::Requested));
+    let (b_before, c_before) = (seen_b.main_frames.len(), seen_c.main_frames.len());
+    let (b_dropped, c_dropped) = (
+        seen_b.main.stats.frames_dropped,
+        seen_c.main.stats.frames_dropped,
+    );
+    {
+        let mut v = [
+            (&b, ids[0].0, ids[0].1, &mut seen_b),
+            (&c, ids[1].0, ids[1].1, &mut seen_c),
+        ];
+        pump(&a, &mut v, &mut n, Duration::from_millis(2500));
+    }
+    let (bh2, bl2) = layers(&seen_b.main_frames[b_before..]);
+    let (ch2, cl2) = layers(&seen_c.main_frames[c_before..]);
+    let (bd, cd) = (
+        seen_b.main.stats.frames_dropped - b_dropped,
+        seen_c.main.stats.frames_dropped - c_dropped,
+    );
+    println!(
+        "TURBO_PANCAKE_LAYERS phase2 b high {bh2} low {bl2}; c high {ch2} low {cl2}; dropped b {bd} c {cd}; SFU {:?}",
+        sfu.stats()
+    );
+    // At most the frames before the switch keyframe are of the old layer.
+    assert!(bl2 >= 15 && bh2 <= 15, "b switched down: {bh2}/{bl2}");
+    assert!(ch2 >= 40 && cl2 <= 10, "c switched up: {ch2}/{cl2}");
+    assert!(
+        bd <= 1 && cd <= 1,
+        "a switch continues the stream (no loss, no wait for a keyframe)"
+    );
+    let st = sfu.stats();
+    assert!(st.layer_switches >= 2, "{st:?}");
+    assert_eq!((st.viewers_high, st.viewers_low), (1, 1));
+
+    // C's downlink loses 30 %: auto moves it to the low layer (receiver reports).
+    c.driver.set_test_loss(0.0, 0.3).unwrap();
+    let start = Instant::now();
+    let mut got = None;
+    {
+        let mut v = [(&c, ids[1].0, ids[1].1, &mut seen_c)];
+        while start.elapsed() < Duration::from_secs(8) && got.is_none() {
+            pump(&a, &mut v, &mut n, Duration::from_millis(300));
+            while let Ok(ev) = v[0].0.sfu_events.try_recv() {
+                if let ToClient::Subscription(s) = ev {
+                    got = Some(s);
+                }
+            }
+        }
+    }
+    let s = got.expect("c moved by its network");
+    println!(
+        "TURBO_PANCAKE_LAYERS network: {:?} after {:.1} s",
+        s,
+        start.elapsed().as_secs_f64()
+    );
+    assert_eq!((s.layer, s.reason), (Layer::Low, LayerReason::Network));
 }

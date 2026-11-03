@@ -46,7 +46,7 @@ fn relay(from: &mut Side, to: &Side) {
             CallEvent::Signal(LocalSignal::Answer(sdp)) => to.driver.remote_answer(sdp).unwrap(),
             CallEvent::Signal(LocalSignal::Candidate(c)) => to.driver.remote_candidate(c).unwrap(),
             CallEvent::State(s) => from.states.push(s),
-            CallEvent::KeyframeRequested => {}
+            CallEvent::KeyframeRequested | CallEvent::PreviewKeyframeRequested => {}
         }
     }
 }

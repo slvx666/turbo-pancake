@@ -15,8 +15,16 @@
 //!   `--test-send-loss <0..1>` — test impairment: drop this share of outgoing media.
 //!   `--share <N|synthetic>` — share monitor N (index in the monitor list) or a generated
 //!       test picture once in the room (scripted S3 trials).
-//!   `--share-quality <hd60|hd30>` — 1080p60 at 8 Mbit/s (default) or 720p30.
+//!   `--share-quality <qhd120|hd60|hd30>` — at most 1440p120 (20 Mbit/s), 1080p60
+//!       (8 Mbit/s, default) or 720p30; fitted to the monitor (no upscaling, no more
+//!       frames than its refresh rate).
+//!   `--fixed-quality` — keep the chosen quality (no adaptation to the network).
 //!   `--watch` — watch the first share that appears.
+//!   `--watch-layer <auto|high|low>` — the layer to ask for when watching (default auto).
+//!   `--max-previews <N>` — previews received at once, one page of the grid (1–50, 24).
+//!   `--no-previews` — start with previews hidden (none received).
+//!   `--share-window` — show the watched share in its own window (`--fullscreen`: full
+//!       screen on the monitor of that window).
 //!   `--share-no-audio` — share without the computer's sound.
 //!   `--smoke-exit-after-ms <N>` — benchmark/smoke mode: print machine-readable
 //!       markers on stdout and quit after N ms:
@@ -41,8 +49,9 @@ use slint::winit_030::winit::event_loop::ActiveEventLoop;
 use slint::winit_030::winit::window::{Window as WinitWindow, WindowId};
 use slint::winit_030::{CustomApplicationHandler, EventResult};
 use turbo_pancake_desktop::screen::PictureSlot;
+use turbo_pancake_desktop::screen::PreviewSlots;
 use turbo_pancake_desktop::session::{
-    Command, CommandSender, Session, SessionConfig, Snapshot, TransportPref,
+    Command, CommandSender, Session, SessionConfig, Snapshot, TransportPref, WatchLayer,
 };
 use turbo_pancake_desktop::view::{self, MemberView, ShareRowView};
 use turbo_pancake_media_audio::{CpalIo, DspConfig, device};
@@ -68,13 +77,23 @@ struct Args {
     media: Option<TransportPref>,
     block_udp: bool,
     share: Option<ShareSource>,
-    share_hd30: bool,
+    /// 0 = 1440p120, 1 = 1080p60, 2 = 720p30.
+    share_quality: i32,
+    fixed_quality: bool,
     watch: bool,
+    watch_layer: Option<WatchLayer>,
+    max_previews: Option<usize>,
+    no_previews: bool,
+    share_window: bool,
+    fullscreen: bool,
     share_no_audio: bool,
 }
 
 fn parse_args() -> Args {
-    let mut out = Args::default();
+    let mut out = Args {
+        share_quality: 1,
+        ..Args::default()
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -117,8 +136,31 @@ fn parse_args() -> Args {
                     None => None,
                 };
             }
-            "--share-quality" => out.share_hd30 = args.next().as_deref() == Some("hd30"),
+            "--share-quality" => {
+                out.share_quality = match args.next().as_deref() {
+                    Some("qhd120") => 0,
+                    Some("hd30") => 2,
+                    _ => 1,
+                };
+            }
+            "--fixed-quality" => out.fixed_quality = true,
             "--watch" => out.watch = true,
+            "--watch-layer" => {
+                out.watch_layer = match args.next().as_deref() {
+                    Some("high") => Some(WatchLayer::High),
+                    Some("low") => Some(WatchLayer::Low),
+                    _ => Some(WatchLayer::Auto),
+                };
+            }
+            "--max-previews" => {
+                out.max_previews = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .map(|n: usize| n.clamp(1, turbo_pancake_protocol::MAX_PREVIEWS));
+            }
+            "--no-previews" => out.no_previews = true,
+            "--share-window" => out.share_window = true,
+            "--fullscreen" => out.fullscreen = true,
             "--share-no-audio" => out.share_no_audio = true,
             "--test-send-loss" => {
                 out.send_loss = args
@@ -220,19 +262,39 @@ fn show_members(w: &MainWindow, members: Vec<MemberView>) {
     }
 }
 
+/// Updates the share list; a row keeps its preview picture while its preview stream
+/// stays the same (pictures arrive through [`show_pictures`]).
 fn show_shares(w: &MainWindow, shares: Vec<ShareRowView>) {
+    let model = w.get_shares();
+    let list = model.as_any().downcast_ref::<slint::VecModel<ShareRow>>();
+    let old: Vec<ShareRow> = list.map(|l| l.iter().collect()).unwrap_or_default();
     let rows: Vec<ShareRow> = shares
         .into_iter()
-        .map(|s| ShareRow {
-            peer_id: s.peer_id.into(),
-            name: s.name.into(),
-            info: s.info.into(),
-            watching: s.watching,
+        .map(|s| {
+            let ssrc = s.preview_ssrc.map_or(0, |v| v as i32);
+            let kept = old
+                .iter()
+                .find(|o| o.peer_id.as_str() == s.peer_id && o.preview_ssrc == ssrc && ssrc != 0);
+            ShareRow {
+                peer_id: s.peer_id.into(),
+                name: s.name.into(),
+                info: s.info.into(),
+                watching: s.watching,
+                preview: kept.map(|k| k.preview.clone()).unwrap_or_default(),
+                has_preview: kept.is_some_and(|k| k.has_preview),
+                preview_ssrc: ssrc,
+            }
         })
         .collect();
-    let model = w.get_shares();
-    match model.as_any().downcast_ref::<slint::VecModel<ShareRow>>() {
+    match list {
         Some(list) if list.iter().eq(rows.iter().cloned()) => {}
+        Some(list) if list.row_count() == rows.len() => {
+            for (i, r) in rows.into_iter().enumerate() {
+                if list.row_data(i).as_ref() != Some(&r) {
+                    list.set_row_data(i, r);
+                }
+            }
+        }
         Some(list) => list.set_vec(rows),
         None => w.set_shares(slint::ModelRc::new(slint::VecModel::from(rows))),
     }
@@ -249,20 +311,86 @@ fn monitor_label(m: &MonitorInfo) -> String {
     )
 }
 
-fn share_config(source: ShareSource, quality: i32) -> ShareConfig {
-    if quality == 1 {
-        ShareConfig::hd30(source)
-    } else {
-        ShareConfig::hd60(source)
+/// The share settings for a quality index (0 = 1440p120, 1 = 1080p60, 2 = 720p30),
+/// fitted to the monitor.
+fn share_config(
+    source: ShareSource,
+    quality: i32,
+    adaptive: bool,
+    monitors: &[MonitorInfo],
+) -> ShareConfig {
+    let mut c = match quality {
+        0 => ShareConfig::qhd120(source),
+        2 => ShareConfig::hd30(source),
+        _ => ShareConfig::hd60(source),
+    };
+    c.adaptive = adaptive;
+    match source {
+        ShareSource::Monitor(i) => match monitors.iter().find(|m| m.index == i) {
+            Some(m) => c.fitted((m.width, m.height), m.refresh_hz),
+            None => c,
+        },
+        ShareSource::Synthetic => c,
     }
+}
+
+/// The watched share in its own window (spec §5.1), created on demand.
+type ShareWindowSlot = Rc<std::cell::RefCell<Option<ShareWindow>>>;
+
+fn open_share_window(main: &MainWindow, slot: &ShareWindowSlot, fullscreen: bool) {
+    let mut cell = slot.borrow_mut();
+    if cell.is_none() {
+        let Ok(win) = ShareWindow::new() else {
+            return;
+        };
+        let (weak_main, weak_slot) = (main.as_weak(), Rc::downgrade(slot));
+        let close = move || {
+            if let Some(slot) = weak_slot.upgrade()
+                && let Some(w) = slot.borrow_mut().take()
+            {
+                let _ = w.hide();
+            }
+            if let Some(m) = weak_main.upgrade() {
+                m.set_share_window_open(false);
+            }
+        };
+        let close2 = close.clone();
+        win.on_close_window(close);
+        win.window().on_close_requested(move || {
+            close2();
+            slint::CloseRequestResponse::HideWindow
+        });
+        let weak = win.as_weak();
+        win.on_fullscreen_changed(move |on| {
+            if let Some(w) = weak.upgrade() {
+                w.window().set_fullscreen(on);
+            }
+        });
+        if win.show().is_err() {
+            return;
+        }
+        *cell = Some(win);
+    }
+    if let Some(w) = cell.as_ref() {
+        w.set_fullscreen(fullscreen);
+        w.window().set_fullscreen(fullscreen);
+        w.set_share_name(main.get_watching_name());
+    }
+    main.set_share_window_open(true);
 }
 
 /// Shows the newest picture of the watched share (UI thread, ~60 times a second; the
 /// viewer thread decodes and converts, the UI only uploads).
-fn show_pictures(window: &MainWindow, slot: PictureSlot) -> slint::Timer {
+fn show_pictures(
+    window: &MainWindow,
+    slot: PictureSlot,
+    previews: PreviewSlots,
+    share_window: ShareWindowSlot,
+) -> slint::Timer {
     let timer = slint::Timer::default();
     let weak = window.as_weak();
     let mut last_serial = 0;
+    let mut preview_serials: std::collections::HashMap<i32, u64> = Default::default();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(16),
@@ -271,13 +399,20 @@ fn show_pictures(window: &MainWindow, slot: PictureSlot) -> slint::Timer {
                 return;
             };
             let picture = slot.lock().unwrap().take();
+            let sw = share_window.borrow();
             match picture {
                 Some(p) if p.serial != last_serial => {
                     last_serial = p.serial;
                     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                         &p.rgba, p.width, p.height,
                     );
-                    w.set_screen_picture(slint::Image::from_rgba8(buffer));
+                    let image = slint::Image::from_rgba8(buffer);
+                    if let Some(sw) = sw.as_ref() {
+                        sw.set_picture(image.clone());
+                        sw.set_has_picture(true);
+                        sw.set_info(w.get_viewer_info());
+                    }
+                    w.set_screen_picture(image);
                     w.set_has_picture(true);
                 }
                 Some(_) => {}
@@ -286,6 +421,40 @@ fn show_pictures(window: &MainWindow, slot: PictureSlot) -> slint::Timer {
                     w.set_screen_picture(slint::Image::default());
                 }
                 None => {}
+            }
+            drop(sw);
+            // The watched share ended: its window closes.
+            if w.get_watching().is_empty() && w.get_share_window_open() {
+                if let Some(sw) = share_window.borrow_mut().take() {
+                    let _ = sw.hide();
+                }
+                w.set_share_window_open(false);
+            }
+            // New preview pictures go into their rows.
+            let model = w.get_shares();
+            if let Some(list) = model.as_any().downcast_ref::<slint::VecModel<ShareRow>>() {
+                let slots = previews.lock().unwrap();
+                for i in 0..list.row_count() {
+                    let Some(mut row) = list.row_data(i) else {
+                        continue;
+                    };
+                    if row.preview_ssrc == 0 {
+                        continue;
+                    }
+                    let Some(p) = slots.get(&(row.preview_ssrc as u32)) else {
+                        continue;
+                    };
+                    if preview_serials.get(&row.preview_ssrc) == Some(&p.serial) {
+                        continue;
+                    }
+                    preview_serials.insert(row.preview_ssrc, p.serial);
+                    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                        &p.rgba, p.width, p.height,
+                    );
+                    row.preview = slint::Image::from_rgba8(buffer);
+                    row.has_preview = true;
+                    list.set_row_data(i, row);
+                }
             }
         },
     );
@@ -316,6 +485,9 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     cfg.transport = args.media.unwrap_or(TransportPref::Auto);
     cfg.block_udp = args.block_udp;
     cfg.share_audio = !args.share_no_audio;
+    if let Some(n) = args.max_previews {
+        cfg.max_previews = n;
+    }
     window.set_share_audio(cfg.share_audio);
     window.set_muted(args.mute);
     window.set_ns(cfg.engine.dsp.noise_suppression);
@@ -331,7 +503,14 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
         monitors.iter().map(|m| monitor_label(m).into()).collect();
     window.set_monitors(slint::ModelRc::new(slint::VecModel::from(labels)));
     window.set_shares(slint::ModelRc::new(slint::VecModel::<ShareRow>::default()));
-    window.set_quality_index(i32::from(args.share_hd30));
+    window.set_quality_index(args.share_quality);
+    window.set_adaptive(!args.fixed_quality);
+    window.set_previews_visible(!args.no_previews);
+    window.set_layer_index(match args.watch_layer {
+        Some(WatchLayer::High) => 1,
+        Some(WatchLayer::Low) => 2,
+        _ => 0,
+    });
 
     let weak = window.as_weak();
     let call_log = args.call_log;
@@ -365,8 +544,19 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
             show_members(&w, v.members);
             w.set_sharing(v.sharing);
             w.set_share_info(v.share_info.into());
+            let watched_name = v
+                .shares
+                .iter()
+                .find(|s| s.watching)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            w.set_watching_name(watched_name.into());
             w.set_watching(v.watching.into());
             w.set_viewer_info(v.viewer_info.into());
+            w.set_layer_info(v.layer_info.into());
+            w.set_preview_info(v.preview_info.into());
+            w.set_preview_page(v.preview_page as i32);
+            w.set_preview_pages(v.preview_pages as i32);
             show_shares(&w, v.shares);
         });
     };
@@ -421,14 +611,35 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     });
     let tx = session.sender();
     let indexes: Vec<usize> = monitors.iter().map(|m| m.index).collect();
-    window.on_start_share(move |monitor, quality| {
+    let list = monitors.clone();
+    window.on_start_share(move |monitor, quality, adaptive| {
         let Some(index) = usize::try_from(monitor).ok().and_then(|i| indexes.get(i)) else {
             return;
         };
         tx.send(Command::StartShare(share_config(
             ShareSource::Monitor(*index),
             quality,
+            adaptive,
+            &list,
         )));
+    });
+    let tx = session.sender();
+    window.on_layer_selected(move |i| {
+        tx.send(Command::SetWatchLayer(match i {
+            1 => WatchLayer::High,
+            2 => WatchLayer::Low,
+            _ => WatchLayer::Auto,
+        }));
+    });
+    let tx = session.sender();
+    let per_page = args
+        .max_previews
+        .unwrap_or(SessionConfig::new("", "").max_previews);
+    window.on_previews_changed(move |visible, page| {
+        tx.send(Command::SetPreviews {
+            visible,
+            first: usize::try_from(page).unwrap_or(0) * per_page,
+        });
     });
     let tx = session.sender();
     window.on_stop_share(move || {
@@ -490,8 +701,19 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
         }
         session.send(Command::StartShare(share_config(
             source,
-            i32::from(args.share_hd30),
+            args.share_quality,
+            !args.fixed_quality,
+            &monitors,
         )));
+    }
+    if let Some(layer) = args.watch_layer {
+        session.send(Command::SetWatchLayer(layer));
+    }
+    if args.no_previews {
+        session.send(Command::SetPreviews {
+            visible: false,
+            first: 0,
+        });
     }
     Some(session)
 }
@@ -528,16 +750,43 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
     window.set_build_info(
         format!(
-            "turbo-pancake-desktop {} · {} · S3",
+            "turbo-pancake-desktop {} · {} · S4",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS
         )
         .into(),
     );
     let session = start_session(&window, &args, started);
+    let share_window: ShareWindowSlot = Rc::default();
     let _pictures = session
         .as_ref()
-        .map(|s| show_pictures(&window, s.picture()));
+        .map(|s| show_pictures(&window, s.picture(), s.previews(), share_window.clone()));
+    {
+        let (weak, slot) = (window.as_weak(), share_window.clone());
+        window.on_open_share_window(move |fullscreen| {
+            if let Some(w) = weak.upgrade() {
+                open_share_window(&w, &slot, fullscreen);
+            }
+        });
+    }
+    // `--share-window`: open it as soon as something is watched.
+    let _auto_window = args.share_window.then(|| {
+        let timer = slint::Timer::default();
+        let (weak, slot, fullscreen) = (window.as_weak(), share_window.clone(), args.fullscreen);
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(250),
+            move || {
+                if let Some(w) = weak.upgrade()
+                    && !w.get_watching().is_empty()
+                    && !w.get_share_window_open()
+                {
+                    open_share_window(&w, &slot, fullscreen);
+                }
+            },
+        );
+        timer
+    });
 
     if let Some(exit_after) = smoke {
         // GPU renderers expose the graphics API; absence means software rendering.
@@ -556,6 +805,9 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     window.run()?;
+    if let Some(w) = share_window.borrow_mut().take() {
+        let _ = w.hide();
+    }
     // Leave the room and release audio devices before the process exits.
     drop(window);
     if let Some(s) = session {

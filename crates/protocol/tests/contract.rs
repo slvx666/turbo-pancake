@@ -267,6 +267,7 @@ fn screen_share_field_numbers_are_pinned() {
             width: 1920,
             height: 1080,
             fps: 60,
+            ..Default::default()
         }),
     );
     let bytes = encode(&share);
@@ -284,6 +285,7 @@ fn screen_share_field_numbers_are_pinned() {
         C::SubscribeScreen(v1::SubscribeScreen {
             room_id: "r".into(),
             peer_id: "p".into(),
+            ..Default::default()
         }),
     );
     assert_eq!(&encode(&sub)[..4], &[0x08, 0x01, 0x92, 0x01]);
@@ -296,6 +298,7 @@ fn screen_share_field_numbers_are_pinned() {
             width: 1280,
             height: 720,
             fps: 30,
+            ..Default::default()
         })),
         ..screen
     };
@@ -313,6 +316,8 @@ fn screen_share_validation() {
         width: 2560,
         height: 1440,
         fps: 120,
+        bitrate_kbps: 30_000,
+        preview: true,
     };
     assert!(validate_screen_share(&ok).is_ok());
     let stop = v1::ScreenShare {
@@ -344,12 +349,17 @@ fn screen_share_validation() {
             room_id: "bad id".into(),
             ..ok.clone()
         },
+        v1::ScreenShare {
+            bitrate_kbps: 200_000,
+            ..ok.clone()
+        },
     ] {
         assert!(validate_screen_share(&bad).is_err(), "{bad:?}");
     }
     let sub = v1::SubscribeScreen {
         room_id: "r1".into(),
         peer_id: String::new(),
+        layer: 0,
     };
     assert!(
         validate_subscribe_screen(&sub).is_ok(),
@@ -360,6 +370,122 @@ fn screen_share_validation() {
         ..sub
     };
     assert!(validate_subscribe_screen(&long).is_err());
+    let bad_layer = v1::SubscribeScreen {
+        room_id: "r1".into(),
+        peer_id: "p".into(),
+        layer: 7,
+    };
+    assert!(validate_subscribe_screen(&bad_layer).is_err());
+}
+
+#[test]
+fn layer_messages_are_pinned() {
+    use turbo_pancake_protocol::{MAX_PREVIEWS, validate_subscribe_previews};
+    // Enum values on the wire (S3 clients send no layer = AUTO, which gives them high).
+    assert_eq!(v1::ScreenLayer::Auto as i32, 0);
+    assert_eq!(v1::ScreenLayer::High as i32, 1);
+    assert_eq!(v1::ScreenLayer::Low as i32, 2);
+    assert_eq!(v1::TrackKind::ScreenPreview as i32, 3);
+    assert_eq!(v1::LayerReason::Requested as i32, 1);
+    assert_eq!(v1::LayerReason::Network as i32, 2);
+    assert_eq!(v1::LayerReason::Admission as i32, 3);
+    assert_eq!(v1::LayerReason::SingleLayer as i32, 4);
+    // ClientEnvelope 18 = SubscribeScreen { 1:"r", 2:"p", 3: LOW }.
+    let sub = turbo_pancake_protocol::client(
+        0,
+        C::SubscribeScreen(v1::SubscribeScreen {
+            room_id: "r".into(),
+            peer_id: "p".into(),
+            layer: v1::ScreenLayer::Low as i32,
+        }),
+    );
+    assert_eq!(
+        encode(&sub),
+        vec![
+            0x08, 0x01, 0x92, 0x01, 0x08, 0x0A, 0x01, b'r', 0x12, 0x01, b'p', 0x18, 0x02
+        ]
+    );
+    // ClientEnvelope 19 = SubscribePreviews { 1:"r", 2:["p","q"] }.
+    let prev = turbo_pancake_protocol::client(
+        0,
+        C::SubscribePreviews(v1::SubscribePreviews {
+            room_id: "r".into(),
+            peer_ids: vec!["p".into(), "q".into()],
+        }),
+    );
+    let bytes = encode(&prev);
+    assert_eq!(
+        bytes,
+        vec![
+            0x08, 0x01, 0x9A, 0x01, 0x09, 0x0A, 0x01, b'r', 0x12, 0x01, b'p', 0x12, 0x01, b'q'
+        ]
+    );
+    assert_eq!(decode_client(&bytes).unwrap(), prev);
+    // ServerEnvelope 23 = ScreenSubscription { 1:"r", 2:"p", 3: AUTO, 4: LOW, 5: NETWORK }.
+    let upd = v1::ServerEnvelope {
+        protocol_version: 1,
+        request_id: 0,
+        event_id: 9,
+        body: Some(S::ScreenSubscription(v1::ScreenSubscription {
+            room_id: "r".into(),
+            peer_id: "p".into(),
+            requested: 0,
+            layer: 2,
+            reason: 2,
+        })),
+    };
+    let bytes = encode(&upd);
+    assert_eq!(
+        bytes,
+        vec![
+            0x08, 0x01, 0x18, 0x09, 0xBA, 0x01, 0x0A, 0x0A, 0x01, b'r', 0x12, 0x01, b'p', 0x20,
+            0x02, 0x28, 0x02
+        ]
+    );
+    assert_eq!(decode_server(&bytes).unwrap(), upd);
+    // ScreenShare 6 = bitrate, 7 = preview; ScreenShareState 7 = bitrate, 8 = preview.
+    let share = v1::ScreenShare {
+        room_id: "r".into(),
+        active: true,
+        width: 2,
+        height: 2,
+        fps: 1,
+        bitrate_kbps: 1,
+        preview: true,
+    };
+    assert_eq!(&share.encode_to_vec()[11..], &[0x30, 0x01, 0x38, 0x01]);
+    let state = v1::ScreenShareState {
+        bitrate_kbps: 1,
+        preview: true,
+        ..Default::default()
+    };
+    assert_eq!(state.encode_to_vec(), vec![0x38, 0x01, 0x40, 0x01]);
+
+    let ok = v1::SubscribePreviews {
+        room_id: "r1".into(),
+        peer_ids: (0..MAX_PREVIEWS).map(|i| format!("p{i}")).collect(),
+    };
+    assert!(validate_subscribe_previews(&ok).is_ok());
+    let too_many = v1::SubscribePreviews {
+        peer_ids: (0..=MAX_PREVIEWS).map(|i| format!("p{i}")).collect(),
+        ..ok.clone()
+    };
+    assert!(validate_subscribe_previews(&too_many).is_err());
+    let dup = v1::SubscribePreviews {
+        peer_ids: vec!["p".into(), "p".into()],
+        ..ok.clone()
+    };
+    assert!(validate_subscribe_previews(&dup).is_err());
+    let empty_id = v1::SubscribePreviews {
+        peer_ids: vec![String::new()],
+        ..ok.clone()
+    };
+    assert!(validate_subscribe_previews(&empty_id).is_err());
+    let none = v1::SubscribePreviews {
+        peer_ids: vec![],
+        ..ok
+    };
+    assert!(validate_subscribe_previews(&none).is_ok(), "empty = none");
 }
 
 #[test]

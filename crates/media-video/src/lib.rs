@@ -7,6 +7,7 @@
 //! this crate starts is the sending pipeline of a share ([`ScreenShare`]: capture →
 //! convert → encode at a fixed rate, newest frame wins, no growing queues).
 
+pub mod adapt;
 #[cfg(windows)]
 pub mod win;
 
@@ -35,18 +36,54 @@ pub enum ShareSource {
     Synthetic,
 }
 
+/// The low preview layer of a share (S4, spec §5.3: 160–320 px, 5–15 fps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewConfig {
+    /// Longest side (the source aspect is kept).
+    pub max_side: u32,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self {
+            max_side: 320,
+            fps: 10,
+            bitrate_kbps: 200,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShareConfig {
     pub source: ShareSource,
-    /// Encoded size (the monitor is scaled to it on the GPU) and frame rate.
+    /// Largest encoded size (the monitor is scaled to fit it on the GPU, keeping its
+    /// aspect, never enlarged) and frame rate of the high layer.
     pub width: u32,
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub require_hardware: bool,
+    /// Also encode a low preview layer.
+    pub preview: Option<PreviewConfig>,
+    /// Adapt bitrate, size and frame rate to the network ([`adapt::Adapter`]); off =
+    /// the manual setting holds.
+    pub adaptive: bool,
 }
 
 impl ShareConfig {
+    /// 1440p120 at 20 Mbit/s (spec §5.1 top mode, where encoder and monitor allow).
+    pub fn qhd120(source: ShareSource) -> Self {
+        Self {
+            width: 2560,
+            height: 1440,
+            fps: 120,
+            bitrate_kbps: 20_000,
+            ..Self::hd60(source)
+        }
+    }
+
     /// 1080p60 at 8 Mbit/s (spec §5.1 S3 mode).
     pub fn hd60(source: ShareSource) -> Self {
         Self {
@@ -56,19 +93,36 @@ impl ShareConfig {
             fps: 60,
             bitrate_kbps: 8000,
             require_hardware: false,
+            preview: Some(PreviewConfig::default()),
+            adaptive: true,
         }
     }
 
     /// 720p30 at 2.5 Mbit/s (spec §5.1 lower mode).
     pub fn hd30(source: ShareSource) -> Self {
         Self {
-            source,
             width: 1280,
             height: 720,
             fps: 30,
             bitrate_kbps: 2500,
-            require_hardware: false,
+            ..Self::hd60(source)
         }
+    }
+
+    /// The configuration for a source picture of `src` size refreshing at `refresh_hz`
+    /// (0 = unknown): the size fits the source (no upscaling) and the frame rate does not
+    /// exceed the refresh rate (the capture delivers no more frames than that).
+    pub fn fitted(mut self, src: (u32, u32), refresh_hz: u32) -> Self {
+        let (w, h) = adapt::fit(src, (self.width, self.height));
+        let scale = f64::from(w * h) / f64::from(self.width * self.height);
+        if refresh_hz > 0 && self.fps > refresh_hz {
+            self.bitrate_kbps =
+                (f64::from(self.bitrate_kbps) * f64::from(refresh_hz) / f64::from(self.fps)) as u32;
+            self.fps = refresh_hz;
+        }
+        self.bitrate_kbps = ((f64::from(self.bitrate_kbps) * scale.max(0.25)) as u32).max(300);
+        (self.width, self.height) = (w, h);
+        self
     }
 }
 
@@ -105,6 +159,14 @@ pub struct ShareStats {
     pub encode_ms_p95: f64,
     pub capture_to_encoded_ms_p50: f64,
     pub capture_to_encoded_ms_p95: f64,
+    /// Preview layer: size, frames encoded, bitrate over the last ≈ 0.5 s.
+    pub preview_width: u32,
+    pub preview_height: u32,
+    pub preview_frames: u64,
+    pub preview_bitrate_kbps: f64,
+    pub preview_encoder: String,
+    /// Size / rate changes of the high layer (adaptation or manual).
+    pub reconfigurations: u64,
     /// Why the pipeline stopped on its own (resolution change, device lost, …).
     pub error: Option<String>,
 }
@@ -220,8 +282,17 @@ impl ScreenShare {
     ) -> Result<Self, VideoError> {
         Err(VideoError::Unsupported)
     }
+    pub fn start_layers(
+        _config: ShareConfig,
+        _deliver: Box<dyn FnMut(EncodedFrame) -> bool + Send>,
+        _preview: Option<Box<dyn FnMut(EncodedFrame) -> bool + Send>>,
+    ) -> Result<Self, VideoError> {
+        Err(VideoError::Unsupported)
+    }
     pub fn request_keyframe(&self) {}
+    pub fn request_preview_keyframe(&self) {}
     pub fn set_bitrate(&self, _kbps: u32) {}
+    pub fn reconfigure(&self, _width: u32, _height: u32, _fps: u32) {}
     pub fn stats(&self) -> ShareStats {
         ShareStats::default()
     }
@@ -347,6 +418,25 @@ mod tests {
         let mut v = vec![3.0, 1.0, 2.0];
         assert_eq!(percentile(&mut v, 0.5), 2.0);
         assert_eq!(percentile(&mut [], 0.5), 0.0);
+    }
+
+    #[test]
+    fn configs_fit_the_source() {
+        let c = ShareConfig::qhd120(ShareSource::Synthetic).fitted((1920, 1080), 60);
+        assert_eq!((c.width, c.height, c.fps), (1920, 1080, 60));
+        assert!(
+            c.bitrate_kbps < 10_000 && c.bitrate_kbps > 4000,
+            "{}",
+            c.bitrate_kbps
+        );
+        let c = ShareConfig::qhd120(ShareSource::Synthetic).fitted((2560, 1440), 144);
+        assert_eq!(
+            (c.width, c.height, c.fps, c.bitrate_kbps),
+            (2560, 1440, 120, 20_000)
+        );
+        let c = ShareConfig::hd60(ShareSource::Synthetic).fitted((3840, 2160), 0);
+        assert_eq!((c.width, c.height, c.fps), (1920, 1080, 60));
+        assert!(c.preview.is_some() && c.adaptive);
     }
 
     #[test]

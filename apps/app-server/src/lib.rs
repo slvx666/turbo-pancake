@@ -45,6 +45,8 @@ pub struct Config {
     /// forward when clients dial a host name). The address a client dialed and the
     /// default-route address are always announced.
     pub public_ips: Vec<IpAddr>,
+    /// High-layer screen share budget to viewers, kbit/s (`None` = unlimited).
+    pub max_high_egress_kbps: Option<u32>,
 }
 
 impl Default for Config {
@@ -58,6 +60,7 @@ impl Default for Config {
             media_udp: true,
             media_udp_port: None,
             public_ips: Vec::new(),
+            max_high_egress_kbps: None,
         }
     }
 }
@@ -98,6 +101,7 @@ impl AppState {
                 .config
                 .media_udp
                 .then_some(SocketAddr::new(udp_ip, udp_port)),
+            max_high_egress_kbps: self.config.max_high_egress_kbps,
         };
         let sfu = Sfu::start(cfg.clone()).or_else(|e| {
             tracing::warn!(port = udp_port, error = %e, "UDP media unavailable, tunnel only");

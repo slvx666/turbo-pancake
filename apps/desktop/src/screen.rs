@@ -375,6 +375,265 @@ impl Worker {
     }
 }
 
+// ---- Previews (S4) ----
+//
+// The low layers of the shares shown as thumbnails, decoded on one thread: one assembler
+// and one OS decoder per stream (no DXVA: up to 50 small pictures are cheaper on the CPU
+// than 50 hardware decoder sessions), newest picture per stream into `PreviewSlots`.
+
+/// Newest preview picture per stream (SSRC); the UI takes them out.
+pub type PreviewSlots = Arc<Mutex<std::collections::HashMap<u32, Picture>>>;
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PreviewStats {
+    /// Streams being decoded.
+    pub streams: usize,
+    pub packets: u64,
+    pub frames_decoded: u64,
+    pub frames_dropped: u64,
+    pub decode_errors: u64,
+    pub keyframe_requests: u64,
+    /// Decoded preview pictures per second over all streams (last ≈ 0.5 s).
+    pub fps: f64,
+    pub decode_ms_p50: f64,
+    /// Share of one core the decoder thread spent decoding and converting (last ≈ 0.5 s).
+    pub busy: f64,
+}
+
+enum PreviewCmd {
+    /// The streams to decode now (others are dropped with their decoders and pictures).
+    Streams(Vec<(u32, Option<KeyframeRequester>)>),
+}
+
+pub struct PreviewDecoder {
+    tx: SyncSender<VideoIn>,
+    cmds: SyncSender<PreviewCmd>,
+    stop: Arc<AtomicBool>,
+    stats: Arc<Mutex<PreviewStats>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl PreviewDecoder {
+    pub fn start(slots: PreviewSlots) -> std::io::Result<Self> {
+        let (tx, rx) = sync_channel(VIEWER_QUEUE);
+        let (cmds, cmd_rx) = sync_channel(16);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new(Mutex::new(PreviewStats::default()));
+        let (st, s) = (stats.clone(), stop.clone());
+        let thread = std::thread::Builder::new()
+            .name("tp-previews".into())
+            .spawn(move || preview_worker(rx, cmd_rx, slots, s, st))?;
+        Ok(Self {
+            tx,
+            cmds,
+            stop,
+            stats,
+            thread: Some(thread),
+        })
+    }
+
+    /// Where the call thread puts preview packets (`try_send`: full = lost).
+    pub fn sender(&self) -> SyncSender<VideoIn> {
+        self.tx.clone()
+    }
+
+    pub fn set_streams(&self, streams: Vec<(u32, Option<KeyframeRequester>)>) {
+        let _ = self.cmds.try_send(PreviewCmd::Streams(streams));
+    }
+
+    pub fn stats(&self) -> PreviewStats {
+        self.stats.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    pub fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+impl Drop for PreviewDecoder {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+struct PreviewStream {
+    assembler: FrameAssembler,
+    decoder: Option<Box<dyn PictureDecoder>>,
+    keyframes: Option<KeyframeRequester>,
+    last_request: Option<Instant>,
+    started: Instant,
+    shown: u64,
+    serial: u64,
+}
+
+fn preview_decoder() -> Result<Box<dyn PictureDecoder>, String> {
+    #[cfg(windows)]
+    {
+        use turbo_pancake_media_video::win;
+        win::startup().map_err(|e| e.to_string())?;
+        let inner = win::H264Decoder::new(None).map_err(|e| e.to_string())?;
+        Ok(Box::new(OsDecoder { inner }))
+    }
+    #[cfg(not(windows))]
+    {
+        Err("просмотр трансляций на этой ОС пока не реализован (UNVERIFIED)".into())
+    }
+}
+
+fn preview_worker(
+    rx: Receiver<VideoIn>,
+    cmds: Receiver<PreviewCmd>,
+    slots: PreviewSlots,
+    stop: Arc<AtomicBool>,
+    stats: Arc<Mutex<PreviewStats>>,
+) {
+    use std::collections::HashMap;
+    let mut streams: HashMap<u32, PreviewStream> = HashMap::new();
+    let mut st = PreviewStats::default();
+    let mut rgba = Vec::new();
+    let mut decode_ms = Vec::new();
+    let (mut window_frames, mut window_busy) = (0u64, Duration::ZERO);
+    let mut last_publish = Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        while let Ok(PreviewCmd::Streams(list)) = cmds.try_recv() {
+            let keep: HashMap<u32, Option<KeyframeRequester>> = list.into_iter().collect();
+            streams.retain(|ssrc, _| keep.contains_key(ssrc));
+            if let Ok(mut s) = slots.lock() {
+                s.retain(|ssrc, _| keep.contains_key(ssrc));
+            }
+            for (ssrc, k) in keep {
+                let s = streams.entry(ssrc).or_insert_with(|| PreviewStream {
+                    assembler: FrameAssembler::new(),
+                    decoder: None,
+                    keyframes: None,
+                    last_request: None,
+                    started: Instant::now(),
+                    shown: 0,
+                    serial: 0,
+                });
+                s.keyframes = k;
+            }
+        }
+        let mut frames: Vec<(u32, turbo_pancake_media_transport::video::AssembledFrame)> =
+            Vec::new();
+        match rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(p) => {
+                let mut push = |p: VideoIn| {
+                    st.packets += 1;
+                    if let Some(s) = streams.get_mut(&p.ssrc) {
+                        let ssrc = p.ssrc;
+                        frames.extend(s.assembler.push(p).into_iter().map(|f| (ssrc, f)));
+                    }
+                };
+                push(p);
+                while let Ok(p) = rx.try_recv() {
+                    push(p);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        let now = Instant::now();
+        for (ssrc, s) in streams.iter_mut() {
+            frames.extend(s.assembler.poll(now).into_iter().map(|f| (*ssrc, f)));
+        }
+        let t_round = Instant::now();
+        let mut newest: std::collections::HashMap<u32, Nv12Picture> = HashMap::new();
+        for (ssrc, f) in frames {
+            let Some(s) = streams.get_mut(&ssrc) else {
+                continue;
+            };
+            if s.decoder.is_none() {
+                match preview_decoder() {
+                    Ok(d) => s.decoder = Some(d),
+                    Err(_) => continue,
+                }
+            }
+            let Some(dec) = s.decoder.as_mut() else {
+                continue;
+            };
+            let t0 = Instant::now();
+            match dec.decode(&f.data, f.timestamp) {
+                Ok(pictures) => {
+                    decode_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
+                    st.frames_decoded += pictures.len() as u64;
+                    window_frames += pictures.len() as u64;
+                    if let Some(p) = pictures.into_iter().last() {
+                        newest.insert(ssrc, p);
+                    }
+                }
+                Err(_) => {
+                    st.decode_errors += 1;
+                    s.assembler.reset();
+                    s.decoder = None;
+                }
+            }
+        }
+        for (ssrc, p) in newest {
+            let Some(s) = streams.get_mut(&ssrc) else {
+                continue;
+            };
+            turbo_pancake_media_video::nv12_to_rgba(p.width, p.height, &p.nv12, &mut rgba);
+            s.serial += 1;
+            s.shown += 1;
+            if let Ok(mut slots) = slots.lock() {
+                slots.insert(
+                    ssrc,
+                    Picture {
+                        width: p.width,
+                        height: p.height,
+                        rgba: rgba.clone(),
+                        serial: s.serial,
+                    },
+                );
+            }
+        }
+        window_busy += t_round.elapsed();
+        // Keyframes: after a loss, or when nothing decodable arrived for a while.
+        for s in streams.values_mut() {
+            let mut want = s.assembler.take_keyframe_request();
+            if s.shown == 0 && s.started.elapsed() > Duration::from_secs(2) {
+                want = true;
+                s.started = Instant::now();
+            }
+            if want
+                && s.last_request
+                    .is_none_or(|t| t.elapsed() >= KEYFRAME_REQUEST_INTERVAL)
+            {
+                if let Some(k) = &s.keyframes {
+                    k.request();
+                    st.keyframe_requests += 1;
+                }
+                s.last_request = Some(Instant::now());
+            }
+        }
+        if last_publish.elapsed() >= Duration::from_millis(500) {
+            let secs = last_publish.elapsed().as_secs_f64();
+            st.streams = streams.len();
+            st.fps = window_frames as f64 / secs;
+            st.busy = window_busy.as_secs_f64() / secs;
+            st.frames_dropped = streams
+                .values()
+                .map(|s| s.assembler.stats.frames_dropped)
+                .sum();
+            st.decode_ms_p50 = percentile(&mut decode_ms, 0.5);
+            decode_ms.clear();
+            (window_frames, window_busy) = (0, Duration::ZERO);
+            last_publish = Instant::now();
+            if let Ok(mut s) = stats.lock() {
+                s.clone_from(&st);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

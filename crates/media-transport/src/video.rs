@@ -39,6 +39,8 @@ pub struct VideoIn {
     pub marker: bool,
     pub payload: Vec<u8>,
     pub arrival: Instant,
+    /// Arrived on the preview m-line (another member's low layer).
+    pub preview: bool,
 }
 
 /// Splits access units into RTP payloads; the last one of a frame carries the marker.
@@ -291,7 +293,7 @@ impl FrameAssembler {
 
 /// True if an RTP payload begins a keyframe: SPS (single or first in a STAP-A) or the
 /// start of an IDR slice (single or FU-A start).
-fn starts_keyframe(payload: &[u8]) -> bool {
+pub fn starts_keyframe(payload: &[u8]) -> bool {
     let Some(&first) = payload.first() else {
         return false;
     };
@@ -364,6 +366,7 @@ mod tests {
                     marker: i + 1 == count,
                     payload,
                     arrival: t0,
+                    preview: false,
                 });
                 seq += 1;
             }

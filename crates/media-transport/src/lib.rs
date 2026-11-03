@@ -81,6 +81,7 @@ pub struct UdpPeer {
     pub bytes_received: u64,
     /// Test impairment: share of outgoing datagrams dropped (deterministic PRNG).
     send_loss: f32,
+    recv_loss: f32,
     rng: u64,
     pub datagrams_dropped: u64,
     /// Datagrams the OS refused to send (non-fatal errors: full buffer, no route, …).
@@ -126,6 +127,7 @@ impl UdpPeer {
             bytes_sent: 0,
             bytes_received: 0,
             send_loss: 0.0,
+            recv_loss: 0.0,
             rng: 0x9e37_79b9_7f4a_7c15,
             datagrams_dropped: 0,
             send_errors: 0,
@@ -153,6 +155,7 @@ impl UdpPeer {
             bytes_sent: 0,
             bytes_received: 0,
             send_loss: 0.0,
+            recv_loss: 0.0,
             rng: 0x9e37_79b9_7f4a_7c15,
             datagrams_dropped: 0,
             send_errors: 0,
@@ -169,8 +172,18 @@ impl UdpPeer {
         self.rng = seed.max(1);
     }
 
+    /// Drops `loss` (0–1) of all incoming datagrams (test impairment of the downlink).
+    pub fn set_recv_loss(&mut self, loss: f32) {
+        self.recv_loss = loss.clamp(0.0, 1.0);
+    }
+
     fn drop_this_one(&mut self) -> bool {
-        if self.send_loss <= 0.0 {
+        let p = self.send_loss;
+        self.chance(p)
+    }
+
+    fn chance(&mut self, p: f32) -> bool {
+        if p <= 0.0 {
             return false;
         }
         // xorshift64*
@@ -180,7 +193,7 @@ impl UdpPeer {
         x ^= x >> 27;
         self.rng = x;
         let unit = (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 40) as f32 / (1u64 << 24) as f32;
-        unit < self.send_loss
+        unit < p
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -285,6 +298,11 @@ impl UdpPeer {
                 Ok((n, source)) => {
                     received += 1;
                     self.bytes_received += n as u64;
+                    let p = self.recv_loss;
+                    if self.chance(p) {
+                        self.datagrams_dropped += 1;
+                        continue;
+                    }
                     if let Ok(contents) = self.buf[..n].try_into() {
                         let input = Input::Receive(
                             Instant::now(),

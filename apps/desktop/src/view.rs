@@ -3,7 +3,8 @@
 
 use turbo_pancake_media_transport::call::CallState;
 
-use crate::session::{MediaTransport, Member, ServerStatus, Snapshot};
+use crate::session::{MediaTransport, Member, ServerStatus, Snapshot, WatchLayer};
+use turbo_pancake_protocol::v1::LayerReason;
 
 /// Lowest level on the microphone meter and the voice activation slider, dBFS.
 pub const METER_FLOOR_DB: f32 = -60.0;
@@ -33,6 +34,8 @@ pub struct ShareRowView {
     /// "1920×1080 · 60 к/с".
     pub info: String,
     pub watching: bool,
+    /// Its preview stream while we receive it (key of the preview pictures).
+    pub preview_ssrc: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -58,6 +61,14 @@ pub struct CallView {
     pub watching: String,
     /// The watched share's receive stats in one line.
     pub viewer_info: String,
+    /// Which layer of the watched share flows and why.
+    pub layer_info: String,
+    /// Previews: on/off, the page and how many pages, decoder stats in one line.
+    pub previews_visible: bool,
+    pub preview_first: usize,
+    pub preview_page: usize,
+    pub preview_pages: usize,
+    pub preview_info: String,
 }
 
 fn member_view(m: &Member) -> MemberView {
@@ -169,18 +180,29 @@ pub fn render(s: &Snapshot) -> CallView {
     let share_info = match (&s.share_config, &s.sharing) {
         (Some(c), Some(st)) => {
             format!(
-                "Вы показываете экран: {}×{} → {}×{} · {:.0} к/с · {:.1} Мбит/с · кодек {}{}",
+                "Вы показываете экран: {}×{} → {}×{} · {:.0} к/с · {:.1} из {:.1} Мбит/с{} · кодек {}{}{}",
                 st.source_width,
                 st.source_height,
-                c.width,
-                c.height,
+                st.width,
+                st.height,
                 st.encoded_fps,
                 st.bitrate_kbps / 1000.0,
+                f64::from(st.bitrate_kbps_target) / 1000.0,
+                if c.adaptive {
+                    format!(" (авто, макс. {}×{} · {} к/с)", c.width, c.height, c.fps)
+                } else {
+                    " (вручную)".to_string()
+                },
                 st.encoder,
                 if st.hardware {
                     ""
                 } else {
                     " (программный)"
+                },
+                if st.preview_width > 0 {
+                    format!(" · превью {}×{}", st.preview_width, st.preview_height)
+                } else {
+                    String::new()
                 },
             ) + &match &s.share_audio {
                 Some(a) => format!(
@@ -217,7 +239,7 @@ pub fn render(s: &Snapshot) -> CallView {
         ),
         None => String::new(),
     };
-    let shares = s
+    let shares: Vec<ShareRowView> = s
         .shares
         .iter()
         .map(|sh| ShareRowView {
@@ -225,8 +247,51 @@ pub fn render(s: &Snapshot) -> CallView {
             name: sh.name.clone(),
             info: format!("{}×{} · {} к/с", sh.width, sh.height, sh.fps),
             watching: watching == sh.peer_id,
+            preview_ssrc: sh.preview_ssrc,
         })
         .collect();
+    let requested = match s.watch_layer {
+        WatchLayer::Auto => "авто",
+        WatchLayer::High => "высокое",
+        WatchLayer::Low => "низкое",
+    };
+    let layer_info = match (&s.watching, &s.layer) {
+        (None, _) => String::new(),
+        (Some(_), None) => format!("Качество: {requested} · ожидание ответа сервера"),
+        (Some(_), Some(l)) => {
+            let got = if l.high {
+                "высокое"
+            } else {
+                "низкое (превью)"
+            };
+            let why = match l.reason {
+                LayerReason::Network => " — сеть теряет пакеты",
+                LayerReason::Admission => " — лимит сервера на трансляции в высоком качестве",
+                LayerReason::SingleLayer => " — отправитель передаёт одно качество",
+                _ => "",
+            };
+            format!("Качество: {got} (запрошено: {requested}){why}")
+        }
+    };
+    // Previews: the shares that are not watched, paged by `max_previews`.
+    let candidates = s
+        .shares
+        .iter()
+        .filter(|sh| sh.has_preview && s.watching.as_deref() != Some(sh.peer_id.as_str()))
+        .count();
+    let per_page = s.max_previews.max(1);
+    let preview_pages = candidates.div_ceil(per_page);
+    let preview_info = match (&s.previews, s.previews_visible) {
+        (_, false) => "Миниатюры скрыты: их потоки не принимаются".to_string(),
+        (Some(p), true) => format!(
+            "Миниатюры: {} потоков · {:.0} кадров/с · декодирование {:.1} мс · занятость {:.0} %",
+            p.streams,
+            p.fps,
+            p.decode_ms_p50,
+            p.busy * 100.0
+        ),
+        (None, true) => String::new(),
+    };
     CallView {
         connection,
         in_room: s.room.is_some(),
@@ -244,6 +309,12 @@ pub fn render(s: &Snapshot) -> CallView {
         shares,
         watching,
         viewer_info,
+        layer_info,
+        previews_visible: s.previews_visible,
+        preview_first: s.preview_first,
+        preview_page: s.preview_first / per_page,
+        preview_pages,
+        preview_info,
     }
 }
 
@@ -391,15 +462,48 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
             p.stats.last_peak
         ));
     }
+    if let Some(st) = &s.sharing {
+        line.push_str(&format!(
+            " share_target_kbps={} reconfigs={} preview={}x{} preview_frames={} preview_kbps={:.0}",
+            st.bitrate_kbps_target,
+            st.reconfigurations,
+            st.preview_width,
+            st.preview_height,
+            st.preview_frames,
+            st.preview_bitrate_kbps,
+        ));
+    }
     if let Some(c) = &s.call {
         line.push_str(&format!(
-            " video_sent={} video_pkts_sent={} video_pkts_recv={} video_nacks_sent={} video_nacks_recv={} video_paced_drops={}",
+            " video_sent={} video_pkts_sent={} video_pkts_recv={} video_nacks_sent={} video_nacks_recv={} video_paced_drops={} video_egress_loss={:.3} pacing_kbps={} preview_sent={} preview_pkts_recv={}",
             c.video_frames_sent,
             c.video_packets_sent,
             c.video_packets_received,
             c.video_nacks_sent,
             c.video_nacks_received,
             c.video_frames_dropped_pacing,
+            c.video_egress_loss.unwrap_or(-1.0),
+            c.video_pacing_bps / 1000,
+            c.preview_frames_sent,
+            c.preview_packets_received,
+        ));
+    }
+    if s.watching.is_some() {
+        line.push_str(&format!(
+            " watch_layer={:?} layer={} layer_reason={:?}",
+            s.watch_layer,
+            match &s.layer {
+                Some(l) if l.high => "high",
+                Some(_) => "low",
+                None => "-",
+            },
+            s.layer.as_ref().map(|l| l.reason)
+        ));
+    }
+    if let Some(p) = &s.previews {
+        line.push_str(&format!(
+            " previews={} preview_fps={:.1} preview_decoded={} preview_dropped={} preview_decode_ms={:.2} preview_busy={:.3}",
+            p.streams, p.fps, p.frames_decoded, p.frames_dropped, p.decode_ms_p50, p.busy
         ));
     }
     line.push_str(&format!(
@@ -479,6 +583,9 @@ mod tests {
             width: 1920,
             height: 1080,
             fps: 60,
+            bitrate_kbps: 8000,
+            has_preview: true,
+            preview_ssrc: None,
         }];
         s.watching = Some("p2".into());
         let v = render(&s);

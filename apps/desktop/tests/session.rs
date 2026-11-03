@@ -872,3 +872,127 @@ fn screen_share_is_watched_restarted_and_stopped() {
     a.wait("a stopped", 5, |s| s.sharing.is_none());
     assert!(picture.lock().unwrap().is_none(), "no stale picture");
 }
+
+/// S4: two members share (synthetic pictures), a third watches one and sees the other as
+/// a preview; asking for the low layer switches the watched picture to the preview size;
+/// hiding the previews stops their stream; unwatching makes the watched share a preview.
+#[test]
+#[cfg(windows)]
+fn previews_and_watched_layer() {
+    use turbo_pancake_desktop::session::WatchLayer;
+    use turbo_pancake_media_video::{ShareConfig, ShareSource};
+    let _serial = serial();
+    let (addr, _server) = server(None, Config::default());
+    let (mut a, mut b) = pair(addr, "s4-room", Opts::default(), Opts::default());
+    let mut c = Client::start(addr, "Вера", Opts::default());
+    c.send(Command::Join("s4-room".into()));
+    c.wait("c in call", 20, |s| s.in_call() && s.members.len() == 2);
+    b.wait("b sees both", 10, |s| s.members.len() == 2);
+    let mut share = ShareConfig::hd30(ShareSource::Synthetic);
+    (share.width, share.height) = (640, 360);
+    share.adaptive = false;
+    a.send(Command::StartShare(share));
+    c.send(Command::StartShare(share));
+    a.wait("a sharing", 10, |s| {
+        s.sharing.as_ref().is_some_and(|st| st.encoded_frames > 0) || s.last_error.is_some()
+    });
+    if a.last.sharing.is_none() {
+        println!("SKIP: {:?}", a.last.last_error);
+        return;
+    }
+    b.wait("b sees two shares with previews", 10, |s| {
+        s.shares.len() == 2 && s.shares.iter().all(|sh| sh.has_preview)
+    });
+    let a_id = b
+        .last
+        .shares
+        .iter()
+        .find(|s| s.name == "Алиса")
+        .unwrap()
+        .peer_id
+        .clone();
+    let c_id = b
+        .last
+        .shares
+        .iter()
+        .find(|s| s.name == "Вера")
+        .unwrap()
+        .peer_id
+        .clone();
+    // Before watching anything both are previews.
+    let slots = b.session.as_ref().unwrap().previews();
+    b.wait("b decodes two previews", 15, |s| {
+        s.previews.as_ref().is_some_and(|p| p.streams == 2)
+            && s.shares.iter().all(|sh| {
+                sh.preview_ssrc
+                    .is_some_and(|ssrc| slots.lock().unwrap().contains_key(&ssrc))
+            })
+    });
+    let first = slots.lock().unwrap().values().next().cloned().unwrap();
+    assert_eq!((first.width, first.height), (320, 180), "preview size");
+
+    // Watch A (auto = high): A leaves the preview list, C stays.
+    b.send(Command::Watch(Some(a_id.clone())));
+    b.wait("b shows A in high quality", 15, |s| {
+        s.viewer
+            .as_ref()
+            .is_some_and(|v| v.width == 640 && v.frames_shown >= 20)
+            && s.layer.as_ref().is_some_and(|l| l.high)
+            && s.shares
+                .iter()
+                .all(|sh| (sh.peer_id == c_id) == sh.preview_ssrc.is_some())
+    });
+    // Ask for the low layer: the watched picture becomes the preview layer's size.
+    b.send(Command::SetWatchLayer(WatchLayer::Low));
+    b.wait("b shows A's low layer", 15, |s| {
+        s.layer.as_ref().is_some_and(|l| !l.high)
+            && s.viewer
+                .as_ref()
+                .is_some_and(|v| v.width == 320 && v.height == 180)
+    });
+    let shown = b.last.viewer.as_ref().unwrap().frames_shown;
+    b.wait("low layer keeps playing", 10, |s| {
+        s.viewer
+            .as_ref()
+            .is_some_and(|v| v.frames_shown >= shown + 10)
+    });
+    b.send(Command::SetWatchLayer(WatchLayer::Auto));
+    b.wait("back to high", 15, |s| {
+        s.layer.as_ref().is_some_and(|l| l.high)
+            && s.viewer.as_ref().is_some_and(|v| v.width == 640)
+    });
+    println!("viewer {:?}", b.last.viewer);
+    println!("previews {:?}", b.last.previews);
+
+    // Hide the previews: nothing more arrives on the preview m-line.
+    b.send(Command::SetPreviews {
+        visible: false,
+        first: 0,
+    });
+    b.wait("previews off", 5, |s| {
+        s.previews.is_none() && s.shares.iter().all(|sh| sh.preview_ssrc.is_none())
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let before = b.last.call.as_ref().unwrap().preview_packets_received;
+    std::thread::sleep(Duration::from_millis(1500));
+    b.wait("stats fresh", 5, |_| true);
+    let after = b.last.call.as_ref().unwrap().preview_packets_received;
+    assert!(
+        after - before <= 2,
+        "no preview traffic: {before} → {after}"
+    );
+    assert!(slots.lock().unwrap().is_empty(), "no stale previews");
+
+    // Previews on, unwatch: both shares are previews again.
+    b.send(Command::SetPreviews {
+        visible: true,
+        first: 0,
+    });
+    b.send(Command::Watch(None));
+    b.wait("two previews again", 15, |s| {
+        s.viewer.is_none() && s.previews.as_ref().is_some_and(|p| p.streams == 2)
+    });
+    for mut x in [a, b, c] {
+        x.quit();
+    }
+}

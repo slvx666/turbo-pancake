@@ -33,6 +33,7 @@ message ClientEnvelope {
     MediaDatagram media_datagram = 16;
     ScreenShare screen_share = 17;
     SubscribeScreen subscribe_screen = 18;
+    SubscribePreviews subscribe_previews = 19;
   }
 }
 
@@ -58,6 +59,7 @@ message ServerEnvelope {
     TrackPublished track_published = 20;
     TrackUnpublished track_unpublished = 21;
     ScreenShareState screen_share_state = 22;
+    ScreenSubscription screen_subscription = 23;
   }
 }
 
@@ -254,6 +256,9 @@ enum TrackKind {
   // The share's system audio (Opus) on the session's second audio m-line; flows like
   // SCREEN, only to subscribers of the member's share.
   TRACK_KIND_SCREEN_AUDIO = 2;
+  // The share's low-quality preview layer (S4, H.264, ~320 px / ~10 fps) on the session's
+  // second video m-line; flows only to members that list the sharer in SubscribePreviews.
+  TRACK_KIND_SCREEN_PREVIEW = 3;
 }
 
 // Server -> client (spec §11 media.track_unpublished): the member's stream ended (left
@@ -279,13 +284,61 @@ message ScreenShare {
   uint32 width = 3;
   uint32 height = 4;
   uint32 fps = 5;
+  // Target bitrate of the high layer (S4; used for the server's high-stream budget).
+  uint32 bitrate_kbps = 6;
+  // The member also sends a preview layer on its second video m-line (S4).
+  bool preview = 7;
+}
+
+// Which layer of a share a viewer wants as its main (watched) picture (S4, spec §5.1:
+// per-viewer quality, automatic and manual).
+enum ScreenLayer {
+  // The server picks: high unless the viewer's network loses packets or the server's
+  // high-stream budget is used up, then low. Zero so S3 clients get the high layer.
+  SCREEN_LAYER_AUTO = 0;
+  SCREEN_LAYER_HIGH = 1;
+  SCREEN_LAYER_LOW = 2;
 }
 
 // Client -> server: watch this member's share (empty peer_id = watch none). Replaces the
-// previous subscription; the SFU asks the sharer for a keyframe.
+// previous subscription; the SFU asks the sharer for a keyframe. Sending it again with
+// another layer switches the layer of the same stream (at the next keyframe).
 message SubscribeScreen {
   string room_id = 1;
   string peer_id = 2;
+  ScreenLayer layer = 3;
+}
+
+// Client -> server (S4): the shares this member shows as previews (their low layer),
+// at most MAX_PREVIEWS; replaces the previous list, empty = none. Previews of members
+// that do not share (yet) wait until they do.
+message SubscribePreviews {
+  string room_id = 1;
+  repeated string peer_ids = 2;
+}
+
+// Why a viewer gets the layer it gets.
+enum LayerReason {
+  LAYER_REASON_UNSPECIFIED = 0;
+  // The layer the viewer asked for (HIGH / LOW), or AUTO with nothing in the way.
+  LAYER_REASON_REQUESTED = 1;
+  // AUTO: the viewer's downlink loses packets.
+  LAYER_REASON_NETWORK = 2;
+  // The server's budget for high-quality streams is used up (spec §5.3 admission).
+  LAYER_REASON_ADMISSION = 3;
+  // The sharer sends one layer only (an S3 client): that one is forwarded.
+  LAYER_REASON_SINGLE_LAYER = 4;
+}
+
+// Server -> client (spec §11 subscription.updated): the layer this connection receives
+// for its watched share. Sent after every SubscribeScreen and whenever the layer changes.
+message ScreenSubscription {
+  string room_id = 1;
+  string peer_id = 2;
+  ScreenLayer requested = 3;
+  // HIGH or LOW (what flows now, or what flows after the pending switch).
+  ScreenLayer layer = 4;
+  LayerReason reason = 5;
 }
 
 // Server -> client: a member started, changed or stopped sharing. Sent for every active
@@ -298,4 +351,7 @@ message ScreenShareState {
   uint32 width = 4;
   uint32 height = 5;
   uint32 fps = 6;
+  uint32 bitrate_kbps = 7;
+  // A preview layer exists for this share (S4).
+  bool preview = 8;
 }

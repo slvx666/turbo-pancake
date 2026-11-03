@@ -28,6 +28,11 @@ struct Args {
         value_delimiter = ','
     )]
     public_ips: Vec<std::net::IpAddr>,
+    /// Budget for high-quality screen share streams to viewers, Mbit/s (sum of the
+    /// watched shares' bitrates, spec §5.3 admission control). Viewers over it get the
+    /// preview layer and are told why. Default: unlimited.
+    #[arg(long, env = "TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS")]
+    max_high_egress_mbps: Option<u32>,
 }
 
 #[tokio::main]
@@ -59,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         media_udp: !args.no_media_udp,
         media_udp_port: args.media_port,
         public_ips: args.public_ips,
+        max_high_egress_kbps: args.max_high_egress_mbps.map(|m| m.saturating_mul(1000)),
         ..Default::default()
     };
     turbo_pancake_app_server::serve(listener, config, async {
