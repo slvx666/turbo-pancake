@@ -19,7 +19,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest] # macos-latest = Apple Silicon
+        # Windows only until the Windows product is complete (ADR 0012); S9 brings back
+        # ubuntu-latest and macos-latest.
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

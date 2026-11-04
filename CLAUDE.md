@@ -11,12 +11,19 @@ Talk to the owner in Russian.
 2. Read `docs/PROJECT_STATE.md` — current stage, acceptance status, blockers and the
    **"Exact next task"** section. Continue from there without re-planning.
 3. Skim `docs/STAGES.md`, the ADRs in `docs/ADR/`, `git status` and `git log --oneline -10`.
-4. Work on the first unfinished stage only (spec §16–§17). Never mark a stage DONE without
-   PASS evidence for every acceptance criterion; anything unchecked is `UNVERIFIED`.
+4. Work on the first unfinished stage only (spec §16–§17, Windows scope per ADR 0012). Never
+   mark a stage DONE without PASS evidence for every (Windows) acceptance criterion; anything
+   unchecked is `UNVERIFIED`.
 5. Before ending: run fmt / clippy / tests, update `docs/PROJECT_STATE.md` (status per
    criterion, evidence, issues, exact next task), commit, push, check CI.
 
 ## Rules
+
+* **Windows only (owner decision, ADR 0012).** Plan, build and accept every stage on Windows.
+  Do not start macOS/Linux work; their parts of the acceptance criteria belong to stage S9
+  after S8. Platform code goes behind `cfg(windows)`; platform-neutral crates stay neutral.
+  Items needing the owner's hardware or presence are listed as owner-assisted and do not
+  block the next stage.
 
 * The repo is **public**: never commit IP addresses, personal paths or names, details of
   the owner's machine, network or testers, or the spec text. Describe trials generically

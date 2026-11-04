@@ -1,9 +1,10 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
-Current stage: S4 — adaptive quality, high FPS, multiple previews: **BLOCKED** (2026-11-04: implemented and measured on Windows — layers, layer subscriptions, auto/manual quality, previews, separate window, full screen, load scenarios; the spec's proofs on macOS/M4 and Linux need the macOS/Linux capture and codecs that S3 left unimplemented and hardware the owner does not have; 1440p120 *capture* needs a 1440p ≥ 120 Hz monitor — same formal blocker shape as S1/S3). Next: S5 (spec §16 allows continuing past a formal blocker).
-Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked); **S3 = BLOCKED** (2026-11-04: Windows PASS on every criterion, macOS/Linux not implemented — see the S3 table); **S4 = BLOCKED** (2026-11-04: Windows PASS on the dev machine, macOS/M4 and Linux not implemented — see the S4 table)
+**Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
+Current stage: **S5 — accounts and direct messages (Windows): NOT_STARTED** — first unfinished stage. Plan it in `docs/STAGES.md` (see "Exact next task").
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); S5–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified commit: 48b5fc2 (branch `main`, CI run 41744388558: Windows, Ubuntu, macOS arm64, audit — all success; macOS passed on re-run, the first attempt hit the flaky engine test of issue 40). 51296a9: CI 41740440858 all success
-Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
+Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
 Last session: 2026-11-04
 
 ## Environment (dev machine, Windows)
@@ -73,7 +74,7 @@ Last session: 2026-11-04
 CI runners are shared VMs without real GPUs; their numbers are smoke evidence, not
 performance results for the target hardware (RTX 4070 Super / M4).
 
-## Acceptance checks — S1 (IN_PROGRESS)
+## Acceptance checks — S1 (DONE (Windows), ADR 0012; macOS/Linux rows → S9)
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
@@ -98,7 +99,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008); load measured with `turbo-pancake-bench sfu` (release server process, 20 real call drivers) | **PASS**: no transcoding by design; 20 members, 1 / 3 / 10 / 20 talking → server 6.9 / 6.2 / 14.4 / 25.4 % of one core, 951 – 18 991 packets/s out, 99–100 % delivered, egress ≈ 1.3 – 25.2 Mbit/s (re-measured after the burst fix) | `crates/media-sfu/src/lib.rs`, `benchmarks/results/sfu-20m-windows-1793711275.json`, `sfu-50m-windows-1793711325.json` |
 | Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
 
-## Acceptance checks — S3 (BLOCKED 2026-11-04: Windows PASS, macOS/Linux not implemented)
+## Acceptance checks — S3 (DONE (Windows) 2026-11-04, ADR 0012; macOS/Linux → S9)
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
@@ -108,7 +109,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Stop / switch monitor | headless session test: start → watch → restart with a source of another size (what a monitor switch does: a new pipeline) → stop; GUI: `screen-trial.ps1 -StopAfter 12` (A leaves) | **PASS**: the viewer follows the new source (640×360 → 1280×720) and keeps showing; stop removes the share, the subscription and the picture on the viewer; when A leaves, B's share list and viewer clear within a second. The UI restarts the share on monitor/quality change. **GUI switch between two physical monitors UNVERIFIED** (would show the owner's primary monitor; not run during the owner's work) | `apps/desktop/tests/session.rs::screen_share_is_watched_restarted_and_stopped`, `benchmarks/results/screen-trial-windows-720p30-stop-2026-11-04.log` |
 | Platform limits stated | ADR 0005/0009/0010, issue 30, UI messages | **PASS**: Windows only; macOS/Linux report "not implemented" for share, viewer and system audio; Linux system-audio exclusion stays disabled until validated (spec §14.1) | ADR 0010 |
 
-## Acceptance checks — S4 (BLOCKED 2026-11-04: Windows PASS, macOS/M4 and Linux not implemented)
+## Acceptance checks — S4 (DONE (Windows) 2026-11-04, ADR 0012; macOS/M4 and Linux → S9)
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
@@ -209,7 +210,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
     encoder rejects `MFT_MESSAGE_COMMAND_FLUSH` before streaming (now ignored). NVENC did not
     accept `CODECAPI_AVEncMPVDefaultBPictureCount` (low-latency mode
     already avoids B-frames: decode order == capture order in the test).
-30. **S3 platform blocker:** screen capture, H.264 encode/decode and system audio exist for
+30. **S3 platform blocker** (moved to S9 by ADR 0012): screen capture, H.264 encode/decode and system audio exist for
     Windows only. macOS (ScreenCaptureKit + VideoToolbox + `excludesCurrentProcessAudio`)
     and Linux (xdg-desktop-portal + PipeWire + VA-API; system audio exclusion to validate)
     are not implemented; there is no hardware to verify them (same as issue S1). S3 stays
@@ -228,7 +229,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 34. System audio decodes as mono on the viewer (the voice decoder downmixes the stereo
     stream); stereo playback is a later improvement. Share audio volume follows the call
     volume (no separate slider yet).
-35. **S4 platform blocker:** as issue 30 — layers, previews and adaptation are
+35. **S4 platform blocker** (moved to S9 by ADR 0012): as issue 30 — layers, previews and adaptation are
     platform-independent code, but they run only where capture and codecs exist (Windows).
     macOS/M4 and Linux trials, the spec's RTX 4070 Super numbers and 1440p120 *capture*
     (needs a 1440p ≥ 120 Hz monitor; the dev machine has 1080p monitors, the 2nd at 60 Hz)
@@ -266,6 +267,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 * [0009 H.264: OS/vendor codecs only](ADR/0009-h264-os-encoders-only.md) — accepted (owner, 2026-11-03)
 * [0010 Screen share transport, subscriptions, loss repair, system audio](ADR/0010-screen-share-transport.md) — accepted
 * [0011 Two layers per share, layer subscriptions, previews, adaptation](ADR/0011-layers-previews-adaptation.md) — accepted
+* [0012 Windows first: other systems after the full Windows product](ADR/0012-windows-first.md) — accepted (owner)
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -556,6 +558,13 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM build environment (vcvars64, meson/ninja venv, clang-cl as
   CC/CXX, `nm`); with Git's `usr/bin` first on PATH its `link` shadows MSVC's linker.
 
+## Session log 2026-11-04 (scope change — Windows first, ADR 0012)
+
+* Owner decision: build and accept everything on Windows first; macOS and Linux after the
+  whole Windows product (new stage S9). S1, S3, S4 → DONE (Windows) with owner-assisted
+  items listed; CI matrix reduced to Windows (+ audit); CLAUDE.md and STAGES.md updated.
+  Next: S5 on Windows.
+
 ## Session log 2026-11-04 (S4 — layers, previews, adaptation, load)
 
 * Owner asked for S4 autonomously overnight. Implemented per ADR 0011 (see "Implemented"
@@ -598,20 +607,24 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S5 (S4 stays BLOCKED on macOS/M4/Linux)
+## Exact next task — S5 on Windows (ADR 0012)
 
-1. Check CI of the last S4 commit (macOS runner availability, issue 26).
-2. Write the S5 plan in `docs/STAGES.md` from spec §7, §8, §10, §11, §17 S5: PostgreSQL +
-   SQLx migrations (users, sessions, conversations, members, messages, blocks), Argon2id,
-   session tokens with revocation, the auth handshake in `Hello` (field 3 reserved), HTTPS
-   API `/v1/...` (register/login/refresh/logout/me/lookup_username/block/conversations/
-   messages/mark read), WebSocket events (`message.created/edited/deleted`, `read.updated`,
-   `presence.changed`), client SQLite cache with pending operations, Discord-like chat UI.
-   Decide the PostgreSQL setup for local tests (no Docker here: issue in the environment
-   notes) — an embedded/portable PostgreSQL for tests or CI-only integration tests.
-3. Owner-assisted, when possible (S1/S3/S4 blockers): macOS/Linux capture + codecs on real
-   hardware, the RTX 4070 Super / M4 measurements, a 1440p ≥ 120 Hz monitor, a camera
-   screen-to-screen latency test, two machines sharing and watching each other.
+1. Write the S5 plan in `docs/STAGES.md` (Windows only) from spec §7, §8, §10, §11, §17 S5:
+   PostgreSQL + SQLx migrations (users, sessions, conversations, members, messages, blocks),
+   Argon2id, session tokens with revocation, the auth handshake in `Hello` (field 3
+   reserved), HTTPS API `/v1/...` (register/login/refresh/logout/me/lookup_username/block/
+   conversations/messages/mark read), WebSocket events (`message.created/edited/deleted`,
+   `read.updated`, `presence.changed`), client SQLite cache with pending operations,
+   Discord-like chat UI, contract + security tests. Decide how PostgreSQL runs for local
+   tests on this machine (no Docker: portable PostgreSQL binaries on D:, or an embedded
+   test runner) and in Windows CI.
+2. Implement it step by step; acceptance on Windows (two real desktop clients).
+3. Owner-assisted items stay listed in the stage tables; they do not block S5–S8.
+
+## Previous next-task list — S5 (before ADR 0012)
+
+1. Was: check CI (done: 41744388558 green), write the S5 plan, owner-assisted items for
+   S1/S3/S4 — now owner-assisted pending, not blockers.
 
 ## Previous next-task list — S4
 

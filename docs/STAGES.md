@@ -3,17 +3,23 @@
 Status is maintained in `docs/PROJECT_STATE.md`; this file lists acceptance criteria
 verbatim-in-meaning so each session can check them.
 
+**Scope rule (owner, 2026-11-04, ADR 0012): Windows only.** Every stage S1–S8 is planned,
+built and accepted on Windows. Platform parts of the criteria (macOS/M4, Linux, three-OS
+installers and E2E) belong to **S9** after S8. Items that need the owner's hardware or
+presence are recorded as owner-assisted and do not block the next stage.
+
 | Stage | Scope | Acceptance (short) | Status |
 |---|---|---|---|
 | S0 | Audit, skeleton, media feasibility | compiles on CI targets or blockers recorded; real native window; toolchain recorded; reproducible benchmark harness; PROJECT_STATE filled; ADRs for UI/codecs/GPU textures/str0m/capture/audio | DONE (2026-11-02, CI run 41364362270) |
-| S1 | 1:1 voice end-to-end | two real clients talk via server; continuity under moderate loss; no audio loop; resources freed after leave; trials recorded | BLOCKED (2026-11-02): Windows done, real-device trials on macOS/Linux need owner hardware (none available) |
+| S1 | 1:1 voice end-to-end | two real clients talk via server; continuity under moderate loss; no audio loop; resources freed after leave; trials recorded | DONE (Windows, ADR 0012); owner-assisted: measured two-home log, by-ear AEC; macOS/Linux → S9 |
 | S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | DONE (2026-11-03; CI 41647867149 Windows/Ubuntu; macOS re-check pending, PROJECT_STATE issue 26) |
-| S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | BLOCKED (2026-11-04): Windows PASS on every criterion; macOS/Linux capture, codecs and system audio not implemented, no hardware to verify (as S1) |
-| S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | BLOCKED (2026-11-04): Windows PASS (dev RTX 2060 SUPER, 1080p monitors: 1440p120 capture UNVERIFIED); macOS/M4 and Linux not implemented (as S1/S3) |
+| S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | DONE (Windows) 2026-11-04; owner-assisted: camera latency, two machines; macOS/Linux → S9 |
+| S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | DONE (Windows) 2026-11-04; owner-assisted: RTX 4070 Super, 1440p120 capture, camera latency; macOS/M4, Linux → S9 |
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | NOT_STARTED |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | NOT_STARTED |
-| S7 | Desktop polish + delivery | E2E on Win/macOS/Linux, signed updates, RAM/startup/size profiles | NOT_STARTED |
+| S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
+| S9 | macOS + Linux port (ADR 0012) | ScreenCaptureKit/VideoToolbox/`excludesCurrentProcessAudio`; portal/PipeWire/VA-API + audio exclusion validation; devices, tray, installers, signing, updates; the macOS/Linux parts of S1–S8 criteria; CI jobs back | NOT_STARTED (after S8) |
 
 ## S4 plan (2026-11-04; Windows done, macOS/Linux blocked)
 
