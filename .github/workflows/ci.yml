@@ -153,6 +153,10 @@ jobs:
       checks: write # audit-check publishes its result as a check run
     steps:
       - uses: actions/checkout@v5
+      # RUSTSEC-2023-0071 (rsa, no fix exists): rsa is only in Cargo.lock through
+      # sqlx-mysql, which sqlx lists for every driver; MySQL is not enabled and
+      # `cargo tree -i rsa` is empty, so no rsa code is built (PROJECT_STATE issue 41).
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: RUSTSEC-2023-0071

@@ -257,6 +257,13 @@ performance results for the target hardware (RTX 4070 Super / M4).
 38. Sender adaptation with heavy random loss goes to the floor (540p15) and stays while the
     loss lasts; the NACK share counts NACK messages, not packets, so it is a conservative
     signal; recovery is verified in unit tests only.
+41. **`cargo audit`: RUSTSEC-2023-0071 (`rsa`, Marvin attack, no fixed version) ignored in
+    CI.** `rsa` is only listed in `Cargo.lock` because sqlx 0.8 records `sqlx-mysql` for
+    every driver; MySQL is not enabled and `cargo tree -i rsa` is empty — no rsa code is
+    compiled. Re-check when upgrading sqlx (0.9 may drop it); remove the ignore then.
+42. **pg-test on CI:** `postgres.exe` refuses to run as administrator (GitHub runners);
+    the cluster starts through `pg_ctl` (restricted token). Fixed in 25c6523, CI
+    41826651545 Windows job green with all messenger tests.
 40. **Flaky on the macOS CI VM:** `media-audio` `tests/engine.rs::voice_activation_pauses_sending_and_drives_the_indicators`
     failed once (CI 41744388558 attempt 1: 18 underruns, 8 late frames after the pause —
     the VM stalled the real-time simulation); passed on re-run, unchanged by S4. Make the
