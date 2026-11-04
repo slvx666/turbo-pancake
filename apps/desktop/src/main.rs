@@ -13,6 +13,7 @@
 //!   `--test-block-udp` — test impairment: drop every UDP media datagram (a VPN that
 //!       carries no UDP); with `--media auto` the call must move to the WebSocket.
 //!   `--test-send-loss <0..1>` — test impairment: drop this share of outgoing media.
+//!   `--test-recv-loss <0..1>` — test impairment: drop this share of incoming media.
 //!   `--share <N|synthetic>` — share monitor N (index in the monitor list) or a generated
 //!       test picture once in the room (scripted S3 trials).
 //!   `--share-quality <qhd120|hd60|hd30>` — at most 1440p120 (20 Mbit/s), 1080p60
@@ -74,6 +75,7 @@ struct Args {
     voice_gate: Option<f32>,
     call_log: bool,
     send_loss: f32,
+    recv_loss: f32,
     media: Option<TransportPref>,
     block_udp: bool,
     share: Option<ShareSource>,
@@ -162,6 +164,13 @@ fn parse_args() -> Args {
             "--share-window" => out.share_window = true,
             "--fullscreen" => out.fullscreen = true,
             "--share-no-audio" => out.share_no_audio = true,
+            "--test-recv-loss" => {
+                out.recv_loss = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.0f32)
+                    .clamp(0.0, 1.0);
+            }
             "--test-send-loss" => {
                 out.send_loss = args
                     .next()
@@ -482,6 +491,7 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
     cfg.engine.muted = args.mute;
     cfg.engine.voice_gate = args.voice_gate;
     cfg.send_loss = args.send_loss;
+    cfg.recv_loss = args.recv_loss;
     cfg.transport = args.media.unwrap_or(TransportPref::Auto);
     cfg.block_udp = args.block_udp;
     cfg.share_audio = !args.share_no_audio;

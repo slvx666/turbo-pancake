@@ -9,11 +9,33 @@ verbatim-in-meaning so each session can check them.
 | S1 | 1:1 voice end-to-end | two real clients talk via server; continuity under moderate loss; no audio loop; resources freed after leave; trials recorded | BLOCKED (2026-11-02): Windows done, real-device trials on macOS/Linux need owner hardware (none available) |
 | S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | DONE (2026-11-03; CI 41647867149 Windows/Ubuntu; macOS re-check pending, PROJECT_STATE issue 26) |
 | S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | BLOCKED (2026-11-04): Windows PASS on every criterion; macOS/Linux capture, codecs and system audio not implemented, no hardware to verify (as S1) |
-| S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | NOT_STARTED |
+| S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | BLOCKED (2026-11-04): Windows PASS (dev RTX 2060 SUPER, 1080p monitors: 1440p120 capture UNVERIFIED); macOS/M4 and Linux not implemented (as S1/S3) |
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | NOT_STARTED |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | NOT_STARTED |
 | S7 | Desktop polish + delivery | E2E on Win/macOS/Linux, signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
+
+## S4 plan (2026-11-04; Windows done, macOS/Linux blocked)
+
+Scope (spec §5.1, §5.3, §13, §17 S4, ADR 0011): two layers per share, per-viewer layer
+subscriptions, automatic + manual quality, previews with decode limits, separate window
+and full screen, 1440p120 where supported, controlled load scenarios.
+
+1. ~~Protocol~~ — `SubscribeScreen.layer`, `SubscribePreviews`, `ScreenSubscription`,
+   `TRACK_KIND_SCREEN_PREVIEW`, bitrate/preview in `ScreenShare(State)`; contract tests.
+2. ~~SFU~~ — preview m-line, preview forwarding per subscription, main stream carries
+   either layer (switch at keyframe, continuous sequence numbers), `NetworkPolicy` from
+   receiver reports, high-stream budget; `tests/screen.rs::layers_*`.
+3. ~~Sender~~ — preview encoder, runtime reconfiguration, `adapt::Adapter` (bitrate →
+   size → fps), pacing follows bitrate, presets fitted to the monitor, 1440p120 preset.
+4. ~~Client~~ — preview decoder thread, visible page subscribed, watch layer, UI grid with
+   size slider and pages, quality picker, separate window, full screen.
+5. ~~Load~~ — `turbo-pancake-bench sfu-screen --scenario publishers|fanout|grid`.
+6. ~~Trials~~ — `benchmarks/scripts/s4-trial.ps1` (auto/low/downlink loss/uplink loss/
+   budget/window/full screen), 1440p120 encode/decode, 50 preview decodes.
+7. Blocked: macOS (ScreenCaptureKit + VideoToolbox) and Linux (portal/PipeWire + VA-API)
+   capture/codecs from S3; measurements on the spec's RTX 4070 Super / M4 machines and a
+   1440p ≥ 120 Hz monitor need the owner.
 
 ## S3 plan (2026-11-03; Windows done 2026-11-04, macOS/Linux blocked)
 

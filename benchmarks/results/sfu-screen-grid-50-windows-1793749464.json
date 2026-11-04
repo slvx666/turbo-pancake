@@ -1,0 +1,41 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "AMD Ryzen 5 5500",
+    "git_commit": "51296a9",
+    "logical_cpus": 12,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 34246471680
+  },
+  "label": "grid-50",
+  "params": {
+    "high_fps": 30,
+    "high_kbps": 2000,
+    "n": 50,
+    "preview_fps": 10,
+    "preview_kbps": 150,
+    "scenario": "Grid",
+    "seconds": 10,
+    "wire_overhead_bytes": 66
+  },
+  "scenario": "sfu-screen",
+  "summary": {
+    "clients_cpu_pct_of_one_core": 221.8287534500058,
+    "delivered_high": 1.0,
+    "delivered_preview": 0.9922603691208574,
+    "egress_mbit_s_estimated": 392.2542926308049,
+    "high_streams_forwarded": 0,
+    "ingress_pps": 13071.684547800116,
+    "members": 50,
+    "out_pps": 48885.13118529473,
+    "preview_streams_forwarded": 2450,
+    "publishers": 50,
+    "scenario": "Grid",
+    "server_cpu_pct_of_one_core": 91.97388253004736,
+    "server_cpu_us_per_forwarded_packet": 18.814285714285713,
+    "server_working_set_mib": 271.59765625,
+    "server_working_set_mib_before": 251.28515625,
+    "wall_s": 10.0234977
+  }
+}

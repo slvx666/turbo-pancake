@@ -1,8 +1,8 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
-Current stage: S3 — screen share 1080p60 + system audio: **BLOCKED** (2026-11-04: complete and measured on Windows; macOS/Linux capture, codecs and system audio are not implemented and cannot be verified without the owner's hardware — same formal blocker as S1). Next: S4 (spec §16 allows continuing past a formal blocker).
-Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked); **S3 = BLOCKED** (2026-11-04: Windows PASS on every criterion, macOS/Linux not implemented — see the S3 table)
-Last verified commit: f4b5701 (branch `main`, CI run 41722064301: Windows, Ubuntu, audit green; macOS arm64 job again got no runner — known issue 26; last macOS run that executed tests: 41588139375). CI 41719528152 (10e3c8e) failed on Ubuntu clippy: dead code in the non-Windows build of the system audio packer — fixed in f4b5701
+Current stage: S4 — adaptive quality, high FPS, multiple previews: **BLOCKED** (2026-11-04: implemented and measured on Windows — layers, layer subscriptions, auto/manual quality, previews, separate window, full screen, load scenarios; the spec's proofs on macOS/M4 and Linux need the macOS/Linux capture and codecs that S3 left unimplemented and hardware the owner does not have; 1440p120 *capture* needs a 1440p ≥ 120 Hz monitor — same formal blocker shape as S1/S3). Next: S5 (spec §16 allows continuing past a formal blocker).
+Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked); **S3 = BLOCKED** (2026-11-04: Windows PASS on every criterion, macOS/Linux not implemented — see the S3 table); **S4 = BLOCKED** (2026-11-04: Windows PASS on the dev machine, macOS/M4 and Linux not implemented — see the S4 table)
+Last verified commit: 51296a9 (branch `main`, CI run 41740440858: Windows, Ubuntu, **macOS arm64**, audit — all success; the follow-up S4 commit's CI is recorded in the S4 session log)
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-04
 
@@ -40,7 +40,11 @@ Last session: 2026-11-04
 | **Screen share end to end** (S3): protocol `ScreenShare` / `SubscribeScreen` / `ScreenShareState`, `TrackPublished.kind` (AUDIO/SCREEN/SCREEN_AUDIO) + `rtx_ssrc`; SFU with three m-lines per session (voice, H.264 video, share audio), share audio/video forwarded only to subscribers of an announced share, NACK/RTX on each leg, viewer PLI → sharer; `CallDriver` video m-line with H.264 packetization, paced sending (12 Mbit/s token bucket), `FrameAssembler` (waits ≤ 250 ms for RTX, then skips to a keyframe and asks for one), `KeyframeRequester`; 4 MiB UDP socket buffers | `proto/…/signaling.proto`, `crates/media-sfu`, `crates/media-transport/src/{call,video}.rs`, `apps/app-server/src/signaling.rs` | contract tests (13), `crates/media-sfu/tests/screen.rs` (only subscribers get video + share audio, 120/120 frames, PLI reaches the sharer, stop ends forwarding; 3 % loss both ways → 91–100 % of frames), `video::tests` (5) |
 | **Share pipeline + viewer** (S3): `MonitorCapture` (Windows.Graphics.Capture, whole monitor), GPU `Converter` (BGRA → NV12 + scale), `ScreenShare` thread (fixed rate, newest frame wins, keyframe on request, stats); `Viewer` thread (assembler → OS decoder with DXVA → newest picture of each round → parallel NV12 → RGBA → `PictureSlot`); desktop UI: monitor + quality (1080p60 / 720p30) pickers, show/stop, monitor switch while sharing, list of shares with watch/stop watching, picture view, share-audio checkbox; `--share/--share-quality/--watch/--share-no-audio` for scripted trials | `crates/media-video/src/win/{capture,share}.rs`, `apps/desktop/src/{screen,session,view,main}.rs`, `ui/main.slint` | `crates/media-video/tests/share.rs` (synthetic share 60 fps, all frames decode; real capture of the secondary monitor with `--ignored`), `apps/desktop/tests/session.rs::screen_share_is_watched_restarted_and_stopped`, `benchmarks/scripts/screen-trial.ps1` |
 | **System audio without our sound** (S3): WASAPI process loopback excluding our process tree, 48 kHz stereo → Opus stereo 96 kbit/s (Audio mode, no NS/AEC), nothing sent in silence; viewer plays it as an engine stream while watching | `crates/media-audio/src/system.rs` | `crates/media-audio/tests/system_audio.rs` (tones from own / child / outside processes), share audio in `screen-trial` logs |
-| ADRs 0001–0010, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
+| **Layers + layer subscriptions** (S4): preview layer on a second video m-line (`TRACK_KIND_SCREEN_PREVIEW`), `SubscribePreviews` (≤ 50), `SubscribeScreen.layer` (AUTO/HIGH/LOW), `ScreenSubscription` (layer + reason); SFU forwards previews per subscription, switches the watched stream between layers at a keyframe with continuous sequence numbers, AUTO from receiver reports (`layer::NetworkPolicy`), high-stream budget (`--max-high-egress-mbps`) | `proto/…/signaling.proto`, `crates/protocol`, `crates/media-sfu/src/{lib,layer}.rs`, `apps/app-server` | contract test `layer_messages_are_pinned`, `layer::tests` (2), `crates/media-sfu/tests/screen.rs::layers_switch_previews_flow_and_the_budget_admits` |
+| **Sender layers + adaptation** (S4): `ScreenShare::start_layers` (second converter + encoder at 320 px / 10 fps, same capture timestamps), `reconfigure` (new size/fps at runtime, old encoder drained), `adapt::Adapter` (bitrate → size → fps ladder), presets 1440p120 / 1080p60 / 720p30 fitted to the monitor; client: NACK share + receiver reports + pacer drops drive the adapter, pacing follows the bitrate, size/bitrate re-announced | `crates/media-video/src/{adapt,lib}.rs`, `win/share.rs`, `crates/media-transport/src/call.rs`, `apps/desktop/src/session.rs` | `adapt::tests` (3), `lib::tests::configs_fit_the_source`, `tests/share.rs::preview_layer_and_reconfiguration`, `tests/loopback.rs::hardware_1440p120_real_time` |
+| **Previews + viewer UI** (S4): `PreviewDecoder` (one thread, software OS decoder per stream, keyframe requests), visible page subscribed (`--max-previews`, default 24), hidden = none received, watched share not previewed; UI: thumbnail grid (size slider, pages), quality picker incl. 1440p120 + "adapt to network", watched layer picker with the server's reason, separate share window, full screen; CLI `--share-quality qhd120`, `--watch-layer`, `--no-previews`, `--share-window`, `--fullscreen`, `--fixed-quality`, `--test-recv-loss` | `apps/desktop/src/{screen,session,view,main}.rs`, `ui/main.slint` | `apps/desktop/tests/session.rs::previews_and_watched_layer`, `benchmarks/scripts/s4-trial.ps1` |
+| **Screen load bench** (S4): `turbo-pancake-bench sfu-screen --scenario publishers|fanout|grid` (real call drivers, release server process) | `benchmarks/harness/src/sfu_screen.rs` | `benchmarks/results/sfu-screen-*.json` |
+| ADRs 0001–0011, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
 
@@ -103,6 +107,15 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | System audio works, own sound excluded, no echo | `cargo test -p turbo-pancake-media-audio --no-default-features --test system_audio -- --nocapture`: quiet tones at once from this process (1000 Hz), a child process (400 Hz) and a process outside the tree (600 Hz, started through WMI); trial: B plays A's share audio | **PASS (Windows)**: outside process captured at full level (9.9e-5 vs 1.0e-4 for a pure tone), own tone 51.6 dB below it, child 23.1 dB below — exact exclusion of the messenger's process tree, so a viewer's voice or the share audio played by the messenger cannot loop back. In the trial B played A's share audio continuously (≈ 1 300 frames, 0.0 % concealed) as an engine stream, i.e. inside the echo canceller's reference. **By-ear check of echo with two people UNVERIFIED** (needs the owner). macOS (ScreenCaptureKit `excludesCurrentProcessAudio`) and Linux (PipeWire) **not implemented**: the share runs without sound and says so | test output `TURBO_PANCAKE_SYSTEM_AUDIO …`; `share_audio_*` / `watched_audio_*` fields in the trial logs |
 | Stop / switch monitor | headless session test: start → watch → restart with a source of another size (what a monitor switch does: a new pipeline) → stop; GUI: `screen-trial.ps1 -StopAfter 12` (A leaves) | **PASS**: the viewer follows the new source (640×360 → 1280×720) and keeps showing; stop removes the share, the subscription and the picture on the viewer; when A leaves, B's share list and viewer clear within a second. The UI restarts the share on monitor/quality change. **GUI switch between two physical monitors UNVERIFIED** (would show the owner's primary monitor; not run during the owner's work) | `apps/desktop/tests/session.rs::screen_share_is_watched_restarted_and_stopped`, `benchmarks/results/screen-trial-windows-720p30-stop-2026-11-04.log` |
 | Platform limits stated | ADR 0005/0009/0010, issue 30, UI messages | **PASS**: Windows only; macOS/Linux report "not implemented" for share, viewer and system audio; Linux system-audio exclusion stays disabled until validated (spec §14.1) | ADR 0010 |
+
+## Acceptance checks — S4 (BLOCKED 2026-11-04: Windows PASS, macOS/M4 and Linux not implemented)
+
+| Criterion | Command / procedure | Result | Evidence |
+|---|---|---|---|
+| Automatic and manual quality selection | Viewer: `SubscribeScreen.layer` AUTO/HIGH/LOW; sender: preset + "adapt to network". Headless: SFU test (budget, manual LOW, AUTO under 30 % downlink loss), desktop session test (LOW → 320×180, back to AUTO → 640×360). GUI: `powershell -File benchmarks/scripts/s4-trial.ps1` with `-WatchLayer low`, `-BRecvLoss 0.15`, `-ALoss 0.15/0.30`, `-Budget 1` (server + 3 release clients, windows on the 2nd monitor, inactive) | **PASS (Windows)**: auto with a clean network → high, 1920×1080 at 53–60 fps; manual low → 320×180 at 10 fps (reason REQUESTED); 15 % downlink loss → low (reason NETWORK); budget 1 Mbit/s → low (reason ADMISSION); SFU test: auto moved to low 3.0 s after 30 % downlink loss. Sender adaptation: no loss → stays at the preset (5.6 Mbit/s target for 1080p60 fitted from 1440p120); 15 % / 30 % uplink loss → 1080p60 → 720p60 → 540p60 → 540p30 → 540p15 (resolution before frame rate), 5.6 → 0.13–0.2 Mbit/s; recovery (+8 %/3 s, one rung per 10 s) covered by `adapt::tests` only (no GUI run with loss removed) | `benchmarks/results/s4-trial-windows-{auto,low,recvloss15,sendloss15,sendloss30,budget1}-2026-11-04.log`, `cargo test -p turbo-pancake-media-sfu --test screen layers -- --nocapture`, `cargo test -p turbo-pancake-desktop --test session previews` |
+| Switching leaves no extra subscriptions | SFU test: the preview-only member gets no main stream, members without a preview subscription get no previews, the main stream's old layer stops at the switch, budget frees on downgrade; desktop test: watched share leaves the preview list, hiding previews → ≤ 2 preview packets in 1.5 s and no stale pictures, unwatching → the viewer, its stream and subscription end | **PASS (headless, Windows)** | same tests |
+| Real FPS / latency on Windows/RTX and macOS/M4, Linux separately | Windows: `s4-trial.ps1` (real capture of the 1080p 60 Hz secondary monitor, NVENC, DXVA); `cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture --test-threads=1 hardware fifty` | **Windows PASS on the dev RTX 2060 SUPER** (not the spec's RTX 4070 Super): 1080p60 share watched at 53–60 fps, capture → decoded picture p50 18 ms / p95 ≈ 70 ms, 0 frames lost; separate window and full screen 59.5–60 fps; previews 9.9–10 fps; **1440p120 encode → decode 118–120 fps, p50 11.1 ms** (generated pictures: no 1440p ≥ 120 Hz monitor here, so **1440p120 capture UNVERIFIED**); 50 previews (320×180, 10 fps) decode on one thread in 14 % of a core. **macOS/M4 and Linux: not implemented (S3 blocker) → BLOCKED**; instrumental screen-to-screen latency (camera) **UNVERIFIED** | `benchmarks/results/s4-trial-windows-*.log`, `benchmarks/results/media-video-s4-windows-2026-11-04.json` |
+| 50 publishers and 50 previews in controlled load (separate scenarios) | `turbo-pancake-bench sfu-screen --server-exe <release server> --scenario publishers|fanout|grid --n 50` (loopback, real call drivers in the bench process, server in its own process; high 2 Mbit/s 30 fps, preview 150 kbit/s 10 fps unless noted) | **PASS (dev machine, loopback)**: *50 publishers + 2 viewers* (each 1 high + 49 previews): 100 % delivered, server 23 % of a core, 13 100 packets/s in; *1 → 50 viewers*: 99.7 % delivered, 24 % of a core, 106 Mbit/s out; at 8 Mbit/s 60 fps: 100 % delivered, 60 % of a core, 48 000 packets/s, **426 Mbit/s out**; *50 members × 49 previews* (2 450 streams): 99.2 % delivered, **92 % of a core**, 49 000 packets/s, 392 Mbit/s out — the single-threaded SFU is near its limit (issue 25). Target server (Ryzen 5 6600H, real 1 Gbit/s uplink) **UNVERIFIED** (S8) | `benchmarks/results/sfu-screen-{publishers,fanout,grid}-50-windows-*.json` |
 
 ## Known issues and blockers
 
@@ -215,6 +228,22 @@ performance results for the target hardware (RTX 4070 Super / M4).
 34. System audio decodes as mono on the viewer (the voice decoder downmixes the stereo
     stream); stereo playback is a later improvement. Share audio volume follows the call
     volume (no separate slider yet).
+35. **S4 platform blocker:** as issue 30 — layers, previews and adaptation are
+    platform-independent code, but they run only where capture and codecs exist (Windows).
+    macOS/M4 and Linux trials, the spec's RTX 4070 Super numbers and 1440p120 *capture*
+    (needs a 1440p ≥ 120 Hz monitor; the dev machine has 1080p monitors, the 2nd at 60 Hz)
+    need the owner.
+36. **Upstream loss looks like downstream loss to AUTO viewers:** with 15 % loss on the
+    sharer's uplink, viewers' receiver reports show the gaps the SFU could not repair and
+    AUTO moves them to the low layer while the sharer is already adapting (ADR 0011).
+37. Receiver-report loss occasionally reads ≈ 0.98 for one report window in the trials
+    (str0m `MediaEgressStats.loss` right after a reconfiguration); the adapter treats it as
+    congestion for that second.
+38. Sender adaptation with heavy random loss goes to the floor (540p15) and stays while the
+    loss lasts; the NACK share counts NACK messages, not packets, so it is a conservative
+    signal; recovery is verified in unit tests only.
+39. The bench's delivered ratio can read slightly above 1.0 (≤ 0.5 %): sent counters are
+    sampled every 0.5 s, received ones continuously.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -232,6 +261,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 * [0008 Per-member audio: one m-line, one SSRC per member](ADR/0008-per-member-audio-streams.md) — accepted
 * [0009 H.264: OS/vendor codecs only](ADR/0009-h264-os-encoders-only.md) — accepted (owner, 2026-11-03)
 * [0010 Screen share transport, subscriptions, loss repair, system audio](ADR/0010-screen-share-transport.md) — accepted
+* [0011 Two layers per share, layer subscriptions, previews, adaptation](ADR/0011-layers-previews-adaptation.md) — accepted
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -522,6 +552,33 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM build environment (vcvars64, meson/ninja venv, clang-cl as
   CC/CXX, `nm`); with Git's `usr/bin` first on PATH its `link` shadows MSVC's linker.
 
+## Session log 2026-11-04 (S4 — layers, previews, adaptation, load)
+
+* Owner asked for S4 autonomously overnight. Implemented per ADR 0011 (see "Implemented"
+  and the S4 table): commit 51296a9 (core) + this session's follow-up commit (load bench,
+  NACK-based adaptation signal, GCC-style thresholds, `--test-recv-loss`, s4-trial,
+  docs).
+* Found on the way: (1) the first 1440p120 loopback run reached only 84 fps because the
+  test decoded on the encoding thread — decoding moved to its own thread (as on a viewer):
+  118–120 fps; (2) a reconfiguration dropped the old encoder's last frames (preview
+  timestamps without a main frame) — they are now delivered; (3) receiver reports hide
+  a lossy uplink when RTX repairs it, so the adapter barely moved at 15 % loss — the NACK
+  share was added; at first it pushed 15 % random loss to the floor within 10 s, thresholds
+  were set like GCC (≥ 10 % back off, 2–10 % hold) and the NACK share needs ≥ 100 packets.
+* CI 41740440858 (51296a9): Windows, Ubuntu, macOS arm64, audit all green — the macOS
+  job ran again, so known issue 26 is closed (session suite green on macOS after the SFU
+  burst fix).
+* Checks: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+  `cargo test --workspace --locked` (through `benchmarks/scripts/apm-env.ps1`) — all green
+  locally; CI: see the commit after this log entry.
+* Files: `proto/…/signaling.proto`, `crates/protocol/**`, `crates/media-sfu/**`,
+  `crates/media-transport/src/{lib,call,video}.rs`, `crates/media-video/src/{adapt,lib}.rs`,
+  `crates/media-video/src/win/share.rs`, `crates/media-video/tests/{loopback,share}.rs`,
+  `apps/app-server/src/**`, `apps/desktop/src/**`, `apps/desktop/ui/main.slint`,
+  `apps/desktop/tests/session.rs`, `benchmarks/harness/src/{main,sfu_screen}.rs`,
+  `benchmarks/scripts/s4-trial.ps1`, `benchmarks/results/{s4-trial-*,sfu-screen-*,media-video-s4-*}`,
+  `docs/{ADR/0011-*,API,STAGES,PROJECT_STATE,TESTING}.md`.
+
 ## Session log 2026-11-04 (S3 — share end to end, system audio, trials)
 
 * Protocol + SFU + transport + desktop (see "Implemented"), commit 10e3c8e; ADR 0010, API.md.
@@ -537,19 +594,25 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S4 (S3 stays BLOCKED on macOS/Linux)
+## Exact next task — S5 (S4 stays BLOCKED on macOS/M4/Linux)
 
-1. ~~Check CI~~ — done: 41722064301 green on Windows and Ubuntu (macOS: no runner, issue 26).
-2. Write the S4 plan in `docs/STAGES.md` from spec §5.1–§5.3, §13, §17 S4: two qualities
-   per share (simulcast: a low preview layer 160–320 px / 5–15 fps + the high layer, or two
-   encoder sessions), layer subscriptions in the SFU (`SubscribeScreen` with a layer),
-   adaptive quality (REMB/loss-driven bitrate, prefer FPS over resolution), 1440p120 where
-   the encoder/monitor allow, preview grid with decode limits, separate window for the
-   watched share, GPU texture import in Slint; load scenarios 50 publishers / 50 previews
-   / 1 → 50 viewers (controlled, documented); str0m repair window (issue 31).
-3. Owner-assisted, when possible: two machines share and watch each other (by ear: share
-   audio, no echo), instrumental screen-to-screen latency (camera), GUI switch between two
-   physical monitors.
+1. Check CI of the last S4 commit (macOS runner availability, issue 26).
+2. Write the S5 plan in `docs/STAGES.md` from spec §7, §8, §10, §11, §17 S5: PostgreSQL +
+   SQLx migrations (users, sessions, conversations, members, messages, blocks), Argon2id,
+   session tokens with revocation, the auth handshake in `Hello` (field 3 reserved), HTTPS
+   API `/v1/...` (register/login/refresh/logout/me/lookup_username/block/conversations/
+   messages/mark read), WebSocket events (`message.created/edited/deleted`, `read.updated`,
+   `presence.changed`), client SQLite cache with pending operations, Discord-like chat UI.
+   Decide the PostgreSQL setup for local tests (no Docker here: issue in the environment
+   notes) — an embedded/portable PostgreSQL for tests or CI-only integration tests.
+3. Owner-assisted, when possible (S1/S3/S4 blockers): macOS/Linux capture + codecs on real
+   hardware, the RTX 4070 Super / M4 measurements, a 1440p ≥ 120 Hz monitor, a camera
+   screen-to-screen latency test, two machines sharing and watching each other.
+
+## Previous next-task list — S4
+
+1. ~~Check CI~~; ~~S4 plan~~; ~~implementation, load scenarios, trials~~ — done 2026-11-04.
+   Owner-assisted items moved to the S5 list (item 3).
 
 ## Previous next-task list — S3 step 3 (rest) and step 4
 

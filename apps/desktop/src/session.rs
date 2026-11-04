@@ -113,6 +113,8 @@ pub struct SessionConfig {
     pub udp_attempt_timeout: Duration,
     /// Test impairment: share of outgoing media datagrams dropped.
     pub send_loss: f32,
+    /// Test impairment: share of incoming media datagrams dropped (a lossy downlink).
+    pub recv_loss: f32,
     /// Test impairment: every UDP datagram is dropped (a VPN that carries no UDP).
     pub block_udp: bool,
     /// Share the computer's sound together with the screen (where the OS can exclude
@@ -142,6 +144,7 @@ impl SessionConfig {
             transport: TransportPref::Auto,
             udp_attempt_timeout: Duration::from_secs(3),
             send_loss: 0.0,
+            recv_loss: 0.0,
             block_udp: false,
             share_audio: true,
             stun_servers: Vec::new(),
@@ -443,6 +446,8 @@ struct Sharing {
     last_adapt: Instant,
     /// Pacer drops seen at the last adaptation step.
     pacing_drops: u64,
+    /// NACKs received and video packets sent at the last adaptation step.
+    nacks: (u64, u64),
     /// What the server was told (size, fps, bitrate).
     announced: (u32, u32, u32, u32),
 }
@@ -949,6 +954,7 @@ impl Core {
                         .as_ref()
                         .map_or(0, |m| m.driver.stats().video_frames_dropped_pacing),
                     announced: (0, 0, 0, 0),
+                    nacks: (0, 0),
                 });
                 self.snap.last_error = None;
                 self.sync_system_audio();
@@ -1238,7 +1244,20 @@ impl Core {
         let drops = stats.video_frames_dropped_pacing;
         let dropped = drops > s.pacing_drops;
         s.pacing_drops = drops;
-        let Some(t) = adapter.update(Instant::now(), stats.video_egress_loss, dropped) else {
+        // Receiver reports count repaired packets as received, so with retransmission
+        // they show little of a lossy uplink: the share of packets the server asked to
+        // repeat (NACKs) is the other loss signal.
+        let (n0, p0) = s.nacks;
+        let (n1, p1) = (stats.video_nacks_received, stats.video_packets_sent);
+        s.nacks = (n1, p1);
+        // Only over enough packets: at low rates one NACK per repair round is a lot.
+        let nack_ratio =
+            (p1 >= p0 + 100 && n1 >= n0 && p0 > 0).then(|| (n1 - n0) as f32 / (p1 - p0) as f32);
+        let loss = match (stats.video_egress_loss, nack_ratio) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        let Some(t) = adapter.update(Instant::now(), loss, dropped) else {
             return;
         };
         if (t.rung.width, t.rung.height, t.rung.fps) != (st.width, st.height, st.fps) {
@@ -1669,6 +1688,7 @@ impl Core {
         let mut cc = CallConfig::new(Role::Offerer, self.cfg.media_bind);
         cc.advertise = self.cfg.advertise;
         cc.send_loss = self.cfg.send_loss;
+        cc.recv_loss = self.cfg.recv_loss;
         cc.stun_servers = self.cfg.stun_servers.clone();
         if transport == MediaTransport::Udp {
             if self.cfg.transport == TransportPref::Auto {

@@ -1,0 +1,53 @@
+{
+  "test": "cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture --test-threads=1 hardware fifty",
+  "date": "2026-11-04",
+  "gpu": "RTX 2060 SUPER (dev machine, not the spec RTX 4070 Super)",
+  "runs": [
+    {
+      "streams": 50,
+      "size": "320x180",
+      "fps": 10,
+      "frames_per_stream": 30,
+      "decoded": 1500,
+      "decode_s": 0.417,
+      "share_of_one_core": 0.139,
+      "ms_per_frame": 0.278
+    },
+    {
+      "mode": "1920x1080@60",
+      "encoder": "NVIDIA H.264 Encoder MFT",
+      "decoder_dxva": true,
+      "adapter": "NVIDIA GeForce RTX 2060 SUPER",
+      "frames": 180,
+      "skipped": 0,
+      "decoded": 180,
+      "fps": 60.3,
+      "kbps": 999,
+      "encode_ms_p50": 4.13,
+      "encode_ms_p95": 4.62,
+      "encode_decode_ms_p50": 7.02,
+      "encode_decode_ms_p95": 7.71,
+      "encode_decode_ms_p99": 22.36,
+      "decode_call_ms_p50": 2.9,
+      "decode_call_ms_p95": 3.31
+    },
+    {
+      "mode": "2560x1440@120",
+      "encoder": "NVIDIA H.264 Encoder MFT",
+      "decoder_dxva": true,
+      "adapter": "NVIDIA GeForce RTX 2060 SUPER",
+      "frames": 360,
+      "skipped": 5,
+      "decoded": 355,
+      "fps": 118.4,
+      "kbps": 2233,
+      "encode_ms_p50": 6.22,
+      "encode_ms_p95": 8.52,
+      "encode_decode_ms_p50": 11.24,
+      "encode_decode_ms_p95": 15.71,
+      "encode_decode_ms_p99": 42.03,
+      "decode_call_ms_p50": 4.91,
+      "decode_call_ms_p95": 5.58
+    }
+  ]
+}

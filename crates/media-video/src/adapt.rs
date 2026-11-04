@@ -4,7 +4,7 @@
 //! Once a second the owner feeds what the uplink reports — loss of our main video in the
 //! server's receiver reports and frames the pacer had to drop — and gets back a new
 //! target (size, fps, bitrate) when it should change. The bitrate moves multiplicatively
-//! (−30 % on congestion, +8 % after 3 clean seconds, never above the preset); the picture
+//! (−30 % at ≥ 10 % loss or pacer drops, held at 2–10 %, +8 % after 3 clean seconds, never above the preset); the picture
 //! follows the bitrate down a ladder of sizes at the preset frame rate (preset size →
 //! 1080p → 720p → 540p) and only below the smallest size lowers the frame rate (½ steps,
 //! not below 15 fps). Going down happens at once (at most every 2 s), going up a rung at
@@ -89,7 +89,8 @@ pub struct Adapter {
 }
 
 impl Adapter {
-    pub const DOWN_LOSS: f32 = 0.05;
+    /// Like GCC's loss controller: above 10 % back off, 2–10 % hold, below 2 % grow.
+    pub const DOWN_LOSS: f32 = 0.10;
     pub const CLEAN_LOSS: f32 = 0.02;
     pub const RAISE_AFTER: Duration = Duration::from_secs(3);
     pub const DOWN_EVERY: Duration = Duration::from_secs(2);

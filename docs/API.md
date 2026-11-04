@@ -99,7 +99,7 @@ Server events (ADR 0008, spec §11 `media.track_published/unpublished`):
 
 ### Screen share (S3, ADR 0010)
 
-The client's offer has three m-lines: voice (Opus), screen video (H.264, packetization
+The client's offer has three m-lines (four since S4, see below): voice (Opus), screen video (H.264, packetization
 mode 1, RTX) and the share's system audio (Opus). Requests need a media session in the
 joined room.
 
@@ -114,6 +114,25 @@ joined room.
 
 * Loss repair: NACK/RTX on each leg (client ↔ server), keyframe requests (PLI/FIR) from a
   viewer reach the sharer. The sending client paces video (12 Mbit/s cap).
+
+### Layers and previews (S4, ADR 0011)
+
+A client that can carry previews offers a fourth m-line (second H.264 video m-line) on
+which it sends the low preview layer of its share (≈ 320 px longest side, ≈ 10 fps, same
+RTP timestamps as the high layer). The server announces every member's preview stream as
+`TrackPublished{kind: TRACK_KIND_SCREEN_PREVIEW(3), ssrc, rtx_ssrc}` — only to sessions
+with four m-lines (an S3 client would read an unknown kind as audio).
+
+| Client request | Effect | Errors |
+|---|---|---|
+| `ScreenShare{…, bitrate_kbps, preview}` | As in S3, plus the high layer's target bitrate (≤ 100 000, used for the server's high-stream budget) and whether a preview layer is sent. Sent again when adaptation changes size, rate or bitrate. | as above |
+| `SubscribeScreen{room_id, peer_id, layer}` | `layer`: `SCREEN_LAYER_AUTO(0)` (default: high unless the viewer's downlink loses packets or the budget is used up), `HIGH(1)`, `LOW(2)`. The same peer with another layer switches the running stream at the next keyframe of the new layer (sequence numbers continue). Unknown layer → `BAD_REQUEST`. | as above |
+| `SubscribePreviews{room_id, peer_ids}` | The shares shown as previews (≤ `MAX_PREVIEWS` = 50 distinct non-empty ids), replacing the previous list; `[]` = none. Previews of members not sharing wait until they do. | `BAD_REQUEST`, `NOT_IN_ROOM`, `INTERNAL` |
+
+| Event | Meaning |
+|---|---|
+| `ScreenShareState{…, bitrate_kbps, preview}` | `preview`: a preview layer can be received for this share. |
+| `ScreenSubscription{room_id, peer_id, requested, layer, reason}` | spec §11 `subscription.updated`: the layer (`HIGH`/`LOW`) the watched share flows with now or after the pending switch, and why: `REQUESTED(1)`, `NETWORK(2)` (auto, ≥ 8 % loss in two receiver reports or ≥ 20 % in one; back up after 8 clean reports and a hold that doubles after a failed probe, 8–64 s), `ADMISSION(3)` (server budget `--max-high-egress-mbps` used up; earlier subscriptions keep theirs), `SINGLE_LAYER(4)` (the sharer sends no preview). Sent after every `SubscribeScreen` and on every change. |
 
 ### Error codes
 

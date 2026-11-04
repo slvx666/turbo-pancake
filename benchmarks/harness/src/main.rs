@@ -5,6 +5,7 @@
 
 mod mem;
 mod sfu;
+mod sfu_screen;
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
@@ -77,6 +78,26 @@ enum Cmd {
         #[arg(long, default_value_t = 100)]
         payload: usize,
     },
+    /// S4 screen share load: `publishers` (N share, 2 watch + preview all), `fanout`
+    /// (1 shares, N watch high), `grid` (N share, each previews all others).
+    SfuScreen {
+        #[arg(long)]
+        server_exe: PathBuf,
+        #[arg(long, value_enum)]
+        scenario: sfu_screen::Scenario,
+        #[arg(long, default_value_t = 50)]
+        n: usize,
+        #[arg(long, default_value_t = 10)]
+        seconds: u64,
+        #[arg(long, default_value_t = 2000)]
+        high_kbps: u32,
+        #[arg(long, default_value_t = 30)]
+        high_fps: u32,
+        #[arg(long, default_value_t = 150)]
+        preview_kbps: u32,
+        #[arg(long, default_value_t = 10)]
+        preview_fps: u32,
+    },
 }
 
 fn parse_kv(s: &str) -> Result<(String, String), String> {
@@ -117,6 +138,27 @@ fn main() -> anyhow::Result<()> {
             &talkers,
             seconds,
             payload,
+        ))?,
+        Cmd::SfuScreen {
+            server_exe,
+            scenario,
+            n,
+            seconds,
+            high_kbps,
+            high_fps,
+            preview_kbps,
+            preview_fps,
+        } => tokio::runtime::Runtime::new()?.block_on(sfu_screen::sfu_screen(
+            &server_exe,
+            sfu_screen::Params {
+                scenario,
+                n,
+                seconds,
+                high_kbps,
+                high_fps,
+                preview_kbps,
+                preview_fps,
+            },
         ))?,
     };
     std::fs::create_dir_all(&cli.out_dir)?;

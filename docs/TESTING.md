@@ -51,6 +51,19 @@ Windows note: libopus is built by CMake. Without an explicit `CMAKE_GENERATOR` t
 `CMAKE_GENERATOR = "Visual Studio 17 2022"` under `[env]` in `.cargo/config.toml`
 (CI derives it via `vswhere`) and `cargo clean -p opusic-sys` once.
 
+## Screen share S4 (Windows, dev machine)
+
+```bash
+# layers, previews, adaptation through a real SFU (headless, synthetic H.264-shaped payloads)
+cargo test -p turbo-pancake-media-sfu --test screen layers -- --nocapture
+# 1440p120 / 1080p60 encode → decode and 50 preview decodes on one thread
+cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture --test-threads=1 hardware fifty
+# load: 50 publishers + 2 viewers, 1 → 50 viewers, 50 × 49 previews (release server process)
+turbo-pancake-bench sfu-screen --server-exe <target>/release/turbo-pancake-app-server --scenario grid --n 50
+# GUI trial: server + 3 clients on the 2nd monitor (A shares it, C a generated picture, B watches A)
+powershell -File benchmarks/scripts/s4-trial.ps1 -Seconds 30 [-WatchLayer low] [-BRecvLoss 0.15] [-ALoss 0.15] [-Budget 1] [-ShareWindow [-Fullscreen]]
+```
+
 ## Desktop window smoke without disturbing the user (Windows)
 
 The owner works on the same machine during tests. Rules: windows under test open on the

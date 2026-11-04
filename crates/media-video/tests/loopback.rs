@@ -282,3 +282,69 @@ fn real_time(width: u32, height: u32, fps: u32, kbps: u32, frames: u32) {
         "encoder kept up with {fps} fps: {skipped} skipped"
     );
 }
+
+/// S4 previews: 50 preview streams (320×180, 10 fps) decoded on one thread with the OS
+/// decoder without DXVA, as the client's preview decoder does. Each stream gets 3 s of
+/// frames; the time spent is the share of one core 50 live previews cost.
+#[test]
+fn fifty_preview_streams_on_one_thread() {
+    startup().expect("Media Foundation");
+    let (device, _context, _) = create_device().expect("D3D11 device");
+    let (w, h, fps, seconds) = (320u32, 180u32, 10u32, 3u32);
+    let mut config = EncoderConfig::new(w, h, fps, 200);
+    config.gop_frames = fps * 4;
+    let mut encoder = match H264Encoder::new(&device, &config) {
+        Ok(e) => e,
+        Err(VideoError::NoCodec(what)) => {
+            println!("SKIP: no H.264 {what}");
+            return;
+        }
+        Err(e) => panic!("encoder: {e}"),
+    };
+    let duration = 10_000_000 / i64::from(fps);
+    let mut frames = Vec::new();
+    for n in 0..fps * seconds {
+        wait_ready(&mut encoder);
+        encoder
+            .encode(
+                EncoderInput::Nv12(&picture(w, h, n)),
+                i64::from(n) * duration,
+                duration,
+            )
+            .expect("encode");
+        while let Some(f) = encoder.poll_output().expect("output") {
+            frames.push(f);
+        }
+    }
+    frames.extend(encoder.drain().expect("drain"));
+    let streams = 50;
+    let mut decoders: Vec<H264Decoder> = (0..streams)
+        .map(|_| H264Decoder::new(None).expect("decoder"))
+        .collect();
+    let start = Instant::now();
+    let mut decoded = 0usize;
+    // Round robin like live streams: frame n of every stream, then frame n + 1.
+    for f in &frames {
+        for d in decoders.iter_mut() {
+            d.decode(&f.data, f.timestamp).expect("decode");
+            while d.poll_output().is_some() {
+                decoded += 1;
+            }
+        }
+    }
+    let busy = start.elapsed().as_secs_f64();
+    for d in decoders.iter_mut() {
+        decoded += d.drain().expect("drain").len();
+    }
+    let core_share = busy / f64::from(seconds);
+    println!(
+        "TURBO_PANCAKE_PREVIEWS {{\"streams\":{streams},\"size\":\"{w}x{h}\",\"fps\":{fps},\"frames_per_stream\":{},\"decoded\":{decoded},\"decode_s\":{busy:.3},\"share_of_one_core\":{core_share:.3},\"ms_per_frame\":{:.3}}}",
+        frames.len(),
+        busy * 1000.0 / (frames.len() * streams) as f64
+    );
+    assert_eq!(
+        decoded,
+        frames.len() * streams,
+        "every frame of every stream"
+    );
+}
