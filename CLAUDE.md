@@ -3,6 +3,9 @@
 Native desktop messenger (Rust workspace: Slint UI, Axum server, str0m WebRTC).
 Talk to the owner in Russian.
 
+New developer or new machine: first follow `docs/ONBOARDING.md` (tools, local config,
+`CLAUDE.local.md`, key decisions).
+
 ## Start of every session ("продолжай" means exactly this)
 
 1. Read the spec in full: `TECHNICAL_SPEC_MESSENGER_RU.md` v1.0. It is kept outside the repo
