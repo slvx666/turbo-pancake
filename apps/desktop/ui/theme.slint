@@ -1,0 +1,46 @@
+// Shared colours (Discord-like dark/light) and the small icon button.
+
+export global Theme {
+    in-out property <bool> dark: true;
+    out property <color> bg-tertiary: dark ? #1e1f22 : #e3e5e8;
+    out property <color> bg-secondary: dark ? #2b2d31 : #f2f3f5;
+    out property <color> bg-primary: dark ? #313338 : #ffffff;
+    out property <color> text-normal: dark ? #dbdee1 : #313338;
+    out property <color> text-muted: dark ? #949ba4 : #5c5e66;
+    out property <color> accent: #5865f2;
+    out property <color> separator: dark ? #26282c : #d4d7dc;
+    out property <length> font-size: 14px;
+}
+
+export component IconButton inherits Rectangle {
+    in property <string> label;
+    in property <string> tooltip;
+    callback clicked;
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    background: touch.has-hover || focus.has-focus ? (Theme.dark ? #3f4147 : #d7d9dc) : transparent;
+    accessible-role: button;
+    accessible-label: tooltip;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.label;
+        color: Theme.text-muted;
+        font-size: 15px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

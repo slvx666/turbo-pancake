@@ -71,6 +71,23 @@ turbo-pancake-bench sfu-screen --server-exe <target>/release/turbo-pancake-app-s
 powershell -File benchmarks/scripts/s4-trial.ps1 -Seconds 30 [-WatchLayer low] [-BRecvLoss 0.15] [-ALoss 0.15] [-Budget 1] [-ShareWindow [-Fullscreen]]
 ```
 
+## Messenger S5 (Windows, dev machine)
+
+```bash
+# server + PostgreSQL: accounts, sessions, messages, blocks, sync, security negatives
+cargo test -p turbo-pancake-app-server --test messenger
+# two real client services (engine + SQLite cache + WebSocket) against it
+cargo test -p turbo-pancake-messenger-client --test sync
+# GUI trial: server + PostgreSQL + two release clients on the 2nd monitor, 4 phases
+# (exchange, block, client restart from the stored session, server restart)
+powershell -File benchmarks/scripts/s5-trial.ps1 -Out benchmarks/results/s5-trial-windows.log
+```
+
+The desktop client signs in from the UI, or for trials with `--profile <p> --login <user>
+[--register]` (password in `TURBO_PANCAKE_PASSWORD`), `--chat-with <user>`, `--send <text>`,
+`--block`, `--chat-log`. Sessions are stored in the Windows Credential Manager
+(`turbo-pancake/<profile>/<server>`), caches under `%LOCALAPPDATA%/turbo-pancake/cache/<profile>`.
+
 ## Desktop window smoke without disturbing the user (Windows)
 
 The owner works on the same machine during tests. Rules: windows under test open on the

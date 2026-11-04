@@ -3,6 +3,9 @@
 // the right, user panel at the bottom-left. No server/channel rail by design.
 
 import { Button, LineEdit, CheckBox, ComboBox, Slider, Palette } from "std-widgets.slint";
+import { Theme, IconButton } from "theme.slint";
+import { ConversationRow, MessageRow, Sidebar, AuthPanel, ChatPanel } from "chat.slint";
+export { Theme, ConversationRow, MessageRow }
 
 // One other member of the voice room.
 export struct MemberRow {
@@ -25,141 +28,6 @@ export struct ShareRow {
     has-preview: bool,
     // Preview stream id (SSRC as int; 0 = none) to match decoded pictures.
     preview-ssrc: int,
-}
-
-export global Theme {
-    in-out property <bool> dark: true;
-    out property <color> bg-tertiary: dark ? #1e1f22 : #e3e5e8;
-    out property <color> bg-secondary: dark ? #2b2d31 : #f2f3f5;
-    out property <color> bg-primary: dark ? #313338 : #ffffff;
-    out property <color> text-normal: dark ? #dbdee1 : #313338;
-    out property <color> text-muted: dark ? #949ba4 : #5c5e66;
-    out property <color> accent: #5865f2;
-    out property <color> separator: dark ? #26282c : #d4d7dc;
-    out property <length> font-size: 14px;
-}
-
-component IconButton inherits Rectangle {
-    in property <string> label;
-    in property <string> tooltip;
-    callback clicked;
-    width: 32px;
-    height: 32px;
-    border-radius: 4px;
-    background: touch.has-hover || focus.has-focus ? (Theme.dark ? #3f4147 : #d7d9dc) : transparent;
-    accessible-role: button;
-    accessible-label: tooltip;
-    accessible-action-default => { root.clicked(); }
-    forward-focus: focus;
-    focus := FocusScope {
-        key-pressed(event) => {
-            if (event.text == " " || event.text == "\n") {
-                root.clicked();
-                return accept;
-            }
-            reject
-        }
-    }
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
-    Text {
-        text: root.label;
-        color: Theme.text-muted;
-        font-size: 15px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
-component Sidebar inherits Rectangle {
-    in property <string> user-name;
-    in property <string> connection-status;
-    callback toggle-theme;
-    background: Theme.bg-secondary;
-    VerticalLayout {
-        Rectangle {
-            height: 48px;
-            border-width: 0px;
-            HorizontalLayout {
-                padding: 10px;
-                Rectangle {
-                    background: Theme.bg-tertiary;
-                    border-radius: 4px;
-                    Text {
-                        x: 8px;
-                        text: "Найти по @username";
-                        color: Theme.text-muted;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        height: parent.height;
-                    }
-                }
-            }
-        }
-        Rectangle { height: 1px; background: Theme.separator; }
-        VerticalLayout {
-            padding: 8px;
-            spacing: 4px;
-            Text {
-                text: "ЛИЧНЫЕ СООБЩЕНИЯ";
-                color: Theme.text-muted;
-                font-size: 11px;
-                font-weight: 700;
-            }
-            Text {
-                text: "Пока нет диалогов";
-                color: Theme.text-muted;
-                font-size: Theme.font-size;
-            }
-            Rectangle { }
-        }
-        // User panel
-        Rectangle {
-            height: 52px;
-            background: Theme.dark ? #232428 : #ebedef;
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 8px;
-                alignment: stretch;
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 16px;
-                    background: Theme.accent;
-                    Text {
-                        text: root.user-name.character-count > 0 ? "T" : "?";
-                        color: white;
-                        font-weight: 700;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    Text {
-                        text: root.user-name;
-                        color: Theme.text-normal;
-                        font-size: 13px;
-                        font-weight: 600;
-                    }
-                    Text {
-                        text: root.connection-status;
-                        color: Theme.text-muted;
-                        font-size: 11px;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        label: Theme.dark ? "☀" : "☾";
-                        tooltip: "Переключить тему";
-                        clicked => { root.toggle-theme(); }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // A member of the call: speaking indicator, name, own volume slider.
@@ -770,6 +638,40 @@ export component MainWindow inherits Window {
     in property <string> connection-status: "Не подключено";
     in property <string> build-info;
 
+    // Messenger (S5).
+    in property <bool> signed-in;
+    in property <string> server-label;
+    in property <string> auth-error;
+    in property <bool> auth-busy;
+    in property <string> find-error;
+    in property <[ConversationRow]> conversations;
+    in-out property <bool> voice-selected;
+    in property <string> current-conversation;
+    in property <string> chat-title;
+    in property <string> chat-username;
+    in property <bool> chat-online;
+    in property <bool> chat-can-send: true;
+    in property <bool> chat-blocked-by-me;
+    in property <[MessageRow]> messages;
+    in property <string> compose-mode;
+    in property <string> compose-label;
+    in-out property <string> compose-text;
+    callback login(string, string);
+    callback register(string, string, string);
+    callback logout();
+    callback find-user(string);
+    callback open-conversation(string);
+    callback open-voice();
+    callback send-message(string);
+    callback reply-to(string);
+    callback edit-message(string);
+    callback delete-message(string);
+    callback retry-message(string);
+    callback discard-message(string);
+    callback cancel-compose();
+    callback toggle-block();
+    callback draft-changed(string);
+
     in-out property <string> room-text;
     in property <bool> in-room;
     in property <string> call-title: "Не в звонке";
@@ -839,12 +741,55 @@ export component MainWindow inherits Window {
             width: 240px;
             user-name: root.user-name;
             connection-status: root.connection-status;
+            signed-in: root.signed-in;
+            conversations: root.conversations;
+            current: root.current-conversation;
+            voice-selected: root.voice-selected;
+            find-error: root.find-error;
             toggle-theme => {
                 Theme.dark = !Theme.dark;
                 Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
             }
+            find-user(u) => { root.find-user(u); }
+            open-conversation(id) => { root.open-conversation(id); }
+            open-voice => { root.open-voice(); }
+            logout => { root.logout(); }
         }
-        VerticalLayout {
+        if !root.voice-selected && !root.signed-in: AuthPanel {
+            server: root.server-label;
+            error: root.auth-error;
+            busy: root.auth-busy;
+            login(u, p) => { root.login(u, p); }
+            register(u, p, d) => { root.register(u, p, d); }
+        }
+        if !root.voice-selected && root.signed-in && root.current-conversation == "": Rectangle {
+            background: Theme.bg-primary;
+            Text {
+                text: "Выберите диалог слева или найдите собеседника по @username";
+                color: Theme.text-muted;
+            }
+        }
+        if !root.voice-selected && root.signed-in && root.current-conversation != "": ChatPanel {
+            title: root.chat-title;
+            username: root.chat-username;
+            online: root.chat-online;
+            can-send: root.chat-can-send;
+            blocked-by-me: root.chat-blocked-by-me;
+            messages: root.messages;
+            compose-mode: root.compose-mode;
+            compose-label: root.compose-label;
+            compose-text <=> root.compose-text;
+            send(t) => { root.send-message(t); }
+            reply-to(k) => { root.reply-to(k); }
+            edit-message(k) => { root.edit-message(k); }
+            delete-message(k) => { root.delete-message(k); }
+            retry(k) => { root.retry-message(k); }
+            discard(k) => { root.discard-message(k); }
+            cancel-compose => { root.cancel-compose(); }
+            toggle-block => { root.toggle-block(); }
+            draft-changed(t) => { root.draft-changed(t); }
+        }
+        if root.voice-selected: VerticalLayout {
             Rectangle {
                 height: 48px;
                 background: Theme.bg-primary;

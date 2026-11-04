@@ -35,6 +35,15 @@
 //!       (e.g. place the window on a secondary monitor during tests).
 //!   `--no-activate` — create the window without activating it, so it does not
 //!       take keyboard focus from the user's current window.
+//!   Messenger (S5), the server's HTTP API is derived from `--server`:
+//!   `--profile <name>` — local profile: its own stored session and cache (several
+//!       clients on one machine, default `default`).
+//!   `--login <username>` — sign in at start (password from `TURBO_PANCAKE_PASSWORD`,
+//!       never on the command line); `--register` creates the account instead.
+//!   `--chat-with <username>` — open the direct conversation with this user.
+//!   `--send <text>` — send this message once the conversation is open (repeatable).
+//!   `--block` — block the `--chat-with` user once the conversation is open.
+//!   `--chat-log` — print `TURBO_PANCAKE_CHAT …` lines on every messenger update.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -60,6 +69,8 @@ use turbo_pancake_media_video::{MonitorInfo, ShareConfig, ShareSource};
 use turbo_pancake_protocol::validate_display_name;
 
 slint::include_modules!();
+
+mod messenger_ui;
 
 #[derive(Default)]
 struct Args {
@@ -89,6 +100,7 @@ struct Args {
     share_window: bool,
     fullscreen: bool,
     share_no_audio: bool,
+    chat: messenger_ui::Script,
 }
 
 fn parse_args() -> Args {
@@ -96,6 +108,7 @@ fn parse_args() -> Args {
         share_quality: 1,
         ..Args::default()
     };
+    out.chat.profile = "default".into();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -164,6 +177,22 @@ fn parse_args() -> Args {
             "--share-window" => out.share_window = true,
             "--fullscreen" => out.fullscreen = true,
             "--share-no-audio" => out.share_no_audio = true,
+            "--profile" => {
+                if let Some(p) = args.next().filter(|p| {
+                    !p.is_empty()
+                        && p.len() <= 32
+                        && p.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                }) {
+                    out.chat.profile = p;
+                }
+            }
+            "--login" => out.chat.login = args.next(),
+            "--register" => out.chat.register = true,
+            "--chat-with" => out.chat.chat_with = args.next(),
+            "--send" => out.chat.send.extend(args.next()),
+            "--chat-log" => out.chat.chat_log = true,
+            "--block" => out.chat.block = true,
             "--test-recv-loss" => {
                 out.recv_loss = args
                     .next()
@@ -541,7 +570,10 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
         }
         let v = view::render(s);
         let _ = weak.upgrade_in_event_loop(move |w| {
-            w.set_connection_status(v.connection.into());
+            // Signed in, the sidebar shows the messenger connection instead.
+            if !w.get_signed_in() {
+                w.set_connection_status(v.connection.into());
+            }
             w.set_in_room(v.in_room);
             w.set_call_title(v.title.into());
             w.set_call_detail(v.detail.into());
@@ -760,13 +792,20 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
     window.set_build_info(
         format!(
-            "turbo-pancake-desktop {} · {} · S4",
+            "turbo-pancake-desktop {} · {} · S5",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS
         )
         .into(),
     );
     let session = start_session(&window, &args, started);
+    // A scripted call opens on the voice room; otherwise sign-in / conversations first.
+    window.set_voice_selected(args.room.is_some() || args.share.is_some());
+    let server = args
+        .server
+        .clone()
+        .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
+    let messenger = messenger_ui::start(&window, &server, args.chat.clone());
     let share_window: ShareWindowSlot = Rc::default();
     let _pictures = session
         .as_ref()
@@ -820,6 +859,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     // Leave the room and release audio devices before the process exits.
     drop(window);
+    messenger.stop();
     if let Some(s) = session {
         s.stop();
     }

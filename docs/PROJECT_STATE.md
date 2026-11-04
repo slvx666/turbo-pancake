@@ -1,7 +1,7 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S5 — accounts and direct messages (Windows): IN_PROGRESS** — plan in `docs/STAGES.md` ("S5 plan"), ADR 0013. Steps 1–4 (protocol, test PostgreSQL, server, client core) done; next: desktop UI (step 5).
+Current stage: **S5 — accounts and direct messages (Windows): IN_PROGRESS** — plan in `docs/STAGES.md` ("S5 plan"), ADR 0013. Steps 1–6 (protocol, test PostgreSQL, server, client core, desktop UI, two-client trial) done; left: TLS (step 7).
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = IN_PROGRESS**; S6–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified commit: 25c6523 (branch `main`, CI 41826651545: Windows job green incl. all messenger tests; audit green on dbfc33a, CI 41831401852, after ignoring RUSTSEC-2023-0071 — issue 41). Earlier: 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
@@ -49,6 +49,7 @@ Last session: 2026-11-04 (S5 steps 1–4)
 | **Test PostgreSQL**: throw-away cluster per test process from portable binaries, killed with the process (job object), one database per test | `crates/pg-test` | 1 unit test; used by all messenger tests |
 | **Messenger server** (S5): PostgreSQL + SQLx migrations, Argon2id (19 MiB, t=2), opaque tokens stored as SHA-256 with sliding 30-day expiry, refresh rotation, logout/revoke/password change closing WebSockets, same answer and cost for unknown user/wrong password, lookup, blocks (both sides 403, presence hidden), direct conversations (one per pair), messages with `server_sequence` + `change_seq` under the conversation row lock, nonce idempotency, replies, edit/delete-for-everyone tombstones, change feed, cursor history, receipts (monotonic, clamped), presence from live connections, event fan-out, rate limits, `security` log target without secrets, WebSockets closed on server stop, `--database-url`, anonymous calls only on loopback by default, plain HTTP refused off loopback with accounts | `migrations/`, `apps/app-server/src/{api,auth,chat,events,ratelimit,signaling,lib,main}.rs` | `apps/app-server/tests/messenger.rs` (10), `ratelimit` unit |
 | **Messenger client core** (S5): typed API client, SQLite cache (migrations by `user_version`, idempotent apply by `change_seq`, `secure_delete`, corrupted file moved aside and rebuilt), sync engine (feed from the resume cursor, duplicate/gap handling of events, pending send/edit/delete with nonces, failed with the server's reason, retry/discard, delivered/read acks, drafts), views (conversation list with unread/last text/presence, messages with reply quotes and pending/failed/sent/delivered/read), worker thread with its own signed-in WebSocket, heartbeat, reconnect 0.5→5 s, offline resume from the cache, cache wiped on logout/revocation | `crates/messenger-client` | 3 unit + 4 integration tests (`tests/sync.rs`: two real `Service`s, real server + PostgreSQL) |
+| **Desktop messenger UI** (S5): sign-in / register screen, conversation list (presence dot, unread badge, last text or "черновик"), find by @username, voice room entry, Discord-like feed (avatar + name + local time, grouping, reply quote, "(изменено)", deleted placeholder, own state отправляется/отправлено/доставлено/прочитано, failed with the reason + retry/discard), hover actions reply/edit/delete, selectable text (copy), compose bar for reply/edit, drafts saved per conversation, block/unblock in the header, banner when sending is not allowed, messenger connection status in the user panel, logout; session (token + user) in the Windows Credential Manager per profile and server, resume at start (offline from the cache); scripted flags `--profile --login --register --chat-with --send --block --chat-log` | `apps/desktop/ui/{chat,theme,main}.slint`, `apps/desktop/src/{messenger_ui,chat,credentials,main}.rs` | `chat::tests` (3), `credentials::tests` (real Credential Manager), `benchmarks/scripts/s5-trial.ps1` |
 | ADRs 0001–0013, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
@@ -126,9 +127,9 @@ performance results for the target hardware (RTX 4070 Super / M4).
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
-| Two users exchange real messages | Headless: `cargo test -p turbo-pancake-messenger-client --test sync` (two client services → real app-server → PostgreSQL: send, reply, edit, delete, receipts, presence). GUI with two desktop clients: steps 5–6 | **headless PASS**; two real desktop clients **UNVERIFIED** (UI not built yet) | `crates/messenger-client/tests/sync.rs::exchange_receipts_edit_delete_and_presence` |
-| Blocking works on the server | `cargo test -p turbo-pancake-app-server --test messenger blocks`; client: failed send with the reason | **PASS (headless)**: both sides 403 with the same text, edit refused, delete allowed, presence hidden both ways and restored, unblock restores sending | `messenger.rs::blocks_are_enforced_by_the_server`, `sync.rs::blocked_send_fails_visibly_and_revoked_session_signs_out` |
-| History and status correct after restart / reconnect | Server restart on the same database; client restart from its SQLite cache; client offline start; 300 missed messages + edit + delete | **PASS (headless)**: history, tokens, nonces survive the server restart, nobody online after it; sends queued offline go out once after reconnect; a restarted client shows the cache at once and catches up exactly; offline start shows the cache | `messenger.rs::{history_tokens_and_offline_state_survive_a_server_restart,missed_events_are_recovered_from_the_change_feed}`, `sync.rs::{offline_sends_server_restart_and_client_restart_without_duplicates,resume_shows_the_cache_offline_and_catches_up}` |
+| Two users exchange real messages | Headless: `cargo test -p turbo-pancake-messenger-client --test sync` (two client services → real app-server → PostgreSQL: send, reply, edit, delete, receipts, presence). GUI with two desktop clients: steps 5–6 | **PASS (Windows)**: headless, and two real release desktop clients through a real server + PostgreSQL on this machine (`s5-trial.ps1`, windows on the 2nd monitor, no input): registration of both, A writes two messages (emoji), B sees 2 unread, A sees "доставлено", after B opens the chat "прочитано". Two separate machines: owner-assisted, pending | `sync.rs::exchange_receipts_edit_delete_and_presence`, `benchmarks/results/s5-trial-windows-2026-11-04.log` (phase 1–2) |
+| Blocking works on the server | `cargo test -p turbo-pancake-app-server --test messenger blocks`; client: failed send with the reason | **PASS**: headless (both sides 403 with the same text, edit refused, delete allowed, presence hidden both ways and restored, unblock restores sending); GUI trial phase 2: B blocks A, A's message shows "не отправлено: Вы не можете писать этому пользователю", the input is replaced by the banner | `messenger.rs::blocks_are_enforced_by_the_server`, `sync.rs::blocked_send_fails_visibly_and_revoked_session_signs_out` |
+| History and status correct after restart / reconnect | Server restart on the same database; client restart from its SQLite cache; client offline start; 300 missed messages + edit + delete | **PASS**: headless (history, tokens, nonces survive the server restart, nobody online after it; sends queued offline go out once after reconnect; a restarted client shows the cache at once and catches up exactly; offline start shows the cache); GUI trial phase 3: A restarted from the Credential Manager shows the same 3 messages (no duplicates); phase 4: server killed and restarted while A runs → reconnecting → online, still 3 | `messenger.rs::{history_tokens_and_offline_state_survive_a_server_restart,missed_events_are_recovered_from_the_change_feed}`, `sync.rs::{offline_sends_server_restart_and_client_restart_without_duplicates,resume_shows_the_cache_offline_and_catches_up}` |
 | No duplicates | Nonce retries (sequential and two at once), 80 concurrent sends, duplicate events, resync pages | **PASS (headless)**: one message per nonce, sequences 1..80 gap-free, client views stay at exactly 5 / 31 messages after resyncs | `messenger.rs::concurrent_senders_get_gap_free_order`, `cache::tests::messages_apply_idempotently_in_any_order`, `sync.rs` |
 | Security / permission tests | `cargo test -p turbo-pancake-app-server --test messenger` | **PASS**: Argon2id hashes, same 401 for unknown user/wrong password, refresh rotation, revoke + password change close other sessions, every endpoint 401 without / with a garbage / overlong token, non-members 404, author-only edit/delete 403, wrong content type / malformed / 70 KiB bodies, bad ids/queries, 429 limits, anonymous WebSocket refused off loopback, corrupted cache recovery; **TLS UNVERIFIED** (step 7) | `apps/app-server/tests/messenger.rs`, `crates/messenger-client/src/cache.rs` tests |
 
@@ -629,21 +630,30 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S5 step 5 (desktop UI), Windows
+## Exact next task — S5 step 7 (TLS), Windows
 
-1. Desktop: start `turbo_pancake_messenger_client::Service` next to the call `Session`
-   (`--server` gives the URL; cache under `%LOCALAPPDATA%`), token + user in the Windows
-   Credential Manager (`CredWriteW` / `CredReadW`, cfg(windows)), `Resume` at start.
-2. Slint: sign in / register screen; left column = conversation list (presence dot, unread
-   badge, last text) + "find @username"; main = Discord-like message list (name, time,
-   reply quote, edited mark, own state pending/failed/sent/delivered/read), input with
-   reply / edit / delete / copy / retry / discard, drafts saved; block/unblock in the
-   header; connection status; the voice room panel stays reachable.
-3. `benchmarks/scripts/s5-trial.ps1`: server with a portable PostgreSQL cluster in the
-   build directory + two release desktop clients on the 2nd monitor (`--no-activate`),
-   scripted flags so exchange, block, client restart and server restart are checked from
-   logs without input; record the results here.
-4. Step 7: TLS (rustls) with an IP certificate or a pinned key; then S5 → DONE (Windows).
+1. Server: TLS with rustls (`--tls-cert`, `--tls-key`; PEM), HTTPS + WSS on the same port;
+   refuse plain HTTP off loopback stays. Document how the owner gets a certificate for an
+   IP address (or a self-generated key pinned in the client) — spec §2, spike 5.
+2. Client: `https://` / `wss://` with certificate verification always on (webpki roots
+   plus an optional pinned server certificate / key fingerprint from the config); a pin
+   mismatch is a clear error, never a silent fallback; tests with a self-signed test CA.
+3. Then S5 → DONE (Windows); owner-assisted: two separate machines.
+
+## Session log 2026-11-04 (S5 steps 5–6 — desktop UI, two-client trial)
+
+* Desktop UI (table above). Trial `s5-trial.ps1` green in all four phases
+  (`benchmarks/results/s5-trial-windows-2026-11-04.log`); screenshots checked locally
+  (Discord-like layout, states, banner), not committed (another window at the edge).
+* Pitfalls: PowerShell 5.1 reads `.ps1` without BOM as ANSI (Cyrillic, dashes) — scripts
+  are UTF-8 with BOM + CRLF; `pg_ctl start` with redirected output hangs PowerShell (the
+  server inherits the handles) — started through CreateProcess without redirection;
+  Slint: `row` is a reserved property name, `InputType.password`, `content-y`.
+* Build throttling (`jobs = 2`) lifted at the owner's request.
+* Local `cargo test --workspace --no-fail-fast`: 38 test groups green; 4 real-time GPU tests
+  in `media-video` (`hardware_1080p60/1440p120_real_time`, `share.rs` frame-rate checks)
+  failed on frame counts while a game used the GPU (37 % utilisation) — environmental, no
+  media code changed; CI on an idle runner is the check.
 
 ## Session log 2026-11-04 (S5 steps 1–4 — protocol, server, client core)
 

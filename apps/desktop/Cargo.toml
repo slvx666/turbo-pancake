@@ -26,6 +26,9 @@ turbo-pancake-protocol.workspace = true
 turbo-pancake-media-audio = { path = "../../crates/media-audio" }
 turbo-pancake-media-transport = { path = "../../crates/media-transport" }
 turbo-pancake-media-video = { path = "../../crates/media-video" }
+turbo-pancake-messenger-client = { path = "../../crates/messenger-client" }
+prost.workspace = true
+time = { workspace = true, features = ["local-offset"] }
 futures-util.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
@@ -41,6 +44,9 @@ slint = { version = "1.18", default-features = false, features = [
     # Pinned via Cargo.lock; revisit on Slint upgrades (API is unstable-flagged).
     "unstable-winit-030",
 ] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [dev-dependencies]
 turbo-pancake-app-server = { path = "../app-server" }

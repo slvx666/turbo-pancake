@@ -1,0 +1,521 @@
+// S5 messenger UI: conversation list, sign-in screen, direct chat (spec §7, §9).
+// Discord-like: one compact feed, author name + time on the left, no bubbles.
+
+import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Theme, IconButton } from "theme.slint";
+
+export struct ConversationRow {
+    id: string,
+    title: string,
+    username: string,
+    peer-id: string,
+    online: bool,
+    unread: int,
+    last-text: string,
+    can-send: bool,
+    blocked-by-me: bool,
+    has-draft: bool,
+}
+
+export struct MessageRow {
+    key: string,
+    author: string,
+    time: string,
+    body: string,
+    mine: bool,
+    // Same author as the message above within a few minutes: no header line.
+    grouped: bool,
+    has-reply: bool,
+    reply-author: string,
+    reply-text: string,
+    edited: bool,
+    deleted: bool,
+    // Own messages: "", "отправляется", "отправлено", "доставлено", "прочитано".
+    state: string,
+    failed: bool,
+    error: string,
+}
+
+component Avatar inherits Rectangle {
+    in property <string> name;
+    in property <bool> online;
+    in property <bool> show-presence: true;
+    width: 32px;
+    height: 32px;
+    border-radius: 16px;
+    background: Theme.accent;
+    Text {
+        text: root.name.character-count > 0 ? "●" : "?";
+        color: white;
+        font-size: 11px;
+    }
+    if root.show-presence: Rectangle {
+        x: parent.width - 11px;
+        y: parent.height - 11px;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        border-width: 2px;
+        border-color: Theme.bg-secondary;
+        background: root.online ? #23a55a : #80848e;
+        accessible-role: text;
+        accessible-label: root.online ? "в сети" : "не в сети";
+    }
+}
+
+component ConversationItem inherits Rectangle {
+    in property <ConversationRow> item;
+    in property <bool> selected;
+    in property <bool> presence: true;
+    callback clicked;
+    height: 44px;
+    border-radius: 4px;
+    background: root.selected ? (Theme.dark ? #404249 : #d4d7dc)
+        : touch.has-hover ? (Theme.dark ? #35373c : #e3e5e8) : transparent;
+    accessible-role: button;
+    accessible-label: root.item.title + (root.item.unread > 0 ? ", непрочитанных: " + root.item.unread : "");
+    accessible-action-default => { root.clicked(); }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 10px;
+        Avatar {
+            y: (parent.height - self.height) / 2;
+            name: root.item.title;
+            online: root.item.online;
+            show-presence: root.presence;
+        }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.item.title;
+                color: root.item.unread > 0 || root.selected ? Theme.text-normal : Theme.text-muted;
+                font-weight: root.item.unread > 0 ? 700 : 500;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.has-draft ? "черновик" : root.item.last-text;
+                color: Theme.text-muted;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        if root.item.unread > 0: Rectangle {
+            width: max(18px, badge.preferred-width + 10px);
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 9px;
+            background: #f23f43;
+            badge := Text {
+                text: root.item.unread > 99 ? "99+" : root.item.unread;
+                color: white;
+                font-size: 11px;
+                font-weight: 700;
+            }
+        }
+    }
+}
+
+// Left column: search by @username, the voice room, direct conversations, user panel.
+export component Sidebar inherits Rectangle {
+    in property <string> user-name;
+    in property <string> connection-status;
+    in property <bool> signed-in;
+    in property <[ConversationRow]> conversations;
+    in property <string> current;
+    in property <bool> voice-selected;
+    in property <string> find-error;
+    callback toggle-theme;
+    callback find-user(string);
+    callback open-conversation(string);
+    callback open-voice;
+    callback logout;
+    background: Theme.bg-secondary;
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                padding: 8px;
+                find := LineEdit {
+                    enabled: root.signed-in;
+                    placeholder-text: "Найти по @username";
+                    accepted(t) => {
+                        root.find-user(t);
+                        self.text = "";
+                    }
+                }
+            }
+        }
+        if root.find-error != "": Text {
+            x: 10px;
+            width: parent.width - 20px;
+            text: root.find-error;
+            color: #f23f43;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 1px; background: Theme.separator; }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 2px;
+            ConversationItem {
+                item: { title: "Голосовая комната", last-text: "звонок по id комнаты", online: false };
+                selected: root.voice-selected;
+                presence: false;
+                clicked => { root.open-voice(); }
+            }
+            Text {
+                text: "ЛИЧНЫЕ СООБЩЕНИЯ";
+                color: Theme.text-muted;
+                font-size: 11px;
+                font-weight: 700;
+                height: 24px;
+                vertical-alignment: bottom;
+            }
+            if root.signed-in && root.conversations.length == 0: Text {
+                text: "Пока нет диалогов: найдите собеседника по @username";
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            if !root.signed-in: Text {
+                text: "Войдите, чтобы переписываться";
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            ListView {
+                for c in root.conversations: ConversationItem {
+                    item: c;
+                    selected: !root.voice-selected && c.id == root.current;
+                    clicked => { root.open-conversation(c.id); }
+                }
+            }
+        }
+        // User panel
+        Rectangle {
+            height: 52px;
+            background: Theme.dark ? #232428 : #ebedef;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 8px;
+                Avatar {
+                    y: (parent.height - self.height) / 2;
+                    name: root.user-name;
+                    online: root.connection-status == "В сети";
+                    show-presence: root.signed-in;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.user-name;
+                        color: Theme.text-normal;
+                        font-size: 13px;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.connection-status;
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                        overflow: elide;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        label: Theme.dark ? "☀" : "☾";
+                        tooltip: "Переключить тему";
+                        clicked => { root.toggle-theme(); }
+                    }
+                }
+                if root.signed-in: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        label: "🚪";
+                        tooltip: "Выйти из аккаунта";
+                        clicked => { root.logout(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Sign in / create an account.
+export component AuthPanel inherits Rectangle {
+    in property <string> error;
+    in property <bool> busy;
+    in property <string> server;
+    callback login(string, string);
+    callback register(string, string, string);
+    in-out property <bool> register-mode;
+    background: Theme.bg-primary;
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 420px;
+                background: Theme.bg-secondary;
+                border-radius: 8px;
+                VerticalLayout {
+                    padding: 28px;
+                    spacing: 12px;
+                    Text {
+                        text: root.register-mode ? "Создать аккаунт" : "С возвращением!";
+                        color: Theme.text-normal;
+                        font-size: 22px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Сервер: " + root.server;
+                        color: Theme.text-muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                    Text { text: "ИМЯ ПОЛЬЗОВАТЕЛЯ"; color: Theme.text-muted; font-size: 11px; font-weight: 700; }
+                    username := LineEdit {
+                        placeholder-text: "латиница, цифры и _";
+                        accepted => { password.focus(); }
+                    }
+                    if root.register-mode: Text { text: "ОТОБРАЖАЕМОЕ ИМЯ"; color: Theme.text-muted; font-size: 11px; font-weight: 700; }
+                    if root.register-mode: display := LineEdit {
+                        placeholder-text: "как вас видят другие (необязательно)";
+                        edited(t) => { root.display-text = t; }
+                    }
+                    Text { text: "ПАРОЛЬ"; color: Theme.text-muted; font-size: 11px; font-weight: 700; }
+                    password := LineEdit {
+                        input-type: InputType.password;
+                        placeholder-text: root.register-mode ? "не короче 8 символов" : "";
+                        accepted => { submit.clicked(); }
+                    }
+                    if root.error != "": Text {
+                        text: root.error;
+                        color: #f23f43;
+                        wrap: word-wrap;
+                    }
+                    submit := Button {
+                        text: root.busy ? "Подождите…" : root.register-mode ? "Зарегистрироваться" : "Войти";
+                        primary: true;
+                        enabled: !root.busy;
+                        clicked => {
+                            if (root.register-mode) {
+                                root.register(username.text, password.text, root.display-text);
+                            } else {
+                                root.login(username.text, password.text);
+                            }
+                            password.text = "";
+                        }
+                    }
+                    Button {
+                        text: root.register-mode ? "Уже есть аккаунт? Войти" : "Нужен аккаунт? Зарегистрироваться";
+                        enabled: !root.busy;
+                        clicked => { root.register-mode = !root.register-mode; }
+                    }
+                }
+            }
+        }
+    }
+    property <string> display-text;
+}
+
+component MessageItem inherits Rectangle {
+    in property <MessageRow> msg;
+    in property <bool> can-write;
+    callback reply;
+    callback edit;
+    callback delete;
+    callback retry;
+    callback discard;
+    background: hover.has-hover ? (Theme.dark ? #2e3035 : #f2f3f5) : transparent;
+    hover := TouchArea {
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: root.msg.grouped ? 1px : 8px;
+        padding-bottom: 1px;
+        if root.msg.has-reply: Text {
+            x: 48px;
+            text: "↱ " + root.msg.reply-author + ": " + root.msg.reply-text;
+            color: Theme.text-muted;
+            font-size: 12px;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            spacing: 16px;
+            if !root.msg.grouped: Avatar {
+                name: root.msg.author;
+                show-presence: false;
+            }
+            if root.msg.grouped: Rectangle { width: 32px; }
+            VerticalLayout {
+                if !root.msg.grouped: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: root.msg.author;
+                        color: Theme.text-normal;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.msg.time;
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+                // Read-only text input: the text can be selected and copied (Ctrl+C).
+                body := TextInput {
+                    text: root.msg.deleted ? "сообщение удалено" : root.msg.body;
+                    read-only: true;
+                    wrap: word-wrap;
+                    color: root.msg.deleted ? Theme.text-muted : root.msg.failed ? #f23f43 : Theme.text-normal;
+                    single-line: false;
+                }
+                if root.msg.edited || root.msg.state != "" || root.msg.failed: Text {
+                    text: (root.msg.edited && !root.msg.deleted ? "(изменено) " : "")
+                        + (root.msg.failed ? "не отправлено: " + root.msg.error : root.msg.state);
+                    color: root.msg.failed ? #f23f43 : Theme.text-muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+    }
+    // Actions on hover (and on keyboard focus of the buttons).
+    if hover.has-hover && !root.msg.deleted: HorizontalLayout {
+        x: parent.width - self.preferred-width - 16px;
+        y: 0px;
+        height: 28px;
+        spacing: 2px;
+        if root.msg.failed: IconButton { label: "⟳"; tooltip: "Отправить снова"; clicked => { root.retry(); } }
+        if root.msg.failed: IconButton { label: "✕"; tooltip: "Убрать"; clicked => { root.discard(); } }
+        if !root.msg.failed && root.msg.state != "отправляется" && root.can-write: IconButton { label: "↩"; tooltip: "Ответить"; clicked => { root.reply(); } }
+        if root.msg.mine && !root.msg.failed && root.msg.state != "отправляется" && root.can-write: IconButton { label: "✎"; tooltip: "Изменить"; clicked => { root.edit(); } }
+        if root.msg.mine && !root.msg.failed && root.msg.state != "отправляется": IconButton { label: "🗑"; tooltip: "Удалить для всех"; clicked => { root.delete(); } }
+    }
+}
+
+// The open direct conversation.
+export component ChatPanel inherits Rectangle {
+    in property <string> title;
+    in property <string> username;
+    in property <bool> online;
+    in property <bool> can-send;
+    in property <bool> blocked-by-me;
+    in property <[MessageRow]> messages;
+    // "", "reply" or "edit".
+    in property <string> compose-mode;
+    in property <string> compose-label;
+    in-out property <string> compose-text;
+    callback send(string);
+    callback reply-to(string);
+    callback edit-message(string);
+    callback delete-message(string);
+    callback retry(string);
+    callback discard(string);
+    callback cancel-compose;
+    callback toggle-block;
+    callback draft-changed(string);
+    // New content: show the newest message (after the list has laid it out).
+    property <bool> scroll-pending: true;
+    changed messages => { root.scroll-pending = true; }
+    Timer {
+        interval: 30ms;
+        running: root.scroll-pending;
+        triggered => {
+            list.content-y = min(0px, list.visible-height - list.content-height);
+            root.scroll-pending = false;
+        }
+    }
+    background: Theme.bg-primary;
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                spacing: 8px;
+                Text {
+                    text: "@ " + root.title;
+                    color: Theme.text-normal;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "@" + root.username + (root.online ? " · в сети" : " · не в сети");
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                Button {
+                    text: root.blocked-by-me ? "Разблокировать" : "Заблокировать";
+                    clicked => { root.toggle-block(); }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.separator; }
+        list := ListView {
+            vertical-stretch: 1;
+            for m in root.messages: MessageItem {
+                msg: m;
+                can-write: root.can-send;
+                reply => { root.reply-to(m.key); }
+                edit => { root.edit-message(m.key); }
+                delete => { root.delete-message(m.key); }
+                retry => { root.retry(m.key); }
+                discard => { root.discard(m.key); }
+            }
+        }
+        if root.compose-mode != "": Rectangle {
+            height: 30px;
+            background: Theme.bg-secondary;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                Text {
+                    text: root.compose-label;
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                IconButton { label: "✕"; tooltip: "Отменить"; clicked => { root.cancel-compose(); } }
+            }
+        }
+        Rectangle {
+            height: 56px;
+            HorizontalLayout {
+                padding: 10px;
+                padding-left: 16px;
+                padding-right: 16px;
+                if !root.can-send: Text {
+                    text: root.blocked-by-me
+                        ? "Вы заблокировали этого пользователя. Разблокируйте, чтобы написать."
+                        : "Вы не можете писать этому пользователю.";
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                input := LineEdit {
+                    visible: root.can-send;
+                    text <=> root.compose-text;
+                    placeholder-text: root.compose-mode == "edit" ? "Изменить сообщение" : "Написать @" + root.username;
+                    edited(t) => { root.draft-changed(t); }
+                    accepted(t) => {
+                        if (t != "") {
+                            root.send(t);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

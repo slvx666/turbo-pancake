@@ -43,11 +43,11 @@ and sync. Groups (S6) reuse the same tables and feed.
    recovery, pending operations (optimistic send pending/sent/failed), sync on connect
    (change feed per conversation), dedup/gap handling of live events, receipts, token in
    the Credential Manager; headless tests against a real server.
-5. **Desktop UI** — sign in / register, conversation list with presence and unread,
+5. ~~**Desktop UI**~~ (done 2026-11-04) — sign in / register, conversation list with presence and unread,
    find by username → direct chat, Discord-like message list (name, time, reply quote,
    edited mark, own message state, delivery/read), reply / edit / delete / copy, drafts,
    block/unblock, sessions and password change, connection state; voice room stays.
-6. **Acceptance** — two real desktop clients on this machine (`s5-trial.ps1`, second
+6. ~~**Acceptance**~~ (done, `s5-trial.ps1`) — two real desktop clients on this machine (`s5-trial.ps1`, second
    monitor): exchange, block, restart and reconnect without duplicates or gaps; restart
    of the server; results in PROJECT_STATE.
 7. **TLS** — server TLS (rustls) with an IP certificate or pinned key, client verification

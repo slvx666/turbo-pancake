@@ -116,6 +116,8 @@ pub struct MessageView {
     pub deleted: bool,
     pub state: MessageState,
     pub server_sequence: i64,
+    /// Nonce of the pending operation shown on this message (retry / discard), or "".
+    pub pending_nonce: String,
 }
 
 /// Feed page size used for catching up.
@@ -541,6 +543,7 @@ impl Engine {
                     MessageState::Sent
                 },
                 server_sequence: m.server_sequence,
+                pending_nonce: String::new(),
             };
             // A queued edit or delete shows its result, marked pending/failed.
             for p in pending.iter().filter(|p| p.message_id == m.message_id) {
@@ -560,6 +563,7 @@ impl Engine {
                     Op::Send => {}
                 }
                 v.state = state;
+                v.pending_nonce = p.nonce.clone();
             }
             out.push(v);
         }
@@ -583,6 +587,7 @@ impl Engine {
                     .clone()
                     .map_or(MessageState::Pending, MessageState::Failed),
                 server_sequence: 0,
+                pending_nonce: p.nonce.clone(),
             });
         }
         Ok(out)
