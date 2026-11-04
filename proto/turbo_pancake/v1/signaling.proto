@@ -10,12 +10,13 @@
 //     new PROTOCOL_VERSION; the server answers an unsupported version with
 //     Error{code = ERROR_CODE_UNSUPPORTED_VERSION} and closes the socket.
 //
-// S0 scope: local development signaling (rooms + SDP/ICE relay) without
-// authentication. The auth handshake is introduced in S5 (field 3 of Hello is
-// reserved for the session token).
+// Rooms (calls) may be joined without an account while the server runs on loopback
+// (development, S1–S4 tests); messenger events need `Hello.auth_token` (S5, ADR 0013).
 syntax = "proto3";
 
 package turbo_pancake.v1;
+
+import "turbo_pancake/v1/api.proto";
 
 message ClientEnvelope {
   // Must equal the protocol version the client speaks (currently 1).
@@ -60,6 +61,18 @@ message ServerEnvelope {
     TrackUnpublished track_unpublished = 21;
     ScreenShareState screen_share_state = 22;
     ScreenSubscription screen_subscription = 23;
+    // Messenger events (S5), only on authenticated connections. At-least-once: dedup by
+    // (conversation_id, change_seq); a gap means "fetch /changes".
+    MessageEvent message_created = 24;
+    MessageEvent message_edited = 25;
+    MessageEvent message_deleted = 26;
+    Receipt read_updated = 27;
+    PresenceChanged presence_changed = 28;
+    // A conversation appeared for this user or its members/blocks changed: refetch it.
+    ConversationUpdated conversation_updated = 29;
+    // This connection's session was revoked (logout elsewhere, password change); the
+    // server closes the connection after it.
+    SessionRevoked session_revoked = 30;
   }
 }
 
@@ -69,8 +82,9 @@ message Hello {
   string client_version = 1;
   // Display name shown to other room members (1..=64 chars).
   string display_name = 2;
-  reserved 3;
-  reserved "auth_token";
+  // Session token from /v1/auth/*. Empty = anonymous (calls only, loopback servers).
+  // With a token the display name comes from the account and field 2 is ignored.
+  string auth_token = 3;
 }
 
 message Welcome {
@@ -80,6 +94,8 @@ message Welcome {
   // The client must send some frame (e.g. Ping) at least this often or it is disconnected.
   uint32 heartbeat_interval_ms = 3;
   uint32 max_frame_bytes = 4;
+  // The signed-in user; unset on anonymous connections.
+  User user = 5;
 }
 
 message JoinRoom {
@@ -190,6 +206,28 @@ enum ErrorCode {
   ERROR_CODE_PEER_NOT_FOUND = 7;
   ERROR_CODE_ROOM_FULL = 8;
   ERROR_CODE_INTERNAL = 9;
+  // Hello with an unknown, expired or revoked token, or anonymous Hello where accounts
+  // are required. The connection is closed after it.
+  ERROR_CODE_UNAUTHENTICATED = 10;
+}
+
+// ---- Messenger events (S5, ADR 0013) ----
+
+message MessageEvent {
+  ChatMessage message = 1;
+}
+
+message PresenceChanged {
+  string user_id = 1;
+  bool online = 2;
+}
+
+message ConversationUpdated {
+  string conversation_id = 1;
+}
+
+message SessionRevoked {
+  string session_id = 1;
 }
 
 // ---- Media through the server (SFU) ----

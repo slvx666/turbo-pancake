@@ -12,10 +12,17 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
+Messenger tests need PostgreSQL binaries (`initdb`, `postgres`, `createdb`, any version ≥ 15):
+set `TURBO_PANCAKE_PG_BIN` to their directory (a portable zip is enough, no service; on the dev
+machine it is set in the untracked `.cargo/config.toml`). `TURBO_PANCAKE_SKIP_PG=1` skips them
+with a message instead of failing.
+
 | Suite | Location | What it proves |
 |---|---|---|
 | protocol unit | `crates/protocol/src/lib.rs` | room id / display name validation |
 | protocol contract | `crates/protocol/tests/contract.rs` | pinned binary encoding, version check, oversize/garbage rejection, forward-compat unknown fields, signal validation |
+| messenger integration + security (S5) | `apps/app-server/tests/messenger.rs`, `src/ratelimit.rs` (unit) | real server, HTTP + WS, real PostgreSQL: register/login/refresh/logout, same 401 for unknown user and wrong password, session list/revoke, password change revokes other sessions (their WS gets `SessionRevoked` and closes); lookup, direct conversation idempotent from both sides; send with Unicode/emoji, live event without the nonce, nonce retry returns the stored message (no event, no sequence), reply, edit/delete author-only (403), non-members 404, tombstones in history and change feed, receipts clamped and monotonic with `ReadUpdated`; blocks: both sides 403 with the same text, presence hidden and restored; 300 missed messages + edit + delete recovered page by page exactly once; 80 concurrent sends (each sent twice at once) → sequences 1..80 gap-free; presence over two devices and after a silent heartbeat timeout; missing/garbage/overlong token on every endpoint, wrong content type, malformed and 70 KiB bodies, bad ids/queries; 429 on register/login/messages; history, sessions and nonces survive a server restart, nobody online after it; 503 without a database |
+| test PostgreSQL | `crates/pg-test` | one throw-away cluster per test process (`TURBO_PANCAKE_PG_BIN`, or `PGBIN` on CI), killed with the process via a job object, one database per test |
 | signaling integration | `apps/app-server/tests/signaling.rs` | real TCP+WS: hello/welcome, join/leave, offer/answer/ICE relay, error codes, heartbeat eviction, room capacity, connection limit, oversize close, 20-peer join/relay/leave, room switch (`RoomLeft` + `PeerLeft{SWITCHED}`, full room keeps the current call), idempotent join/leave, gap-free `event_id`, health/ready/version |
 | call driver | `crates/media-transport/tests/call.rs`, `src/call.rs` (unit) | real UDP: offer/answer relay, ICE+DTLS-SRTP, 150 frames each way at 20 ms across the u16 sequence wrap (payload/timestamp intact), 10 % wire loss loses exactly those packets, peer loss → Reconnecting → Failed; sequence extension across wrap/reorder |
 | two headless clients | `crates/media-transport/tests/voice_call.rs` | two `AudioEngine`s (simulated devices) + two `CallDriver`s over UDP, 5 % loss: ≥ 300 frames played, FEC repairs, concealment < 3 %, ≤ 3 late, 0 decode errors, tone reaches the far speaker, silent mic stays silent; leaving releases devices, device threads and socket; the other side goes Reconnecting |

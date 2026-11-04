@@ -12,16 +12,53 @@ Status legend: **implemented** (code + tests exist), **planned** (stage in brack
 |---|---|---|---|
 | GET | `/healthz` | implemented | `200 ok` while the process serves requests |
 | GET | `/readyz` | implemented | `200 ready`; `503` when the WebSocket connection limit is reached |
-| GET | `/v1/version` | implemented | `{"server_version":"x.y.z","protocol_version":1}` |
+| GET | `/v1/version` | implemented | `{"server_version":"x.y.z","protocol_version":1,"messenger":true}` |
 | GET | `/v1/signal` | implemented | WebSocket upgrade (below); `503` when connection limit reached |
-| POST | `/v1/auth/register`, `/v1/auth/login`, `/v1/auth/refresh`, `/v1/auth/logout`, `/v1/me` | planned (S5) | |
-| GET | `/v1/users/lookup?username=` | planned (S5) | exact match only |
-| POST/DELETE | `/v1/blocks/{user_id}` | planned (S5) | |
-| GET/POST | `/v1/conversations`, `/v1/conversations/{id}/members` | planned (S5/S6) | |
-| GET/POST/PATCH/DELETE | `/v1/conversations/{id}/messages` | planned (S5) | cursor pagination, `client_nonce` idempotency |
-| POST | `/v1/conversations/{id}/read` | planned (S5) | |
+| POST | `/v1/auth/register` | implemented (S5) | `RegisterRequest` → `201 AuthResponse`; `409` username taken |
+| POST | `/v1/auth/login` | implemented (S5) | `LoginRequest` → `AuthResponse`; `401` for unknown user *and* wrong password (same body, same cost) |
+| POST | `/v1/auth/refresh` | implemented (S5) | → `AuthResponse` with a new token; the old token stops working |
+| POST | `/v1/auth/logout` | implemented (S5) | → `Empty`; revokes this session, its WebSocket gets `SessionRevoked` and closes |
+| GET / PATCH | `/v1/me` | implemented (S5) | → `User`; PATCH `UpdateProfileRequest{display_name}` |
+| POST | `/v1/me/password` | implemented (S5) | `ChangePasswordRequest` → `AuthResponse` (this session, new token); every other session revoked; `403` wrong current password |
+| GET | `/v1/sessions` | implemented (S5) | → `SessionList` (active sessions, `current` marks the caller) |
+| DELETE | `/v1/sessions/{id}` | implemented (S5) | → `Empty`; `404` not the caller's |
+| GET | `/v1/users/lookup?username=` | implemented (S5) | → `User`; exact, case-insensitive match; `404` none |
+| GET | `/v1/blocks` | implemented (S5) | → `UserList` (users the caller blocked) |
+| PUT / DELETE | `/v1/blocks/{user_id}` | implemented (S5) | → `Empty`, idempotent |
+| GET | `/v1/conversations` | implemented (S5) | → `ConversationList` |
+| POST | `/v1/conversations/direct` | implemented (S5) | `CreateDirectRequest{user_id}` → `Conversation` (one per pair, idempotent) |
+| GET | `/v1/conversations/{id}/messages?before=&limit=` | implemented (S5) | → `MessagePage`, newest first below `before` (≤ 100) |
+| POST | `/v1/conversations/{id}/messages` | implemented (S5) | `SendMessageRequest` → `201 ChatMessage`; `200` with the stored message for a repeated `client_nonce`; `403` block |
+| PATCH / DELETE | `/v1/conversations/{id}/messages/{message_id}` | implemented (S5) | `EditMessageRequest` → `ChatMessage`; DELETE → tombstone; author only (`403`) |
+| GET | `/v1/conversations/{id}/changes?after=&limit=` | implemented (S5) | → `MessagePage` of changes after a `change_seq` (≤ 500), tombstones included |
+| POST | `/v1/conversations/{id}/read` | implemented (S5) | `MarkReadRequest` → `Receipt` (only goes up, clamped to the newest message) |
+| POST | `/v1/conversations/{id}/members` | planned (S6) | groups |
 | POST | `/v1/calls`, `/v1/calls/{id}/join`, `/v1/calls/{id}/leave` | planned (S1/S2/S6) | |
 | GET | `/v1/updates/check` | planned (S7) | signed manifest |
+
+### Messenger API conventions (S5, ADR 0013)
+
+* Bodies are protobuf (`proto/turbo_pancake/v1/api.proto`), `Content-Type:
+  application/x-protobuf`, ≤ 64 KiB (`413` above). Authenticated calls send
+  `Authorization: Bearer <token>`; a missing, unknown, expired or revoked token is `401`.
+* Every error is an HTTP status plus `ApiError{code, message}`: `BAD_REQUEST` 400,
+  `UNAUTHENTICATED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409,
+  `PAYLOAD_TOO_LARGE` 413, `RATE_LIMITED` 429, `UNAVAILABLE` 503 (server without a
+  database), `INTERNAL` 500. A conversation the caller is not in, and a malformed id, are
+  `404` (nothing about its existence leaks).
+* IDs are UUID strings; times are Unix milliseconds.
+* Usernames: 3–32 chars of `[a-z0-9_]`, case-insensitive, start with a letter, no trailing or
+  doubled `_`, reserved service names refused. Passwords: 8–128 characters. Messages: 1–4000
+  characters, not blank. Device names ≤ 64 characters.
+* Rate limits (per address: register, login; per user: lookup, conversation creation,
+  message writes) answer `429`.
+* Order and sync: `server_sequence` orders messages inside a conversation (gap-free);
+  `change_seq` grows with every create/edit/delete. A client keeps the highest applied
+  `change_seq` per conversation, drops events at or below it and fetches `/changes?after=`
+  when an event skips ahead or after any reconnect.
+* Blocks: in a direct conversation with a block in either direction, sending and editing
+  are `403 "you cannot message this user"` (same text whoever blocked), presence is hidden
+  both ways, deleting your own messages still works.
 
 ## WebSocket `/v1/signal` (protocol v1)
 
@@ -37,15 +74,30 @@ Status legend: **implemented** (code + tests exist), **planned** (stage in brack
 
 ### Session lifecycle
 
-1. Client → `Hello{client_version, display_name}` (must be first; anything else →
-   `HELLO_REQUIRED`). Display name: 1–64 printable chars, no leading/trailing spaces.
-2. Server → `Welcome{peer_id, server_version, heartbeat_interval_ms, max_frame_bytes}`.
+1. Client → `Hello{client_version, display_name, auth_token}` (must be first; anything
+   else → `HELLO_REQUIRED`). With a token the connection is signed in (the display name
+   comes from the account); a bad token → `UNAUTHENTICATED` and close. Without a token the
+   display name (1–64 printable chars, no leading/trailing spaces) is required and the
+   connection may only use calls — and only when the server allows anonymous calls
+   (default on loopback, `--anonymous-calls`); otherwise `UNAUTHENTICATED` and close.
+2. Server → `Welcome{peer_id, server_version, heartbeat_interval_ms, max_frame_bytes, user}`.
 3. The client must send *some* frame (e.g. `Ping`) at least every
    `heartbeat_interval_ms`; after 30 s of silence (default) the server drops the
    connection and announces `PeerLeft{reason=TIMEOUT}`.
 
-S0 has **no authentication**; the server binds to `127.0.0.1` by default. S5 adds a
-token-authenticated handshake (Hello field 3 is reserved for it).
+Messenger events on signed-in connections (`request_id = 0`, at-least-once):
+
+| Event | When |
+|---|---|
+| `MessageCreated` / `MessageEdited` / `MessageDeleted{message}` | to every member of the conversation (the nonce only to the author) |
+| `ReadUpdated{Receipt}` | a member's delivered/read position went up |
+| `PresenceChanged{user_id, online}` | a contact's first connection opened / last one closed or timed out; also after a block change |
+| `ConversationUpdated{conversation_id}` | a conversation appeared, or its members, names or block state changed: refetch it |
+| `SessionRevoked{session_id}` | logout, revoke or password change elsewhere; the server closes the connection |
+
+Presence = at least one live signed-in connection; a silent connection is dropped after the
+heartbeat timeout, so a crashed client turns offline within 30 s. Server shutdown closes all
+connections.
 
 ### Rooms and relay
 
@@ -137,7 +189,8 @@ with four m-lines (an S3 client would read an unknown kind as audio).
 ### Error codes
 
 `UNSUPPORTED_VERSION(1)`, `BAD_REQUEST(2)`, `PAYLOAD_TOO_LARGE(3)`, `HELLO_REQUIRED(4)`,
-`ALREADY_IN_ROOM(5)`, `NOT_IN_ROOM(6)`, `PEER_NOT_FOUND(7)`, `ROOM_FULL(8)`, `INTERNAL(9)`.
+`ALREADY_IN_ROOM(5)`, `NOT_IN_ROOM(6)`, `PEER_NOT_FOUND(7)`, `ROOM_FULL(8)`, `INTERNAL(9)`,
+`UNAUTHENTICATED(10)`.
 `Error.message` is human-readable and never contains secrets or user content.
 
 ## Compatibility policy

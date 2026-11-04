@@ -3,10 +3,15 @@
 //! S0 provides health/readiness/version endpoints and a development signaling
 //! relay (`/v1/signal`); S1 adds the media SFU (`turbo-pancake-media-sfu`): room members
 //! send audio to the server over UDP (same port number as the WebSocket listener) or
-//! tunneled through their signaling connection. Authentication, PostgreSQL and the messenger domain are
-//! added in S5; until then the server binds to loopback by default and must not
-//! be exposed publicly.
+//! tunneled through their signaling connection. S5 adds the messenger (ADR 0013):
+//! accounts and sessions (`auth`), direct conversations and messages (`chat`) in
+//! PostgreSQL, events and presence over the same WebSocket (`events`).
 
+pub mod api;
+pub mod auth;
+pub mod chat;
+pub mod events;
+pub mod ratelimit;
 pub mod signaling;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -17,7 +22,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{delete, get, post, put};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use turbo_pancake_media_sfu::{Sfu, SfuConfig};
@@ -47,6 +52,14 @@ pub struct Config {
     pub public_ips: Vec<IpAddr>,
     /// High-layer screen share budget to viewers, kbit/s (`None` = unlimited).
     pub max_high_egress_kbps: Option<u32>,
+    /// PostgreSQL URL of the messenger; `None` = calls only, messenger API answers 503.
+    pub database_url: Option<String>,
+    /// Database connections in the pool.
+    pub database_pool: u32,
+    /// `Hello` without a token may join rooms (development: loopback servers, S1–S4
+    /// tests). Off for servers reachable from the network.
+    pub anonymous_calls: bool,
+    pub limits: ratelimit::Limits,
 }
 
 impl Default for Config {
@@ -61,6 +74,10 @@ impl Default for Config {
             media_udp_port: None,
             public_ips: Vec::new(),
             max_high_egress_kbps: None,
+            database_url: None,
+            database_pool: 16,
+            anonymous_calls: true,
+            limits: ratelimit::Limits::default(),
         }
     }
 }
@@ -74,18 +91,47 @@ pub struct AppState {
     pub sfu: Option<Arc<Sfu>>,
     /// Default-route address of this machine, announced as a UDP candidate.
     pub lan_ip: Option<IpAddr>,
+    /// Messenger database (`None` = messenger disabled).
+    pub db: Option<sqlx::PgPool>,
+    pub registry: Arc<events::Registry>,
+    pub limiters: Arc<ratelimit::Limiters>,
+    /// Becomes `true` when the server shuts down: WebSocket connections end.
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl AppState {
     pub fn new(config: Config) -> Self {
         let connections = Arc::new(Semaphore::new(config.max_connections));
+        let limiters = Arc::new(ratelimit::Limiters::new(&config.limits));
+        let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
         Self {
+            shutdown,
+            shutdown_tx: Arc::new(shutdown_tx),
             config: Arc::new(config),
             hub: Arc::new(signaling::Hub::default()),
             connections,
             sfu: None,
             lan_ip: None,
+            db: None,
+            registry: Arc::new(events::Registry::default()),
+            limiters,
         }
+    }
+
+    /// Connects to the messenger database and applies pending migrations.
+    pub async fn with_database(mut self) -> Result<Self, sqlx::Error> {
+        if let Some(url) = &self.config.database_url {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(self.config.database_pool)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect(url)
+                .await?;
+            MIGRATOR.run(&pool).await?;
+            tracing::info!("messenger database ready");
+            self.db = Some(pool);
+        }
+        Ok(self)
     }
 
     /// Starts the SFU: UDP on `port` when enabled; a UDP bind failure leaves the tunnel.
@@ -120,6 +166,9 @@ impl AppState {
     }
 }
 
+/// Schema migrations (`migrations/`), embedded in the binary.
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -127,6 +176,30 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/version", get(version))
         .route("/v1/media-stats", get(media_stats))
         .route("/v1/signal", get(signaling::ws_handler))
+        // Messenger API (ADR 0013, docs/API.md).
+        .route("/v1/auth/register", post(auth::register))
+        .route("/v1/auth/login", post(auth::login))
+        .route("/v1/auth/refresh", post(auth::refresh))
+        .route("/v1/auth/logout", post(auth::logout))
+        .route("/v1/me", get(auth::me).patch(auth::update_me))
+        .route("/v1/me/password", post(auth::change_password))
+        .route("/v1/sessions", get(auth::list_sessions))
+        .route("/v1/sessions/{id}", delete(auth::revoke_session))
+        .route("/v1/users/lookup", get(chat::lookup))
+        .route("/v1/blocks", get(chat::list_blocks))
+        .route("/v1/blocks/{id}", put(chat::block).delete(chat::unblock))
+        .route("/v1/conversations", get(chat::list_conversations))
+        .route("/v1/conversations/direct", post(chat::create_direct))
+        .route(
+            "/v1/conversations/{id}/messages",
+            get(chat::history).post(chat::send_message),
+        )
+        .route("/v1/conversations/{id}/changes", get(chat::changes))
+        .route(
+            "/v1/conversations/{id}/messages/{message_id}",
+            axum::routing::patch(chat::edit_message).delete(chat::delete_message),
+        )
+        .route("/v1/conversations/{id}/read", post(chat::mark_read))
         .with_state(state)
 }
 
@@ -161,10 +234,11 @@ async fn media_stats(State(state): State<AppState>) -> impl IntoResponse {
     .into_response()
 }
 
-async fn version() -> impl IntoResponse {
+async fn version(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "server_version": SERVER_VERSION,
         "protocol_version": turbo_pancake_protocol::PROTOCOL_VERSION,
+        "messenger": state.db.is_some(),
     }))
 }
 
@@ -175,14 +249,23 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let local = listener.local_addr()?;
-    let state = AppState::new(config).with_media(local.ip(), local.port());
+    let state = AppState::new(config)
+        .with_database()
+        .await
+        .map_err(|e| std::io::Error::other(format!("messenger database: {e}")))?
+        .with_media(local.ip(), local.port());
     let sfu = state.sfu.clone();
+    let stop_connections = state.shutdown_tx.clone();
     let app = router(state);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown)
+    .with_graceful_shutdown(async move {
+        shutdown.await;
+        // Long-lived WebSocket connections would hold the graceful shutdown forever.
+        let _ = stop_connections.send(true);
+    })
     .await?;
     if let Some(sfu) = sfu {
         sfu.stop();

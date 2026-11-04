@@ -1,0 +1,235 @@
+// turbo-pancake messenger API, version 1 (S5, ADR 0013).
+//
+// Transport: HTTP `/v1/...` (HTTPS once TLS is enabled). Request and response bodies are
+// protobuf (`Content-Type: application/x-protobuf`). Authenticated calls send
+// `Authorization: Bearer <token>`. Errors: an HTTP status plus an `ApiError` body.
+// Events about the same objects arrive on the `/v1/signal` WebSocket (signaling.proto).
+//
+// Compatibility rules are those of signaling.proto (docs/API.md). IDs are UUID strings.
+// Times are Unix milliseconds (UTC).
+syntax = "proto3";
+
+package turbo_pancake.v1;
+
+// ---- Errors ----
+
+message ApiError {
+  ApiErrorCode code = 1;
+  // Human-readable; never contains secrets or message content.
+  string message = 2;
+}
+
+enum ApiErrorCode {
+  API_ERROR_CODE_UNSPECIFIED = 0;
+  // 400: invalid input (the message says which field).
+  API_ERROR_CODE_BAD_REQUEST = 1;
+  // 401: missing, unknown, expired or revoked token; wrong username or password.
+  API_ERROR_CODE_UNAUTHENTICATED = 2;
+  // 403: authenticated but not allowed (not a member, not the author, blocked).
+  API_ERROR_CODE_FORBIDDEN = 3;
+  // 404: no such object visible to the caller.
+  API_ERROR_CODE_NOT_FOUND = 4;
+  // 409: username taken.
+  API_ERROR_CODE_CONFLICT = 5;
+  // 413: body over the limit.
+  API_ERROR_CODE_PAYLOAD_TOO_LARGE = 6;
+  // 429: rate limit; retry later.
+  API_ERROR_CODE_RATE_LIMITED = 7;
+  // 503: the messenger database is not configured or unavailable.
+  API_ERROR_CODE_UNAVAILABLE = 8;
+  // 500.
+  API_ERROR_CODE_INTERNAL = 9;
+}
+
+message Empty {}
+
+// ---- Users and auth ----
+
+message User {
+  string user_id = 1;
+  // Display form of the username, without '@'.
+  string username = 2;
+  string display_name = 3;
+  // Has a live connection now. Always false for users in a block with the caller.
+  bool online = 4;
+}
+
+// POST /v1/auth/register -> AuthResponse (201). 409 CONFLICT when the username is taken.
+message RegisterRequest {
+  string username = 1;
+  string password = 2;
+  // Empty = the username.
+  string display_name = 3;
+  // Free-form device label shown in the session list (≤ 64 chars).
+  string device_name = 4;
+}
+
+// POST /v1/auth/login -> AuthResponse. Unknown user and wrong password: the same 401.
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+  string device_name = 3;
+}
+
+message AuthResponse {
+  // Session token for `Authorization: Bearer` and `Hello.auth_token`. Secret.
+  string token = 1;
+  string session_id = 2;
+  User user = 3;
+  // The session ends if unused until then; every use extends it.
+  int64 expires_at_ms = 4;
+}
+
+// POST /v1/auth/refresh (Empty) -> AuthResponse with a new token; the old one stops working.
+// POST /v1/auth/logout (Empty) -> Empty; revokes this session.
+// GET  /v1/me -> User.
+
+// PATCH /v1/me -> User.
+message UpdateProfileRequest {
+  string display_name = 1;
+}
+
+// POST /v1/me/password -> AuthResponse (new token for this device); every other session
+// of the user is revoked.
+message ChangePasswordRequest {
+  string old_password = 1;
+  string new_password = 2;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string device_name = 2;
+  int64 created_at_ms = 3;
+  int64 last_seen_at_ms = 4;
+  // The session making this request.
+  bool current = 5;
+}
+
+// GET /v1/sessions -> SessionList (active sessions of the caller).
+// DELETE /v1/sessions/{session_id} -> Empty; revokes it and closes its connections.
+message SessionList {
+  repeated SessionInfo sessions = 1;
+}
+
+// GET /v1/users/lookup?username=<exact> -> User; 404 when there is none.
+
+message UserList {
+  repeated User users = 1;
+}
+
+// PUT    /v1/blocks/{user_id} -> Empty (idempotent).
+// DELETE /v1/blocks/{user_id} -> Empty (idempotent).
+// GET    /v1/blocks -> UserList (users the caller blocked).
+
+// ---- Conversations ----
+
+enum ConversationKind {
+  CONVERSATION_KIND_UNSPECIFIED = 0;
+  CONVERSATION_KIND_DIRECT = 1;
+  CONVERSATION_KIND_GROUP = 2;
+}
+
+enum MemberRole {
+  MEMBER_ROLE_UNSPECIFIED = 0;
+  MEMBER_ROLE_CREATOR = 1;
+  MEMBER_ROLE_MEMBER = 2;
+}
+
+message Member {
+  User user = 1;
+  MemberRole role = 2;
+  // Highest server_sequence the member's devices have stored / shown.
+  int64 delivered_sequence = 3;
+  int64 read_sequence = 4;
+}
+
+message Conversation {
+  string conversation_id = 1;
+  ConversationKind kind = 2;
+  // Groups only (S6); empty for direct conversations.
+  string title = 3;
+  repeated Member members = 4;
+  // server_sequence of the newest message (0 = none).
+  int64 last_sequence = 5;
+  // Newest change_seq (create/edit/delete) in this conversation.
+  int64 change_seq = 6;
+  int64 created_at_ms = 7;
+  // Direct: the caller blocked the other member.
+  bool blocked_by_me = 8;
+  // Direct: sending is not allowed (a block in either direction). Never says which side.
+  bool can_send = 9;
+}
+
+// GET /v1/conversations -> ConversationList (all conversations of the caller).
+message ConversationList {
+  repeated Conversation conversations = 1;
+}
+
+// POST /v1/conversations/direct -> Conversation. Idempotent: one direct conversation per
+// pair of users. Creating one with yourself is a BAD_REQUEST.
+message CreateDirectRequest {
+  string user_id = 1;
+}
+
+// ---- Messages ----
+
+message ChatMessage {
+  string message_id = 1;
+  string conversation_id = 2;
+  // Display order inside the conversation, assigned by the server (1, 2, 3, ...).
+  int64 server_sequence = 3;
+  // Change feed position of the latest change to this message.
+  int64 change_seq = 4;
+  string author_id = 5;
+  // The author's idempotency key (echoed only to the author's own devices).
+  string client_nonce = 6;
+  // UTF-8 text; empty when deleted.
+  string body = 7;
+  // Empty = not a reply. The replied message may be deleted later; the id stays.
+  string reply_to_id = 8;
+  int64 created_at_ms = 9;
+  // 0 = never edited.
+  int64 edited_at_ms = 10;
+  bool deleted = 11;
+}
+
+// POST /v1/conversations/{id}/messages -> ChatMessage (201, or 200 for a retried nonce).
+message SendMessageRequest {
+  // Client-generated unique id (UUID); the same nonce returns the stored message.
+  string client_nonce = 1;
+  string body = 2;
+  string reply_to_id = 3;
+}
+
+// PATCH /v1/conversations/{id}/messages/{message_id} -> ChatMessage (author only).
+message EditMessageRequest {
+  string body = 1;
+}
+
+// DELETE /v1/conversations/{id}/messages/{message_id} -> ChatMessage tombstone (author
+// only; idempotent).
+
+// GET /v1/conversations/{id}/messages?before=<server_sequence>&limit=<1..=100>
+//   -> MessagePage, newest first below `before` (0/absent = from the newest).
+// GET /v1/conversations/{id}/changes?after=<change_seq>&limit=<1..=500>
+//   -> MessagePage of messages whose change_seq > after, oldest change first, including
+//      tombstones. `has_more` = call again with the last change_seq.
+message MessagePage {
+  repeated ChatMessage messages = 1;
+  bool has_more = 2;
+  // The conversation's newest change_seq at the time of the call.
+  int64 change_seq = 3;
+}
+
+// POST /v1/conversations/{id}/read -> Receipt (values only go up; lower ones are ignored).
+message MarkReadRequest {
+  int64 delivered_sequence = 1;
+  int64 read_sequence = 2;
+}
+
+message Receipt {
+  string conversation_id = 1;
+  string user_id = 2;
+  int64 delivered_sequence = 3;
+  int64 read_sequence = 4;
+}

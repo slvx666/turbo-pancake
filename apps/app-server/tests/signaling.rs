@@ -56,6 +56,7 @@ impl Client {
             .send(C::Hello(v1::Hello {
                 client_version: "test/0".into(),
                 display_name: name.into(),
+                ..Default::default()
             }))
             .await;
         let (r, body) = c.recv().await;
@@ -237,6 +238,7 @@ async fn invalid_hello_and_duplicate_hello() {
         .send(C::Hello(v1::Hello {
             client_version: String::new(),
             display_name: "  ".into(),
+            ..Default::default()
         }))
         .await;
     c.expect_error(rid, ErrorCode::BadRequest).await;
@@ -246,6 +248,7 @@ async fn invalid_hello_and_duplicate_hello() {
         .send(C::Hello(v1::Hello {
             client_version: String::new(),
             display_name: "y".into(),
+            ..Default::default()
         }))
         .await;
     ok.expect_error(rid, ErrorCode::BadRequest).await;

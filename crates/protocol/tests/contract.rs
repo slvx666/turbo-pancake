@@ -31,6 +31,7 @@ fn hello_field_numbers_are_pinned() {
         C::Hello(v1::Hello {
             client_version: "c".into(),
             display_name: "d".into(),
+            ..Default::default()
         }),
     );
     // field 10 (len) = { 1:"c", 2:"d" }
@@ -541,4 +542,140 @@ fn leave_reasons_are_pinned() {
         reason: 4,
     };
     assert_eq!(left.reason(), v1::LeaveReason::Switched);
+}
+
+// ---- Messenger (S5, ADR 0013) ----
+
+#[test]
+fn hello_token_and_welcome_user_are_pinned() {
+    let hello = v1::Hello {
+        client_version: String::new(),
+        display_name: String::new(),
+        auth_token: "t".into(),
+    };
+    // field 3 (len) = "t"
+    assert_eq!(hello.encode_to_vec(), vec![0x1A, 0x01, b't']);
+    let welcome = v1::Welcome {
+        user: Some(v1::User {
+            user_id: "u".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    // field 5 (len) = { 1:"u" }
+    assert_eq!(welcome.encode_to_vec(), vec![0x2A, 0x03, 0x0A, 0x01, b'u']);
+    assert_eq!(v1::ErrorCode::Unauthenticated as i32, 10);
+}
+
+#[test]
+fn chat_message_field_numbers_are_pinned() {
+    let m = v1::ChatMessage {
+        message_id: "m".into(),
+        conversation_id: "c".into(),
+        server_sequence: 3,
+        change_seq: 4,
+        author_id: "a".into(),
+        client_nonce: "n".into(),
+        body: "b".into(),
+        reply_to_id: "r".into(),
+        created_at_ms: 9,
+        edited_at_ms: 10,
+        deleted: true,
+    };
+    assert_eq!(
+        m.encode_to_vec(),
+        vec![
+            0x0A, 1, b'm', 0x12, 1, b'c', 0x18, 3, 0x20, 4, 0x2A, 1, b'a', 0x32, 1, b'n', 0x3A, 1,
+            b'b', 0x42, 1, b'r', 0x48, 9, 0x50, 10, 0x58, 1
+        ]
+    );
+    let send = v1::SendMessageRequest {
+        client_nonce: "n".into(),
+        body: "b".into(),
+        reply_to_id: "r".into(),
+    };
+    assert_eq!(
+        send.encode_to_vec(),
+        vec![0x0A, 1, b'n', 0x12, 1, b'b', 0x1A, 1, b'r']
+    );
+}
+
+#[test]
+fn messenger_events_are_pinned() {
+    let ev = |body: S| v1::ServerEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 0,
+        event_id: 1,
+        body: Some(body),
+    };
+    let msg = || v1::MessageEvent {
+        message: Some(v1::ChatMessage::default()),
+    };
+    // Tag byte of each oneof variant: (field << 3) | 2, two-byte varint for ≥ 16.
+    let cases: [(S, u8); 7] = [
+        (S::MessageCreated(msg()), 24),
+        (S::MessageEdited(msg()), 25),
+        (S::MessageDeleted(msg()), 26),
+        (S::ReadUpdated(v1::Receipt::default()), 27),
+        (S::PresenceChanged(v1::PresenceChanged::default()), 28),
+        (
+            S::ConversationUpdated(v1::ConversationUpdated::default()),
+            29,
+        ),
+        (S::SessionRevoked(v1::SessionRevoked::default()), 30),
+    ];
+    for (body, field) in cases {
+        let bytes = encode(&ev(body));
+        let tag = (u32::from(field) << 3) | 2;
+        assert_eq!(&bytes[4..6], &[(tag as u8) | 0x80, (tag >> 7) as u8]);
+        assert!(decode_server(&bytes).is_ok());
+    }
+    let receipt = v1::Receipt {
+        conversation_id: "c".into(),
+        user_id: "u".into(),
+        delivered_sequence: 2,
+        read_sequence: 1,
+    };
+    assert_eq!(
+        receipt.encode_to_vec(),
+        vec![0x0A, 1, b'c', 0x12, 1, b'u', 0x18, 2, 0x20, 1]
+    );
+}
+
+#[test]
+fn api_codes_and_enums_are_pinned() {
+    use v1::ApiErrorCode as E;
+    let codes = [
+        (E::BadRequest, 1),
+        (E::Unauthenticated, 2),
+        (E::Forbidden, 3),
+        (E::NotFound, 4),
+        (E::Conflict, 5),
+        (E::PayloadTooLarge, 6),
+        (E::RateLimited, 7),
+        (E::Unavailable, 8),
+        (E::Internal, 9),
+    ];
+    for (c, n) in codes {
+        assert_eq!(c as i32, n);
+    }
+    assert_eq!(v1::ConversationKind::Direct as i32, 1);
+    assert_eq!(v1::ConversationKind::Group as i32, 2);
+    assert_eq!(v1::MemberRole::Creator as i32, 1);
+    let auth = v1::AuthResponse {
+        token: "t".into(),
+        session_id: "s".into(),
+        user: None,
+        expires_at_ms: 1,
+    };
+    assert_eq!(
+        auth.encode_to_vec(),
+        vec![0x0A, 1, b't', 0x12, 1, b's', 0x20, 1]
+    );
+    let conv = v1::Conversation {
+        blocked_by_me: true,
+        can_send: true,
+        ..Default::default()
+    };
+    assert_eq!(conv.encode_to_vec(), vec![0x40, 1, 0x48, 1]);
 }

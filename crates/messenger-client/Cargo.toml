@@ -1,0 +1,27 @@
+[package]
+name = "turbo-pancake-messenger-client"
+description = "Messenger client core: API client, SQLite cache, sync engine, event service (S5, ADR 0013)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+turbo-pancake-protocol.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+turbo-pancake-app-server = { path = "../../apps/app-server" }
+turbo-pancake-pg-test.workspace = true
+
+[lints]
+workspace = true

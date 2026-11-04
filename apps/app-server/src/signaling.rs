@@ -41,14 +41,19 @@ enum Out {
 }
 
 #[derive(Clone)]
-struct PeerHandle {
+pub(crate) struct PeerHandle {
     display_name: String,
     tx: mpsc::Sender<Out>,
     kill: Arc<Notify>,
 }
 
 impl PeerHandle {
-    fn send(&self, request_id: u64, body: S) {
+    /// Ends the connection after the frames already queued (session revoked).
+    pub(crate) fn close(&self) {
+        self.kill.notify_one();
+    }
+
+    pub(crate) fn send(&self, request_id: u64, body: S) {
         if let Err(mpsc::error::TrySendError::Full(_)) =
             self.tx.try_send(Out::Frame { request_id, body })
         {
@@ -315,8 +320,15 @@ pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> 
         .on_upgrade(move |socket| connection(socket, state, permit))
 }
 
+/// The account behind a signed-in connection.
+struct SignedIn {
+    user_id: uuid::Uuid,
+    conn_id: u64,
+}
+
 struct Session {
     peer_id: Option<PeerId>,
+    user: Option<SignedIn>,
     display_name: String,
     room: Option<String>,
     /// This connection has a media session in the SFU.
@@ -394,6 +406,7 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
 
     let mut session = Session {
         peer_id: None,
+        user: None,
         display_name: String::new(),
         room: None,
         media: false,
@@ -401,10 +414,12 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
         kill: Arc::new(Notify::new()),
     };
 
+    let mut shutdown = state.shutdown.clone();
     let reason = loop {
         let kill = session.kill.clone();
         let next = tokio::select! {
             _ = kill.notified() => break LeaveReason::Disconnected,
+            _ = shutdown.wait_for(|stop| *stop) => break LeaveReason::Disconnected,
             r = tokio::time::timeout(cfg.heartbeat_timeout, stream.next()) => r,
         };
         let msg = match next {
@@ -414,7 +429,7 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
         };
         match msg {
             Message::Binary(bytes) => {
-                if let Flow::Close = handle_frame(&bytes, &mut session, &state) {
+                if let Flow::Close = handle_frame(&bytes, &mut session, &state).await {
                     break LeaveReason::Disconnected;
                 }
             }
@@ -429,6 +444,12 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
     }
     if let (Some(peer_id), true, Some(sfu)) = (&session.peer_id, session.media, &state.sfu) {
         sfu.leave(peer_id);
+    }
+    if let Some(u) = session.user.take()
+        && state.registry.unregister(u.user_id, u.conn_id)
+        && let Some(pool) = &state.db
+    {
+        crate::events::announce_presence(pool.clone(), state.registry.clone(), u.user_id);
     }
     tracing::debug!(peer = ?session.peer_id, ?reason, "connection closed");
     let _ = session.me_tx.try_send(Out::Close);
@@ -454,7 +475,7 @@ fn candidate_ips(dialed: &str, state: &AppState) -> Vec<IpAddr> {
         .collect()
 }
 
-fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
+async fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
     let hub: &Hub = &state.hub;
     let cfg: &Config = &state.config;
     let env = match proto::decode_client(bytes) {
@@ -491,9 +512,55 @@ fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
             return Flow::Continue;
         }
         let id = hub.new_peer_id();
-        s.display_name = hello.display_name;
+        let mut user = None;
+        if hello.auth_token.is_empty() {
+            if !cfg.anonymous_calls {
+                s.reply_error(rid, ErrorCode::Unauthenticated, "sign in first");
+                return Flow::Close;
+            }
+            s.display_name = hello.display_name;
+        } else {
+            let signed_in = match &state.db {
+                Some(pool) => crate::auth::authenticate(pool, &hello.auth_token)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| (pool.clone(), a)),
+                None => None,
+            };
+            let Some((pool, auth)) = signed_in else {
+                tracing::info!(target: "security", event = "ws_auth_failed");
+                s.reply_error(
+                    rid,
+                    ErrorCode::Unauthenticated,
+                    "session ended, sign in again",
+                );
+                return Flow::Close;
+            };
+            let Ok(Some(row)) = crate::auth::user_by_id(&pool, auth.user_id).await else {
+                s.reply_error(
+                    rid,
+                    ErrorCode::Unauthenticated,
+                    "session ended, sign in again",
+                );
+                return Flow::Close;
+            };
+            s.display_name = row.display_name.clone();
+            let (conn_id, first) =
+                state
+                    .registry
+                    .register(auth.user_id, auth.session_id, s.handle());
+            s.user = Some(SignedIn {
+                user_id: auth.user_id,
+                conn_id,
+            });
+            if first {
+                crate::events::announce_presence(pool, state.registry.clone(), auth.user_id);
+            }
+            user = Some(row.to_proto(true));
+        }
         s.peer_id = Some(id.clone());
-        tracing::debug!(peer = %id, client = %hello.client_version, "hello");
+        tracing::debug!(peer = %id, client = %hello.client_version, signed_in = user.is_some(), "hello");
         s.reply(
             rid,
             S::Welcome(v1::Welcome {
@@ -501,6 +568,7 @@ fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
                 server_version: SERVER_VERSION.to_owned(),
                 heartbeat_interval_ms: cfg.heartbeat_interval.as_millis() as u32,
                 max_frame_bytes: proto::MAX_FRAME_BYTES as u32,
+                user,
             }),
         );
         return Flow::Continue;

@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser, Debug)]
 #[command(version, about = "turbo-pancake application server")]
 struct Args {
-    /// Listen address. Defaults to loopback: S0 has no authentication.
+    /// Listen address. Defaults to loopback (plain HTTP until TLS lands, ADR 0013 §12).
     #[arg(long, env = "TURBO_PANCAKE_BIND", default_value = "127.0.0.1:7878")]
     bind: SocketAddr,
     /// Emit logs as JSON lines (for systemd/journald collection).
@@ -33,6 +33,17 @@ struct Args {
     /// preview layer and are told why. Default: unlimited.
     #[arg(long, env = "TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS")]
     max_high_egress_mbps: Option<u32>,
+    /// PostgreSQL URL of the messenger (accounts, messages). Without it the server runs
+    /// calls only. Keep credentials in the environment, not on the command line.
+    #[arg(long, env = "TURBO_PANCAKE_DATABASE_URL", hide_env_values = true)]
+    database_url: Option<String>,
+    /// Allow joining calls without an account. Default: only on a loopback address.
+    #[arg(long, env = "TURBO_PANCAKE_ANONYMOUS_CALLS")]
+    anonymous_calls: Option<bool>,
+    /// Serve the messenger over plain HTTP on a non-loopback address (LAN trials only:
+    /// passwords and tokens cross the network unencrypted until TLS is enabled).
+    #[arg(long, env = "TURBO_PANCAKE_INSECURE_ALLOW_PLAINTEXT")]
+    insecure_allow_plaintext: bool,
 }
 
 #[tokio::main]
@@ -48,11 +59,16 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
-    if !args.bind.ip().is_loopback() {
-        tracing::warn!(
-            bind = %args.bind,
-            "binding to a non-loopback address; S0 signaling is unauthenticated"
+    let loopback = args.bind.ip().is_loopback();
+    if !loopback && args.database_url.is_some() && !args.insecure_allow_plaintext {
+        anyhow::bail!(
+            "refusing to serve accounts over plain HTTP on {}: bind to loopback or pass              --insecure-allow-plaintext for a LAN trial",
+            args.bind
         );
+    }
+    let anonymous_calls = args.anonymous_calls.unwrap_or(loopback);
+    if !loopback && anonymous_calls {
+        tracing::warn!(bind = %args.bind, "anonymous calls are open to the network");
     }
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
@@ -65,6 +81,8 @@ async fn main() -> anyhow::Result<()> {
         media_udp_port: args.media_port,
         public_ips: args.public_ips,
         max_high_egress_kbps: args.max_high_egress_mbps.map(|m| m.saturating_mul(1000)),
+        database_url: args.database_url,
+        anonymous_calls,
         ..Default::default()
     };
     turbo_pancake_app_server::serve(listener, config, async {

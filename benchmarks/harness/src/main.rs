@@ -432,6 +432,7 @@ async fn ws_hello(addr: &str, name: &str) -> anyhow::Result<(Ws, String)> {
         C::Hello(v1::Hello {
             client_version: "turbo-pancake-bench".into(),
             display_name: name.into(),
+            ..Default::default()
         }),
     )
     .await?;

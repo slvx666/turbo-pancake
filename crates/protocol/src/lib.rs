@@ -65,6 +65,144 @@ pub enum ValidationError {
     Previews,
     #[error("unknown screen layer")]
     Layer,
+    #[error(
+        "username must be {MIN_USERNAME_LEN}..={MAX_USERNAME_LEN} chars of [a-z0-9_], start with a letter and not be reserved"
+    )]
+    Username,
+    #[error("password must be {MIN_PASSWORD_CHARS}..={MAX_PASSWORD_CHARS} characters")]
+    Password,
+    #[error("message must be 1..={MAX_MESSAGE_CHARS} characters and not blank")]
+    MessageBody,
+    #[error("device name must be at most {MAX_DEVICE_NAME_CHARS} printable characters")]
+    DeviceName,
+    #[error("client nonce must be 1..={MAX_NONCE_LEN} chars of [A-Za-z0-9-]")]
+    Nonce,
+    #[error("malformed id")]
+    Id,
+    #[error("session token too long")]
+    Token,
+}
+
+// ---- Messenger limits (S5, ADR 0013) ----
+
+pub const MIN_USERNAME_LEN: usize = 3;
+pub const MAX_USERNAME_LEN: usize = 32;
+pub const MIN_PASSWORD_CHARS: usize = 8;
+pub const MAX_PASSWORD_CHARS: usize = 128;
+pub const MAX_MESSAGE_CHARS: usize = 4000;
+pub const MAX_DEVICE_NAME_CHARS: usize = 64;
+pub const MAX_NONCE_LEN: usize = 64;
+pub const MAX_TOKEN_LEN: usize = 128;
+/// Largest HTTP API request body.
+pub const MAX_API_BODY_BYTES: usize = 64 * 1024;
+/// Page sizes of `/messages` and `/changes`.
+pub const MAX_HISTORY_PAGE: u32 = 100;
+pub const MAX_CHANGES_PAGE: u32 = 500;
+/// Content type of API bodies.
+pub const API_CONTENT_TYPE: &str = "application/x-protobuf";
+
+/// Names nobody may register (service names and names that look like staff).
+const RESERVED_USERNAMES: &[&str] = &[
+    "admin",
+    "administrator",
+    "root",
+    "system",
+    "support",
+    "help",
+    "moderator",
+    "mod",
+    "staff",
+    "official",
+    "security",
+    "server",
+    "service",
+    "bot",
+    "null",
+    "undefined",
+    "anonymous",
+    "everyone",
+    "here",
+    "me",
+    "turbo_pancake",
+    "turbopancake",
+    "api",
+    "www",
+];
+
+/// Case-insensitive key of a username (the unique, normalised form, ADR 0013).
+pub fn username_key(username: &str) -> String {
+    username.to_ascii_lowercase()
+}
+
+/// ASCII only (no look-alike letters from other scripts), starts with a letter, no
+/// reserved names, no trailing or doubled underscore.
+pub fn validate_username(username: &str) -> Result<(), ValidationError> {
+    let key = username_key(username);
+    let ok = (MIN_USERNAME_LEN..=MAX_USERNAME_LEN).contains(&key.len())
+        && key.as_bytes()[0].is_ascii_lowercase()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && !key.ends_with('_')
+        && !key.contains("__")
+        && !RESERVED_USERNAMES.contains(&key.as_str());
+    if ok {
+        Ok(())
+    } else {
+        Err(ValidationError::Username)
+    }
+}
+
+pub fn validate_password(password: &str) -> Result<(), ValidationError> {
+    let n = password.chars().count();
+    if (MIN_PASSWORD_CHARS..=MAX_PASSWORD_CHARS).contains(&n) {
+        Ok(())
+    } else {
+        Err(ValidationError::Password)
+    }
+}
+
+/// Text message: any Unicode (emoji included), not blank, no NUL, ≤ 4000 characters.
+pub fn validate_message_body(body: &str) -> Result<(), ValidationError> {
+    let n = body.chars().count();
+    let ok = n > 0 && n <= MAX_MESSAGE_CHARS && !body.trim().is_empty() && !body.contains('\0');
+    if ok {
+        Ok(())
+    } else {
+        Err(ValidationError::MessageBody)
+    }
+}
+
+pub fn validate_device_name(name: &str) -> Result<(), ValidationError> {
+    if name.chars().count() <= MAX_DEVICE_NAME_CHARS && !name.chars().any(char::is_control) {
+        Ok(())
+    } else {
+        Err(ValidationError::DeviceName)
+    }
+}
+
+pub fn validate_nonce(nonce: &str) -> Result<(), ValidationError> {
+    let ok = !nonce.is_empty()
+        && nonce.len() <= MAX_NONCE_LEN
+        && nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(ValidationError::Nonce)
+    }
+}
+
+/// A UUID in its canonical hyphenated form (8-4-4-4-12 hex digits).
+pub fn validate_id(id: &str) -> Result<(), ValidationError> {
+    let b = id.as_bytes();
+    let ok = b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if ok { Ok(()) } else { Err(ValidationError::Id) }
 }
 
 /// Most previews one member may subscribe to (spec §5.1: a grid of up to 50 shares).
@@ -149,11 +287,19 @@ pub fn validate_display_name(name: &str) -> Result<(), ValidationError> {
     }
 }
 
+/// With a token the display name comes from the account (field 2 may be empty).
 pub fn validate_hello(h: &v1::Hello) -> Result<(), ValidationError> {
     if h.client_version.len() > MAX_CLIENT_VERSION_LEN {
         return Err(ValidationError::ClientVersion);
     }
-    validate_display_name(&h.display_name)
+    if h.auth_token.len() > MAX_TOKEN_LEN {
+        return Err(ValidationError::Token);
+    }
+    if h.auth_token.is_empty() {
+        validate_display_name(&h.display_name)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn validate_signal(s: &v1::Signal) -> Result<(), ValidationError> {
@@ -273,5 +419,65 @@ mod tests {
         assert!(validate_display_name("bell\u{7}").is_err());
         assert!(validate_display_name(&"я".repeat(64)).is_ok());
         assert!(validate_display_name(&"я".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn username_rules() {
+        let long_ok = "a".repeat(32);
+        for ok in ["alice", "Alice_99", "bob", "a_b_c", &long_ok] {
+            assert!(validate_username(ok).is_ok(), "{ok}");
+        }
+        let long_bad = "a".repeat(33);
+        for bad in [
+            "",
+            "ab",
+            "9lives",
+            "_alice",
+            "alice_",
+            "al__ice",
+            "al ice",
+            "\u{430}lice", // Cyrillic а
+            "alice!",
+            "admin",
+            "ADMIN",
+            "root",
+            "turbo_pancake",
+            &long_bad,
+        ] {
+            assert!(validate_username(bad).is_err(), "{bad}");
+        }
+        assert_eq!(username_key("Alice_99"), "alice_99");
+    }
+
+    #[test]
+    fn message_and_misc_rules() {
+        assert!(validate_message_body("привет 👋").is_ok());
+        assert!(validate_message_body(&"😀".repeat(4000)).is_ok());
+        assert!(validate_message_body(&"😀".repeat(4001)).is_err());
+        assert!(validate_message_body("").is_err());
+        assert!(validate_message_body(" \n\t ").is_err());
+        assert!(validate_message_body("a\0b").is_err());
+        assert!(validate_password("12345678").is_ok());
+        assert!(validate_password("1234567").is_err());
+        assert!(validate_password(&"x".repeat(129)).is_err());
+        assert!(validate_id("3f2504e0-4f89-41d3-9a0c-0305e82c3301").is_ok());
+        assert!(validate_id("3f2504e0-4f89-41d3-9a0c-0305e82c330").is_err());
+        assert!(validate_id("3f2504e0x4f89-41d3-9a0c-0305e82c3301").is_err());
+        assert!(validate_nonce("a1-b2").is_ok());
+        assert!(validate_nonce("").is_err());
+        assert!(validate_nonce("a b").is_err());
+        assert!(validate_device_name("Windows PC").is_ok());
+        assert!(validate_device_name("x\u{1}").is_err());
+        let anon = v1::Hello {
+            client_version: "c".into(),
+            display_name: String::new(),
+            auth_token: String::new(),
+        };
+        assert!(validate_hello(&anon).is_err());
+        let authed = v1::Hello {
+            auth_token: "t".into(),
+            ..anon
+        };
+        assert!(validate_hello(&authed).is_ok());
     }
 }

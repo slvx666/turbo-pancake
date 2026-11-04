@@ -1,0 +1,19 @@
+[package]
+name = "turbo-pancake-pg-test"
+description = "Throw-away PostgreSQL cluster for tests (one per test process, one database per test)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

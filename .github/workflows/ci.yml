@@ -79,6 +79,15 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
 
+      # Messenger tests start a throw-away PostgreSQL cluster (crates/pg-test) from the
+      # binaries preinstalled on the runner image (PGBIN); the service itself stays off.
+      - name: PostgreSQL binaries (messenger tests)
+        shell: bash
+        run: |
+          [ -n "$PGBIN" ] && [ -x "$PGBIN/initdb" -o -x "$PGBIN/initdb.exe" ] || { echo "PGBIN not usable: '$PGBIN'"; exit 1; }
+          "$PGBIN/postgres" --version
+          echo "TURBO_PANCAKE_PG_BIN=$PGBIN" >> "$GITHUB_ENV"
+
       # The desktop client enables media-audio/apm, so the workspace build runs the APM
       # (echo/noise) tests too. On Windows APM needs clang-cl in the VS environment.
       - name: clippy + test + release build (Windows)

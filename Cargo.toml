@@ -8,6 +8,8 @@ members = [
     "crates/media-audio",
     "crates/media-sfu",
     "crates/media-video",
+    "crates/pg-test",
+    "crates/messenger-client",
     "benchmarks/harness",
     "tools/media-probe",
     "tools/screen-probe",
@@ -38,6 +40,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
+# Messenger (S5, ADR 0013).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "uuid", "time"] }
+uuid = { version = "1", features = ["v4"] }
+time = "0.3"
+argon2 = "0.5"
+base64 = "0.22"
+aws-lc-rs = "1"
+turbo-pancake-pg-test = { path = "crates/pg-test" }
+reqwest = { version = "0.13", default-features = false }
 
 # WebRTC APM build fixes for Windows/MSVC (third_party/webrtc-audio-processing-sys/README.md).
 [patch.crates-io]
@@ -71,6 +82,11 @@ opt-level = 3
 [profile.dev.package.realfft]
 opt-level = 3
 [profile.dev.package.opusic-sys]
+opt-level = 3
+# Argon2id password hashing (19 MiB, 2 passes): seconds per hash unoptimised.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
 opt-level = 3
 # NV12 → RGBA of every shown screen-share frame.
 [profile.dev.package.turbo-pancake-media-video]

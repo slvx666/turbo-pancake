@@ -1,11 +1,11 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S5 — accounts and direct messages (Windows): NOT_STARTED** — first unfinished stage. Plan it in `docs/STAGES.md` (see "Exact next task").
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); S5–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S5 — accounts and direct messages (Windows): IN_PROGRESS** — plan in `docs/STAGES.md` ("S5 plan"), ADR 0013. Steps 1–4 (protocol, test PostgreSQL, server, client core) done; next: desktop UI (step 5).
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = IN_PROGRESS**; S6–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified commit: 48b5fc2 (branch `main`, CI run 41744388558: Windows, Ubuntu, macOS arm64, audit — all success; macOS passed on re-run, the first attempt hit the flaky engine test of issue 40). 51296a9: CI 41740440858 all success
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-04
+Last session: 2026-11-04 (S5 steps 1–4)
 
 ## Environment (dev machine, Windows)
 
@@ -45,7 +45,11 @@ Last session: 2026-11-04
 | **Sender layers + adaptation** (S4): `ScreenShare::start_layers` (second converter + encoder at 320 px / 10 fps, same capture timestamps), `reconfigure` (new size/fps at runtime, old encoder drained), `adapt::Adapter` (bitrate → size → fps ladder), presets 1440p120 / 1080p60 / 720p30 fitted to the monitor; client: NACK share + receiver reports + pacer drops drive the adapter, pacing follows the bitrate, size/bitrate re-announced | `crates/media-video/src/{adapt,lib}.rs`, `win/share.rs`, `crates/media-transport/src/call.rs`, `apps/desktop/src/session.rs` | `adapt::tests` (3), `lib::tests::configs_fit_the_source`, `tests/share.rs::preview_layer_and_reconfiguration`, `tests/loopback.rs::hardware_1440p120_real_time` |
 | **Previews + viewer UI** (S4): `PreviewDecoder` (one thread, software OS decoder per stream, keyframe requests), visible page subscribed (`--max-previews`, default 24), hidden = none received, watched share not previewed; UI: thumbnail grid (size slider, pages), quality picker incl. 1440p120 + "adapt to network", watched layer picker with the server's reason, separate share window, full screen; CLI `--share-quality qhd120`, `--watch-layer`, `--no-previews`, `--share-window`, `--fullscreen`, `--fixed-quality`, `--test-recv-loss` | `apps/desktop/src/{screen,session,view,main}.rs`, `ui/main.slint` | `apps/desktop/tests/session.rs::previews_and_watched_layer`, `benchmarks/scripts/s4-trial.ps1` |
 | **Screen load bench** (S4): `turbo-pancake-bench sfu-screen --scenario publishers|fanout|grid` (real call drivers, release server process) | `benchmarks/harness/src/sfu_screen.rs` | `benchmarks/results/sfu-screen-*.json` |
-| ADRs 0001–0011, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
+| **Messenger protocol** (S5): `api.proto` (users, auth, sessions, blocks, conversations, messages, receipts, `ApiError`), `Hello.auth_token`, `Welcome.user`, events `MessageCreated/Edited/Deleted`, `ReadUpdated`, `PresenceChanged`, `ConversationUpdated`, `SessionRevoked`, `ERROR_CODE_UNAUTHENTICATED`; validation of usernames (ASCII, reserved names), passwords, bodies, nonces, ids | `proto/turbo_pancake/v1/api.proto`, `crates/protocol` | 4 unit + 4 contract tests (`*_are_pinned`) |
+| **Test PostgreSQL**: throw-away cluster per test process from portable binaries, killed with the process (job object), one database per test | `crates/pg-test` | 1 unit test; used by all messenger tests |
+| **Messenger server** (S5): PostgreSQL + SQLx migrations, Argon2id (19 MiB, t=2), opaque tokens stored as SHA-256 with sliding 30-day expiry, refresh rotation, logout/revoke/password change closing WebSockets, same answer and cost for unknown user/wrong password, lookup, blocks (both sides 403, presence hidden), direct conversations (one per pair), messages with `server_sequence` + `change_seq` under the conversation row lock, nonce idempotency, replies, edit/delete-for-everyone tombstones, change feed, cursor history, receipts (monotonic, clamped), presence from live connections, event fan-out, rate limits, `security` log target without secrets, WebSockets closed on server stop, `--database-url`, anonymous calls only on loopback by default, plain HTTP refused off loopback with accounts | `migrations/`, `apps/app-server/src/{api,auth,chat,events,ratelimit,signaling,lib,main}.rs` | `apps/app-server/tests/messenger.rs` (10), `ratelimit` unit |
+| **Messenger client core** (S5): typed API client, SQLite cache (migrations by `user_version`, idempotent apply by `change_seq`, `secure_delete`, corrupted file moved aside and rebuilt), sync engine (feed from the resume cursor, duplicate/gap handling of events, pending send/edit/delete with nonces, failed with the server's reason, retry/discard, delivered/read acks, drafts), views (conversation list with unread/last text/presence, messages with reply quotes and pending/failed/sent/delivered/read), worker thread with its own signed-in WebSocket, heartbeat, reconnect 0.5→5 s, offline resume from the cache, cache wiped on logout/revocation | `crates/messenger-client` | 3 unit + 4 integration tests (`tests/sync.rs`: two real `Service`s, real server + PostgreSQL) |
+| ADRs 0001–0013, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
 
@@ -117,6 +121,16 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Switching leaves no extra subscriptions | SFU test: the preview-only member gets no main stream, members without a preview subscription get no previews, the main stream's old layer stops at the switch, budget frees on downgrade; desktop test: watched share leaves the preview list, hiding previews → ≤ 2 preview packets in 1.5 s and no stale pictures, unwatching → the viewer, its stream and subscription end | **PASS (headless, Windows)** | same tests |
 | Real FPS / latency on Windows/RTX and macOS/M4, Linux separately | Windows: `s4-trial.ps1` (real capture of the 1080p 60 Hz secondary monitor, NVENC, DXVA); `cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture --test-threads=1 hardware fifty` | **Windows PASS on the dev RTX 2060 SUPER** (not the spec's RTX 4070 Super): 1080p60 share watched at 53–60 fps, capture → decoded picture p50 18 ms / p95 ≈ 70 ms, 0 frames lost; separate window and full screen 59.5–60 fps; previews 9.9–10 fps; **1440p120 encode → decode 118–120 fps, p50 11.1 ms** (generated pictures: no 1440p ≥ 120 Hz monitor here, so **1440p120 capture UNVERIFIED**); 50 previews (320×180, 10 fps) decode on one thread in 14 % of a core. **macOS/M4 and Linux: not implemented (S3 blocker) → BLOCKED**; instrumental screen-to-screen latency (camera) **UNVERIFIED** | `benchmarks/results/s4-trial-windows-*.log`, `benchmarks/results/media-video-s4-windows-2026-11-04.json` |
 | 50 publishers and 50 previews in controlled load (separate scenarios) | `turbo-pancake-bench sfu-screen --server-exe <release server> --scenario publishers|fanout|grid --n 50` (loopback, real call drivers in the bench process, server in its own process; high 2 Mbit/s 30 fps, preview 150 kbit/s 10 fps unless noted) | **PASS (dev machine, loopback)**: *50 publishers + 2 viewers* (each 1 high + 49 previews): 100 % delivered, server 23 % of a core, 13 100 packets/s in; *1 → 50 viewers*: 99.7 % delivered, 24 % of a core, 106 Mbit/s out; at 8 Mbit/s 60 fps: 100 % delivered, 60 % of a core, 48 000 packets/s, **426 Mbit/s out**; *50 members × 49 previews* (2 450 streams): 99.2 % delivered, **92 % of a core**, 49 000 packets/s, 392 Mbit/s out — the single-threaded SFU is near its limit (issue 25). Target server (Ryzen 5 6600H, real 1 Gbit/s uplink) **UNVERIFIED** (S8) | `benchmarks/results/sfu-screen-{publishers,fanout,grid}-50-windows-*.json` |
+
+## Acceptance checks — S5 (IN_PROGRESS, Windows, ADR 0013)
+
+| Criterion | Command / procedure | Result | Evidence |
+|---|---|---|---|
+| Two users exchange real messages | Headless: `cargo test -p turbo-pancake-messenger-client --test sync` (two client services → real app-server → PostgreSQL: send, reply, edit, delete, receipts, presence). GUI with two desktop clients: steps 5–6 | **headless PASS**; two real desktop clients **UNVERIFIED** (UI not built yet) | `crates/messenger-client/tests/sync.rs::exchange_receipts_edit_delete_and_presence` |
+| Blocking works on the server | `cargo test -p turbo-pancake-app-server --test messenger blocks`; client: failed send with the reason | **PASS (headless)**: both sides 403 with the same text, edit refused, delete allowed, presence hidden both ways and restored, unblock restores sending | `messenger.rs::blocks_are_enforced_by_the_server`, `sync.rs::blocked_send_fails_visibly_and_revoked_session_signs_out` |
+| History and status correct after restart / reconnect | Server restart on the same database; client restart from its SQLite cache; client offline start; 300 missed messages + edit + delete | **PASS (headless)**: history, tokens, nonces survive the server restart, nobody online after it; sends queued offline go out once after reconnect; a restarted client shows the cache at once and catches up exactly; offline start shows the cache | `messenger.rs::{history_tokens_and_offline_state_survive_a_server_restart,missed_events_are_recovered_from_the_change_feed}`, `sync.rs::{offline_sends_server_restart_and_client_restart_without_duplicates,resume_shows_the_cache_offline_and_catches_up}` |
+| No duplicates | Nonce retries (sequential and two at once), 80 concurrent sends, duplicate events, resync pages | **PASS (headless)**: one message per nonce, sequences 1..80 gap-free, client views stay at exactly 5 / 31 messages after resyncs | `messenger.rs::concurrent_senders_get_gap_free_order`, `cache::tests::messages_apply_idempotently_in_any_order`, `sync.rs` |
+| Security / permission tests | `cargo test -p turbo-pancake-app-server --test messenger` | **PASS**: Argon2id hashes, same 401 for unknown user/wrong password, refresh rotation, revoke + password change close other sessions, every endpoint 401 without / with a garbage / overlong token, non-members 404, author-only edit/delete 403, wrong content type / malformed / 70 KiB bodies, bad ids/queries, 429 limits, anonymous WebSocket refused off loopback, corrupted cache recovery; **TLS UNVERIFIED** (step 7) | `apps/app-server/tests/messenger.rs`, `crates/messenger-client/src/cache.rs` tests |
 
 ## Known issues and blockers
 
@@ -268,6 +282,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 * [0010 Screen share transport, subscriptions, loss repair, system audio](ADR/0010-screen-share-transport.md) — accepted
 * [0011 Two layers per share, layer subscriptions, previews, adaptation](ADR/0011-layers-previews-adaptation.md) — accepted
 * [0012 Windows first: other systems after the full Windows product](ADR/0012-windows-first.md) — accepted (owner)
+* [0013 Accounts, sessions, direct messages and sync](ADR/0013-accounts-and-messages.md) — accepted
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -607,19 +622,42 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S5 on Windows (ADR 0012)
+## Exact next task — S5 step 5 (desktop UI), Windows
 
-1. Write the S5 plan in `docs/STAGES.md` (Windows only) from spec §7, §8, §10, §11, §17 S5:
-   PostgreSQL + SQLx migrations (users, sessions, conversations, members, messages, blocks),
-   Argon2id, session tokens with revocation, the auth handshake in `Hello` (field 3
-   reserved), HTTPS API `/v1/...` (register/login/refresh/logout/me/lookup_username/block/
-   conversations/messages/mark read), WebSocket events (`message.created/edited/deleted`,
-   `read.updated`, `presence.changed`), client SQLite cache with pending operations,
-   Discord-like chat UI, contract + security tests. Decide how PostgreSQL runs for local
-   tests on this machine (no Docker: portable PostgreSQL binaries on D:, or an embedded
-   test runner) and in Windows CI.
-2. Implement it step by step; acceptance on Windows (two real desktop clients).
-3. Owner-assisted items stay listed in the stage tables; they do not block S5–S8.
+1. Desktop: start `turbo_pancake_messenger_client::Service` next to the call `Session`
+   (`--server` gives the URL; cache under `%LOCALAPPDATA%`), token + user in the Windows
+   Credential Manager (`CredWriteW` / `CredReadW`, cfg(windows)), `Resume` at start.
+2. Slint: sign in / register screen; left column = conversation list (presence dot, unread
+   badge, last text) + "find @username"; main = Discord-like message list (name, time,
+   reply quote, edited mark, own state pending/failed/sent/delivered/read), input with
+   reply / edit / delete / copy / retry / discard, drafts saved; block/unblock in the
+   header; connection status; the voice room panel stays reachable.
+3. `benchmarks/scripts/s5-trial.ps1`: server with a portable PostgreSQL cluster in the
+   build directory + two release desktop clients on the 2nd monitor (`--no-activate`),
+   scripted flags so exchange, block, client restart and server restart are checked from
+   logs without input; record the results here.
+4. Step 7: TLS (rustls) with an IP certificate or a pinned key; then S5 → DONE (Windows).
+
+## Session log 2026-11-04 (S5 steps 1–4 — protocol, server, client core)
+
+* Plan + ADR 0013. PostgreSQL 17.11 portable binaries (EDB zip, owner approved) on the
+  build drive; `TURBO_PANCAKE_PG_BIN` in the untracked `.cargo/config.toml`; CI uses the
+  runner's preinstalled PostgreSQL (`PGBIN`, service not started).
+* Server and client core implemented with tests (tables above). Lessons: Argon2 in an
+  unoptimised build costs seconds per hash and starved parallel tests (the dev profile now
+  optimises `argon2` / `blake2`); axum's graceful shutdown waits for WebSockets forever
+  unless connections are told to end (shutdown watch channel); sqlx 0.8 keeps
+  `libsqlite3-sys` in the resolver even without its sqlite feature, so the client uses
+  rusqlite 0.32 (same `libsqlite3-sys` 0.30).
+* Behaviour change: a server bound off loopback refuses anonymous calls unless
+  `--anonymous-calls true` (needed for call trials on a public IP until S6 binds calls to
+  accounts) and refuses accounts over plain HTTP unless `--insecure-allow-plaintext`.
+* Local builds run with `jobs = 2` (the owner uses the machine meanwhile).
+* Bug found by the client restart test and fixed: `/changes` read the conversation's
+  `change_seq` *after* the page, so a message committed in between was skipped by the
+  client's cursor and its event then dropped as a duplicate. The counter is now read
+  first and the page limited to it (writers commit in `change_seq` order under the row
+  lock). Three repeated runs of both suites green after the fix.
 
 ## Previous next-task list — S5 (before ADR 0012)
 

@@ -15,11 +15,43 @@ presence are recorded as owner-assisted and do not block the next stage.
 | S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | DONE (2026-11-03; CI 41647867149 Windows/Ubuntu; macOS re-check pending, PROJECT_STATE issue 26) |
 | S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | DONE (Windows) 2026-11-04; owner-assisted: camera latency, two machines; macOS/Linux → S9 |
 | S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | DONE (Windows) 2026-11-04; owner-assisted: RTX 4070 Super, 1440p120 capture, camera latency; macOS/M4, Linux → S9 |
-| S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | NOT_STARTED |
+| S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | IN_PROGRESS (plan below, ADR 0013) |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | NOT_STARTED |
 | S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
 | S9 | macOS + Linux port (ADR 0012) | ScreenCaptureKit/VideoToolbox/`excludesCurrentProcessAudio`; portal/PipeWire/VA-API + audio exclusion validation; devices, tray, installers, signing, updates; the macOS/Linux parts of S1–S8 criteria; CI jobs back | NOT_STARTED (after S8) |
+
+## S5 plan (2026-11-04, Windows only, ADR 0013)
+
+Scope (spec §7, §8, §10, §11, §12, §17 S5): accounts, sessions, direct conversations,
+messages with replies/edit/delete, delivery/read receipts, presence, blocks, client cache
+and sync. Groups (S6) reuse the same tables and feed.
+
+1. ~~**Protocol**~~ (done 2026-11-04) — `proto/turbo_pancake/v1/api.proto` (users, auth, sessions, blocks,
+   conversations, messages, receipts, errors), `Hello.auth_token` (field 3), events
+   `MessageCreated/Edited/Deleted`, `ReadUpdated`, `PresenceChanged`,
+   `ConversationUpdated`, `SessionRevoked`; validation (username, password, body); contract
+   tests; `docs/API.md`.
+2. ~~**Test PostgreSQL**~~ (done) — `crates/pg-test`: one throw-away cluster per test process
+   (portable binaries: `TURBO_PANCAKE_PG_BIN`, or `PGBIN` on CI),
+   killed with the process (Windows job object), one database per test.
+3. ~~**Server**~~ (done) — migrations, Argon2id, tokens, rate limits, HTTP API, authenticated
+   WebSocket, event fan-out, presence, blocks; integration + security tests (authn/authz
+   negatives, blocked user, revocation, enumeration-equal answers, oversized payloads,
+   idempotent send, ordering under concurrent senders, resync after missed events).
+4. ~~**Client core**~~ (done, `crates/messenger-client`) — HTTP client, SQLite cache with migrations and corrupted-cache
+   recovery, pending operations (optimistic send pending/sent/failed), sync on connect
+   (change feed per conversation), dedup/gap handling of live events, receipts, token in
+   the Credential Manager; headless tests against a real server.
+5. **Desktop UI** — sign in / register, conversation list with presence and unread,
+   find by username → direct chat, Discord-like message list (name, time, reply quote,
+   edited mark, own message state, delivery/read), reply / edit / delete / copy, drafts,
+   block/unblock, sessions and password change, connection state; voice room stays.
+6. **Acceptance** — two real desktop clients on this machine (`s5-trial.ps1`, second
+   monitor): exchange, block, restart and reconnect without duplicates or gaps; restart
+   of the server; results in PROJECT_STATE.
+7. **TLS** — server TLS (rustls) with an IP certificate or pinned key, client verification
+   (never disabled), documented trust setup.
 
 ## S4 plan (2026-11-04; Windows done, macOS/Linux blocked)
 
