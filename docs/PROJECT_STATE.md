@@ -2,7 +2,7 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 Current stage: S4 — adaptive quality, high FPS, multiple previews: **BLOCKED** (2026-11-04: implemented and measured on Windows — layers, layer subscriptions, auto/manual quality, previews, separate window, full screen, load scenarios; the spec's proofs on macOS/M4 and Linux need the macOS/Linux capture and codecs that S3 left unimplemented and hardware the owner does not have; 1440p120 *capture* needs a 1440p ≥ 120 Hz monitor — same formal blocker shape as S1/S3). Next: S5 (spec §16 allows continuing past a formal blocker).
 Stage status: S0 = DONE; **S1 = BLOCKED** (2026-11-02: everything works on Windows incl. a call between two homes, but the spec's real-device trials on macOS/Linux need hardware the owner does not have — formal blocker); **S2 = DONE** (2026-11-03, every criterion PASS, see the S2 table; per spec §16 work continues while S1 stays blocked); **S3 = BLOCKED** (2026-11-04: Windows PASS on every criterion, macOS/Linux not implemented — see the S3 table); **S4 = BLOCKED** (2026-11-04: Windows PASS on the dev machine, macOS/M4 and Linux not implemented — see the S4 table)
-Last verified commit: 51296a9 (branch `main`, CI run 41740440858: Windows, Ubuntu, **macOS arm64**, audit — all success; the follow-up S4 commit's CI is recorded in the S4 session log)
+Last verified commit: 48b5fc2 (branch `main`, CI run 41744388558: Windows, Ubuntu, macOS arm64, audit — all success; macOS passed on re-run, the first attempt hit the flaky engine test of issue 40). 51296a9: CI 41740440858 all success
 Platform matrix (S0 scope: build + tests + window smoke): Windows = PASS / macOS = PASS (CI runner, arm64) / Linux = PASS (CI, X11 via Xvfb; Wayland UNVERIFIED)
 Last session: 2026-11-04
 
@@ -242,6 +242,10 @@ performance results for the target hardware (RTX 4070 Super / M4).
 38. Sender adaptation with heavy random loss goes to the floor (540p15) and stays while the
     loss lasts; the NACK share counts NACK messages, not packets, so it is a conservative
     signal; recovery is verified in unit tests only.
+40. **Flaky on the macOS CI VM:** `media-audio` `tests/engine.rs::voice_activation_pauses_sending_and_drives_the_indicators`
+    failed once (CI 41744388558 attempt 1: 18 underruns, 8 late frames after the pause —
+    the VM stalled the real-time simulation); passed on re-run, unchanged by S4. Make the
+    test tolerant of scheduler stalls (or count late only after the rebuffer) if it recurs.
 39. The bench's delivered ratio can read slightly above 1.0 (≤ 0.5 %): sent counters are
     sampled every 0.5 s, received ones continuously.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
