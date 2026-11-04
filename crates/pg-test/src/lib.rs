@@ -15,24 +15,28 @@
 
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 struct Cluster {
     port: u16,
     bin: PathBuf,
-    _server: Mutex<Child>,
 }
 
-static CLUSTER: OnceLock<Option<Cluster>> = OnceLock::new();
+/// Started once per process; a failure is remembered so every test fails at once with
+/// the same message instead of retrying the start.
+static CLUSTER: OnceLock<Result<Option<Cluster>, String>> = OnceLock::new();
 static NEXT_DB: AtomicU32 = AtomicU32::new(1);
 
 /// URL of a new, empty database (`postgres://postgres@127.0.0.1:<port>/<name>`), or `None`
 /// when PostgreSQL is unavailable and `TURBO_PANCAKE_SKIP_PG` is set.
 pub fn database_url() -> Option<String> {
-    let cluster = CLUSTER.get_or_init(start).as_ref()?;
+    let cluster = match CLUSTER.get_or_init(start) {
+        Ok(c) => c.as_ref()?,
+        Err(e) => panic!("{e}"),
+    };
     let name = format!(
         "t{}_{}",
         std::process::id(),
@@ -66,7 +70,10 @@ pub fn database_url() -> Option<String> {
 
 /// Port of the running cluster (after the first [`database_url`]).
 pub fn port() -> Option<u16> {
-    CLUSTER.get().and_then(|c| c.as_ref()).map(|c| c.port)
+    match CLUSTER.get() {
+        Some(Ok(Some(c))) => Some(c.port),
+        _ => None,
+    }
 }
 
 fn exe(name: &str) -> String {
@@ -86,15 +93,16 @@ fn bin_dir() -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).find(|p| has_initdb(p)))
 }
 
-fn start() -> Option<Cluster> {
+fn start() -> Result<Option<Cluster>, String> {
     let Some(bin) = bin_dir() else {
         if std::env::var_os("TURBO_PANCAKE_SKIP_PG").is_some() {
             eprintln!("PostgreSQL binaries not found: test skipped (TURBO_PANCAKE_SKIP_PG)");
-            return None;
+            return Ok(None);
         }
-        panic!(
+        return Err(
             "PostgreSQL binaries not found: set TURBO_PANCAKE_PG_BIN to a directory with \
              initdb and postgres (see docs/TESTING.md), or TURBO_PANCAKE_SKIP_PG=1 to skip"
+                .into(),
         );
     };
     kill_children_on_exit();
@@ -127,52 +135,63 @@ fn start() -> Option<Cluster> {
         ])
         .stdin(Stdio::null())
         .output()
-        .expect("run initdb");
-    assert!(
-        out.status.success(),
-        "initdb failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+        .map_err(|e| format!("run initdb: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "initdb failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
 
     let port = TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .expect("free port")
         .port();
-    let log = std::fs::File::create(dir.join("server.log")).expect("server log");
-    let server = Command::new(bin.join(exe("postgres")))
+    // pg_ctl, not postgres directly: started by an administrator (CI runners) postgres
+    // refuses to run, pg_ctl drops the privileges with a restricted token. The server
+    // stays in this process's job object, so it still dies with the test process.
+    let log = dir.join("server.log");
+    let ctl_log = dir.join("pg_ctl.log");
+    let options = format!(
+        "-h 127.0.0.1 -p {port} -c fsync=off -c synchronous_commit=off \
+         -c full_page_writes=off -c max_connections=300"
+    );
+    let out = Command::new(bin.join(exe("pg_ctl")))
+        .arg("start")
         .arg("-D")
         .arg(&dir)
-        .args(["-h", "127.0.0.1", "-p"])
-        .arg(port.to_string())
-        .args([
-            "-c",
-            "fsync=off",
-            "-c",
-            "synchronous_commit=off",
-            "-c",
-            "full_page_writes=off",
-            "-c",
-            "max_connections=300",
-        ])
+        .arg("-l")
+        .arg(&log)
+        .args(["-w", "-t", "60", "-o", &options])
+        // Files, not pipes: the server inherits pg_ctl's handles, so a pipe would never
+        // reach end-of-file and `output()` would wait forever.
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(log)
-        .spawn()
-        .expect("start postgres");
-    let deadline = Instant::now() + Duration::from_secs(30);
+        .stderr(
+            std::fs::File::create(&ctl_log)
+                .map(Stdio::from)
+                .map_err(|e| format!("pg_ctl log: {e}"))?,
+        )
+        .status()
+        .map_err(|e| format!("run pg_ctl: {e}"))?;
+    let failed = |why: &str| {
+        format!(
+            "postgres did not start: {why} {}\n--- server.log ---\n{}",
+            std::fs::read_to_string(&ctl_log).unwrap_or_default().trim(),
+            std::fs::read_to_string(&log).unwrap_or_default()
+        )
+    };
+    if !out.success() {
+        return Err(failed("pg_ctl failed"));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
     while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "postgres did not start, see {}",
-            dir.join("server.log").display()
-        );
+        if Instant::now() >= deadline {
+            return Err(failed("port not listening"));
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Some(Cluster {
-        port,
-        bin,
-        _server: Mutex::new(server),
-    })
+    Ok(Some(Cluster { port, bin }))
 }
 
 /// Deletes clusters of earlier runs. A directory still in use cannot be renamed on
