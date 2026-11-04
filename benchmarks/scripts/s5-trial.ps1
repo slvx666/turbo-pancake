@@ -6,6 +6,7 @@
 #   powershell -File benchmarks/scripts/s5-trial.ps1 [-Target D:/turbo-pancake-target/release]
 #     [-PgBin <dir with initdb/pg_ctl/createdb>] [-Out benchmarks/results/s5-trial.log]
 #     [-Screenshots <dir>]   (own windows only; do not commit if other apps show)
+#     [-Tls]   HTTPS + WSS: gen-cert makes a private CA, clients trust it via --server-ca
 #
 # Phases: 1 register both, A writes to B (exchange, receipts); 2 B blocks A, A's send
 # fails with the reason; 3 A restarts from the stored session (Credential Manager) and
@@ -18,7 +19,8 @@ param(
   [string]$Screenshots = "",
   [int]$Port = 7979,
   [int]$PgPort = 55432,
-  [string]$X1 = "1940", [string]$X2 = "2900", [string]$Y = "100"
+  [string]$X1 = "1940", [string]$X2 = "2900", [string]$Y = "100",
+  [switch]$Tls
 )
 $ErrorActionPreference = "Stop"
 $server = Join-Path $Target "turbo-pancake-app-server.exe"
@@ -69,8 +71,15 @@ function Finish($p, [int]$timeoutMs = 60000) {
   Add-Content -Encoding utf8 "$($p.OutFile).err" $p.ErrTask.Result
   Get-Content -Encoding utf8 $p.OutFile
 }
+$tlsArgs = @(); $clientTls = @(); $scheme = "http"; $wsScheme = "ws"
+if ($Tls) {
+  & $server gen-cert --name 127.0.0.1 --out "$work/tls" | Out-Null
+  $tlsArgs = @("--tls-cert", "$work/tls/server.pem", "--tls-key", "$work/tls/server.key")
+  $clientTls = @("--server-ca", "$work/tls/ca.pem")
+  $scheme = "https"; $wsScheme = "wss"
+}
 function Start-Server {
-  Start-Hidden $server @("--bind", "127.0.0.1:$Port", "--database-url", $db, "--no-media-udp") "server-$(Get-Random)"
+  Start-Hidden $server (@("--bind", "127.0.0.1:$Port", "--database-url", $db, "--no-media-udp") + $tlsArgs) "server-$(Get-Random)"
 }
 function Shot($p, $file) {
   if (-not $Screenshots) { return }
@@ -89,8 +98,9 @@ public static class SW { public struct R { public int L, T, Rt, B; }
 }
 
 $pw = @{ "TURBO_PANCAKE_PASSWORD" = "trial password 1" }
-$ws = "ws://127.0.0.1:$Port/v1/signal"
-$common = @("--server", $ws, "--no-activate", "--chat-log")
+$ws = "${wsScheme}://127.0.0.1:$Port/v1/signal"
+$common = @("--server", $ws, "--no-activate", "--chat-log") + $clientTls
+Note "# transport: $scheme / $wsScheme"
 $srv = Start-Server
 Start-Sleep -Milliseconds 1500
 
@@ -137,7 +147,7 @@ $srv.Kill(); $srv.WaitForExit()
 $pgc.Arguments = "stop -D `"$work/pg`" -m fast"
 [System.Diagnostics.Process]::Start($pgc).WaitForExit(30000) | Out-Null
 foreach ($p in @("s5a", "s5b")) {
-  cmdkey /delete:"turbo-pancake/$p/http://127.0.0.1:$Port" *> $null
+  cmdkey /delete:"turbo-pancake/$p/${scheme}://127.0.0.1:$Port" *> $null
   Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA "turbo-pancake/cache/$p") -ErrorAction SilentlyContinue
 }
 if ($Out) { $log | Set-Content -Encoding utf8 $Out }

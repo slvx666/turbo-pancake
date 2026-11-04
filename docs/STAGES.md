@@ -15,7 +15,7 @@ presence are recorded as owner-assisted and do not block the next stage.
 | S2 | Group audio + SFU | ≥3 real clients + automated 20-participant scenario; join/leave/reconnect; new call closes previous; no per-viewer transcoding | DONE (2026-11-03; CI 41647867149 Windows/Ubuntu; macOS re-check pending, PROJECT_STATE issue 26) |
 | S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | DONE (Windows) 2026-11-04; owner-assisted: camera latency, two machines; macOS/Linux → S9 |
 | S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | DONE (Windows) 2026-11-04; owner-assisted: RTX 4070 Super, 1440p120 capture, camera latency; macOS/M4, Linux → S9 |
-| S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | IN_PROGRESS (plan below, ADR 0013) |
+| S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | DONE (Windows) 2026-11-04 (ADR 0013, 0014); owner-assisted: two machines |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | NOT_STARTED |
 | S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
@@ -50,7 +50,7 @@ and sync. Groups (S6) reuse the same tables and feed.
 6. ~~**Acceptance**~~ (done, `s5-trial.ps1`) — two real desktop clients on this machine (`s5-trial.ps1`, second
    monitor): exchange, block, restart and reconnect without duplicates or gaps; restart
    of the server; results in PROJECT_STATE.
-7. **TLS** — server TLS (rustls) with an IP certificate or pinned key, client verification
+7. ~~**TLS**~~ (done, ADR 0014) — server TLS (rustls) with an IP certificate or pinned key, client verification
    (never disabled), documented trust setup.
 
 ## S4 plan (2026-11-04; Windows done, macOS/Linux blocked)

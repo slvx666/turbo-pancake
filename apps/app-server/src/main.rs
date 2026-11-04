@@ -1,12 +1,15 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "turbo-pancake application server")]
 struct Args {
-    /// Listen address. Defaults to loopback (plain HTTP until TLS lands, ADR 0013 §12).
+    #[command(subcommand)]
+    command: Option<Cmd>,
+    /// Listen address. Defaults to loopback.
     #[arg(long, env = "TURBO_PANCAKE_BIND", default_value = "127.0.0.1:7878")]
     bind: SocketAddr,
     /// Emit logs as JSON lines (for systemd/journald collection).
@@ -40,15 +43,91 @@ struct Args {
     /// Allow joining calls without an account. Default: only on a loopback address.
     #[arg(long, env = "TURBO_PANCAKE_ANONYMOUS_CALLS")]
     anonymous_calls: Option<bool>,
+    /// Server certificate chain (PEM, server certificate first) for HTTPS/WSS on the
+    /// listen port. See `gen-cert` and docs/DEPLOY-TLS.md.
+    #[arg(long, env = "TURBO_PANCAKE_TLS_CERT", requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+    /// Private key (PEM) of `--tls-cert`.
+    #[arg(long, env = "TURBO_PANCAKE_TLS_KEY", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
     /// Serve the messenger over plain HTTP on a non-loopback address (LAN trials only:
-    /// passwords and tokens cross the network unencrypted until TLS is enabled).
+    /// passwords and tokens cross the network unencrypted).
     #[arg(long, env = "TURBO_PANCAKE_INSECURE_ALLOW_PLAINTEXT")]
     insecure_allow_plaintext: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Create a private CA and a server certificate for these IP addresses / host names
+    /// (writes ca.pem, ca.key, server.pem, server.key into --out). Give ca.pem to the
+    /// clients (`--server-ca`), keep ca.key offline.
+    GenCert {
+        /// IP address or DNS name the clients dial (repeatable).
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+        /// Validity of the server certificate in days (the CA gets 10 years).
+        #[arg(long, default_value_t = 825)]
+        days: i64,
+    },
+    /// Issue a new server certificate from the existing CA in --dir (rotation: clients
+    /// keep their ca.pem).
+    RenewCert {
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        #[arg(long, default_value_t = 825)]
+        days: i64,
+    },
+}
+
+fn write_secret(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    // The key files are created new; restrict access with the OS tools of the server
+    // (e.g. `icacls` / `chmod 600`) — see docs/DEPLOY-TLS.md.
+    std::fs::write(path, text)
+}
+
+fn certificates(cmd: Cmd) -> anyhow::Result<()> {
+    match cmd {
+        Cmd::GenCert { names, out, days } => {
+            std::fs::create_dir_all(&out)?;
+            for f in ["ca.key", "server.key"] {
+                anyhow::ensure!(
+                    !out.join(f).exists(),
+                    "{} exists: refusing to overwrite keys (use renew-cert)",
+                    out.join(f).display()
+                );
+            }
+            let pki = turbo_pancake_tls::generate(&names, days)?;
+            std::fs::write(out.join("ca.pem"), &pki.ca_cert_pem)?;
+            write_secret(&out.join("ca.key"), &pki.ca_key_pem)?;
+            std::fs::write(out.join("server.pem"), &pki.server_chain_pem)?;
+            write_secret(&out.join("server.key"), &pki.server_key_pem)?;
+            println!(
+                "wrote ca.pem (give to clients), ca.key (keep offline), server.pem, server.key to {}",
+                out.display()
+            );
+        }
+        Cmd::RenewCert { names, dir, days } => {
+            let ca = std::fs::read_to_string(dir.join("ca.pem"))?;
+            let ca_key = std::fs::read_to_string(dir.join("ca.key"))?;
+            let (chain, key) = turbo_pancake_tls::issue_server(&ca, &ca_key, &names, days)?;
+            std::fs::write(dir.join("server.pem"), chain)?;
+            write_secret(&dir.join("server.key"), &key)?;
+            println!("wrote a new server.pem and server.key to {}", dir.display());
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if let Some(cmd) = args.command {
+        return certificates(cmd);
+    }
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     if args.log_json {
         tracing_subscriber::fmt()
@@ -59,10 +138,18 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
+    let tls = match (&args.tls_cert, &args.tls_key) {
+        (Some(cert), Some(key)) => Some(turbo_pancake_tls::server_config(
+            &std::fs::read(cert)?,
+            &std::fs::read(key)?,
+        )?),
+        _ => None,
+    };
     let loopback = args.bind.ip().is_loopback();
-    if !loopback && args.database_url.is_some() && !args.insecure_allow_plaintext {
+    if !loopback && tls.is_none() && args.database_url.is_some() && !args.insecure_allow_plaintext {
         anyhow::bail!(
-            "refusing to serve accounts over plain HTTP on {}: bind to loopback or pass              --insecure-allow-plaintext for a LAN trial",
+            "refusing to serve accounts over plain HTTP on {}: use --tls-cert/--tls-key, bind \
+             to loopback, or pass --insecure-allow-plaintext for a LAN trial",
             args.bind
         );
     }
@@ -74,7 +161,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     // Machine-readable line used by the benchmark harness and tests.
     println!("TURBO_PANCAKE_LISTENING {}", listener.local_addr()?);
-    tracing::info!(addr = %listener.local_addr()?, version = turbo_pancake_app_server::SERVER_VERSION, "listening");
+    tracing::info!(
+        addr = %listener.local_addr()?,
+        tls = tls.is_some(),
+        version = turbo_pancake_app_server::SERVER_VERSION,
+        "listening"
+    );
 
     let config = turbo_pancake_app_server::Config {
         media_udp: !args.no_media_udp,
@@ -83,6 +175,7 @@ async fn main() -> anyhow::Result<()> {
         max_high_egress_kbps: args.max_high_egress_mbps.map(|m| m.saturating_mul(1000)),
         database_url: args.database_url,
         anonymous_calls,
+        tls,
         ..Default::default()
     };
     turbo_pancake_app_server::serve(listener, config, async {

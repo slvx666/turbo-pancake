@@ -229,6 +229,9 @@ pub fn error_text(e: &str) -> String {
             "Сессия завершена на другом устройстве".into()
         }
         "messenger is not enabled" => "На сервере не включены переписки".into(),
+        e if e.contains("server certificate is not trusted") => {
+            "Сертификат сервера не доверенный: проверьте файл --server-ca".into()
+        }
         e if e.starts_with("server unreachable") => "Сервер недоступен".into(),
         e if e.starts_with("username must be") => {
             "Имя: 3–32 символа, латиница, цифры и _, начинается с буквы".into()

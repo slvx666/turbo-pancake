@@ -13,6 +13,7 @@ pub mod chat;
 pub mod events;
 pub mod ratelimit;
 pub mod signaling;
+pub mod tls;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -60,6 +61,8 @@ pub struct Config {
     /// tests). Off for servers reachable from the network.
     pub anonymous_calls: bool,
     pub limits: ratelimit::Limits,
+    /// HTTPS + WSS on the listening port (ADR 0014); `None` = plain HTTP.
+    pub tls: Option<Arc<turbo_pancake_tls::rustls::ServerConfig>>,
 }
 
 impl Default for Config {
@@ -78,6 +81,7 @@ impl Default for Config {
             database_pool: 16,
             anonymous_calls: true,
             limits: ratelimit::Limits::default(),
+            tls: None,
         }
     }
 }
@@ -249,6 +253,7 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let local = listener.local_addr()?;
+    let tls = config.tls.clone();
     let state = AppState::new(config)
         .with_database()
         .await
@@ -256,17 +261,27 @@ pub async fn serve(
         .with_media(local.ip(), local.port());
     let sfu = state.sfu.clone();
     let stop_connections = state.shutdown_tx.clone();
-    let app = router(state);
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
+    let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
+    let stop = async move {
         shutdown.await;
         // Long-lived WebSocket connections would hold the graceful shutdown forever.
         let _ = stop_connections.send(true);
-    })
-    .await?;
+    };
+    match tls {
+        Some(cfg) => {
+            use axum::serve::ListenerExt;
+            // `tap_io` gives any listener axum's `ConnectInfo<SocketAddr>` support.
+            let listener = tls::TlsListener::new(listener, cfg)?.tap_io(|_| {});
+            axum::serve(listener, app)
+                .with_graceful_shutdown(stop)
+                .await?
+        }
+        None => {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(stop)
+                .await?
+        }
+    }
     if let Some(sfu) = sfu {
         sfu.stop();
     }

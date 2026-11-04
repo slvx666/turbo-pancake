@@ -126,6 +126,8 @@ pub struct SessionConfig {
     pub status_interval: Duration,
     /// Most previews received and decoded at once (one page of the grid, spec §5.3).
     pub max_previews: usize,
+    /// Certificate trust for `wss://` (`None` = the public web PKI). Always verified.
+    pub tls: Option<turbo_pancake_messenger_client::api::TlsConfig>,
 }
 
 impl SessionConfig {
@@ -150,6 +152,7 @@ impl SessionConfig {
             stun_servers: Vec::new(),
             status_interval: Duration::from_millis(250),
             max_previews: 24,
+            tls: None,
         }
     }
 }
@@ -656,13 +659,32 @@ impl Core {
     async fn connect(&mut self) -> Result<(Ws, Duration), String> {
         let (mut ws, _) = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            tokio_tungstenite::connect_async(self.cfg.server_url.as_str()),
+            tokio_tungstenite::connect_async_tls_with_config(
+                self.cfg.server_url.as_str(),
+                None,
+                false,
+                Some(tokio_tungstenite::Connector::Rustls(
+                    self.cfg
+                        .tls
+                        .clone()
+                        .unwrap_or_else(turbo_pancake_messenger_client::api::web_pki),
+                )),
+            ),
         )
         .await
         .map_err(|_| "таймаут подключения".to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            if turbo_pancake_messenger_client::api::describe(&e)
+                == turbo_pancake_messenger_client::api::UNTRUSTED_CERTIFICATE
+            {
+                "сертификат сервера не доверенный (проверьте --server-ca)".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
         self.dialed_ip = match ws.get_ref() {
             MaybeTlsStream::Plain(tcp) => tcp.peer_addr().ok().map(|a| a.ip()),
+            MaybeTlsStream::Rustls(tls) => tls.get_ref().0.peer_addr().ok().map(|a| a.ip()),
             _ => None,
         };
         let hello = C::Hello(v1::Hello {

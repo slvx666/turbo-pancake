@@ -29,6 +29,18 @@ pub struct ServiceConfig {
     pub cache_dir: Option<PathBuf>,
     /// Messages per conversation sent to the UI.
     pub view_limit: u32,
+    /// Certificate trust for `https://` servers (`None` = the public web PKI).
+    pub tls: Option<crate::api::TlsConfig>,
+}
+
+impl ServiceConfig {
+    fn tls(&self) -> crate::api::TlsConfig {
+        self.tls.clone().unwrap_or_else(crate::api::web_pki)
+    }
+
+    fn api(&self) -> Api {
+        Api::with_tls(&self.server, self.tls())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -319,7 +331,7 @@ impl Worker {
 
     fn signed_in(&mut self, auth: v1::AuthResponse) {
         let user = auth.user.clone().unwrap_or_default();
-        let mut api = Api::new(&self.cfg.server);
+        let mut api = self.cfg.api();
         api.set_token(Some(auth.token.clone()));
         let cache = self.open_cache(&user.user_id);
         self.engine = Some(Engine::new(api, cache, user.clone()));
@@ -363,7 +375,7 @@ impl Worker {
                 password,
                 display_name,
             } => {
-                let api = Api::new(&self.cfg.server);
+                let api = self.cfg.api();
                 let r = api
                     .register(&v1::RegisterRequest {
                         username,
@@ -378,7 +390,7 @@ impl Worker {
                 }
             }
             Command::Login { username, password } => {
-                let api = Api::new(&self.cfg.server);
+                let api = self.cfg.api();
                 let r = api
                     .login(&v1::LoginRequest {
                         username,
@@ -392,7 +404,7 @@ impl Worker {
                 }
             }
             Command::Resume { token, user } => {
-                let mut api = Api::new(&self.cfg.server);
+                let mut api = self.cfg.api();
                 api.set_token(Some(token.clone()));
                 match api.me().await {
                     Ok(me) => self.signed_in(v1::AuthResponse {
@@ -531,9 +543,15 @@ impl Worker {
                 .replacen("https://", "wss://", 1)
         );
         let attempt = async {
-            let (mut ws, _) = tokio_tungstenite::connect_async(url.as_str())
-                .await
-                .map_err(|_| "cannot connect".to_owned())?;
+            let connector = tokio_tungstenite::Connector::Rustls(self.cfg.tls());
+            let (mut ws, _) = tokio_tungstenite::connect_async_tls_with_config(
+                url.as_str(),
+                None,
+                false,
+                Some(connector),
+            )
+            .await
+            .map_err(|e| crate::api::describe(&e))?;
             let hello = proto::client(
                 1,
                 C::Hello(v1::Hello {
@@ -582,6 +600,11 @@ impl Worker {
             }
             Ok(Err(e)) if e == "unauthenticated" => {
                 self.sign_out("session ended, sign in again", true);
+            }
+            Ok(Err(e)) if e == crate::api::UNTRUSTED_CERTIFICATE => {
+                // Never connects until the trust is fixed: say so, keep retrying slowly.
+                self.emit(Update::Error(e));
+                self.disconnected();
             }
             _ => self.disconnected(),
         }

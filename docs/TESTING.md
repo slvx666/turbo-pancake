@@ -81,6 +81,10 @@ cargo test -p turbo-pancake-messenger-client --test sync
 # GUI trial: server + PostgreSQL + two release clients on the 2nd monitor, 4 phases
 # (exchange, block, client restart from the stored session, server restart)
 powershell -File benchmarks/scripts/s5-trial.ps1 -Out benchmarks/results/s5-trial-windows.log
+# the same over HTTPS + WSS (gen-cert private CA, clients with --server-ca)
+powershell -File benchmarks/scripts/s5-trial.ps1 -Tls
+# TLS: private CA accepted; web PKI only, wrong CA, wrong address, plain HTTP refused
+cargo test -p turbo-pancake-messenger-client --test tls
 ```
 
 The desktop client signs in from the UI, or for trials with `--profile <p> --login <user>

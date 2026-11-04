@@ -71,7 +71,12 @@ fn cache_dir(profile: &str) -> Option<std::path::PathBuf> {
     )
 }
 
-pub fn start(window: &MainWindow, server: &str, script: Script) -> Messenger {
+pub fn start(
+    window: &MainWindow,
+    server: &str,
+    script: Script,
+    tls: turbo_pancake_messenger_client::api::TlsConfig,
+) -> Messenger {
     let http = chat::http_base(server);
     window.set_server_label(chat::server_label(&http).into());
     let target = credentials::target(&http, &script.profile);
@@ -94,6 +99,7 @@ pub fn start(window: &MainWindow, server: &str, script: Script) -> Messenger {
             ),
             cache_dir: cache_dir(&script.profile),
             view_limit: 300,
+            tls: Some(tls),
         },
         move |u| {
             // Secrets are stored here, on the service thread, never passed to the UI.

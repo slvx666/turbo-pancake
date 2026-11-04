@@ -1,8 +1,8 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S5 — accounts and direct messages (Windows): IN_PROGRESS** — plan in `docs/STAGES.md` ("S5 plan"), ADR 0013. Steps 1–6 (protocol, test PostgreSQL, server, client core, desktop UI, two-client trial) done; left: TLS (step 7).
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = IN_PROGRESS**; S6–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S6 — groups and calls in the messenger (Windows): NOT_STARTED** — first unfinished stage; plan it in `docs/STAGES.md` (see "Exact next task"). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified commit: 25c6523 (branch `main`, CI 41826651545: Windows job green incl. all messenger tests; audit green on dbfc33a, CI 41831401852, after ignoring RUSTSEC-2023-0071 — issue 41). Earlier: 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
 Last session: 2026-11-04 (S5 steps 1–4)
@@ -50,7 +50,8 @@ Last session: 2026-11-04 (S5 steps 1–4)
 | **Messenger server** (S5): PostgreSQL + SQLx migrations, Argon2id (19 MiB, t=2), opaque tokens stored as SHA-256 with sliding 30-day expiry, refresh rotation, logout/revoke/password change closing WebSockets, same answer and cost for unknown user/wrong password, lookup, blocks (both sides 403, presence hidden), direct conversations (one per pair), messages with `server_sequence` + `change_seq` under the conversation row lock, nonce idempotency, replies, edit/delete-for-everyone tombstones, change feed, cursor history, receipts (monotonic, clamped), presence from live connections, event fan-out, rate limits, `security` log target without secrets, WebSockets closed on server stop, `--database-url`, anonymous calls only on loopback by default, plain HTTP refused off loopback with accounts | `migrations/`, `apps/app-server/src/{api,auth,chat,events,ratelimit,signaling,lib,main}.rs` | `apps/app-server/tests/messenger.rs` (10), `ratelimit` unit |
 | **Messenger client core** (S5): typed API client, SQLite cache (migrations by `user_version`, idempotent apply by `change_seq`, `secure_delete`, corrupted file moved aside and rebuilt), sync engine (feed from the resume cursor, duplicate/gap handling of events, pending send/edit/delete with nonces, failed with the server's reason, retry/discard, delivered/read acks, drafts), views (conversation list with unread/last text/presence, messages with reply quotes and pending/failed/sent/delivered/read), worker thread with its own signed-in WebSocket, heartbeat, reconnect 0.5→5 s, offline resume from the cache, cache wiped on logout/revocation | `crates/messenger-client` | 3 unit + 4 integration tests (`tests/sync.rs`: two real `Service`s, real server + PostgreSQL) |
 | **Desktop messenger UI** (S5): sign-in / register screen, conversation list (presence dot, unread badge, last text or "черновик"), find by @username, voice room entry, Discord-like feed (avatar + name + local time, grouping, reply quote, "(изменено)", deleted placeholder, own state отправляется/отправлено/доставлено/прочитано, failed with the reason + retry/discard), hover actions reply/edit/delete, selectable text (copy), compose bar for reply/edit, drafts saved per conversation, block/unblock in the header, banner when sending is not allowed, messenger connection status in the user panel, logout; session (token + user) in the Windows Credential Manager per profile and server, resume at start (offline from the cache); scripted flags `--profile --login --register --chat-with --send --block --chat-log` | `apps/desktop/ui/{chat,theme,main}.slint`, `apps/desktop/src/{messenger_ui,chat,credentials,main}.rs` | `chat::tests` (3), `credentials::tests` (real Credential Manager), `benchmarks/scripts/s5-trial.ps1` |
-| ADRs 0001–0013, API, ARCHITECTURE, TESTING, STAGES | `docs/` | — |
+| **TLS** (S5 step 7, ADR 0014): `crates/tls` (rustls configs, private CA + server certificate with rcgen, rotation), app-server HTTPS + WSS (`--tls-cert/--tls-key`, handshakes off the accept loop, `gen-cert` / `renew-cert`), clients always verify (web PKI or only `--server-ca`), clear "certificate not trusted" errors | `crates/tls`, `apps/app-server/src/{tls,main}.rs`, `crates/messenger-client/src/{api,service}.rs`, `apps/desktop/src/{session,main}.rs`, `docs/DEPLOY-TLS.md` | `crates/tls` unit, `crates/messenger-client/tests/tls.rs` (2), `s5-trial.ps1 -Tls` |
+| ADRs 0001–0014, API, ARCHITECTURE, TESTING, STAGES, ONBOARDING, DEPLOY-TLS | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
 
@@ -123,7 +124,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Real FPS / latency on Windows/RTX and macOS/M4, Linux separately | Windows: `s4-trial.ps1` (real capture of the 1080p 60 Hz secondary monitor, NVENC, DXVA); `cargo test -p turbo-pancake-media-video --release --test loopback -- --nocapture --test-threads=1 hardware fifty` | **Windows PASS on the dev RTX 2060 SUPER** (not the spec's RTX 4070 Super): 1080p60 share watched at 53–60 fps, capture → decoded picture p50 18 ms / p95 ≈ 70 ms, 0 frames lost; separate window and full screen 59.5–60 fps; previews 9.9–10 fps; **1440p120 encode → decode 118–120 fps, p50 11.1 ms** (generated pictures: no 1440p ≥ 120 Hz monitor here, so **1440p120 capture UNVERIFIED**); 50 previews (320×180, 10 fps) decode on one thread in 14 % of a core. **macOS/M4 and Linux: not implemented (S3 blocker) → BLOCKED**; instrumental screen-to-screen latency (camera) **UNVERIFIED** | `benchmarks/results/s4-trial-windows-*.log`, `benchmarks/results/media-video-s4-windows-2026-11-04.json` |
 | 50 publishers and 50 previews in controlled load (separate scenarios) | `turbo-pancake-bench sfu-screen --server-exe <release server> --scenario publishers|fanout|grid --n 50` (loopback, real call drivers in the bench process, server in its own process; high 2 Mbit/s 30 fps, preview 150 kbit/s 10 fps unless noted) | **PASS (dev machine, loopback)**: *50 publishers + 2 viewers* (each 1 high + 49 previews): 100 % delivered, server 23 % of a core, 13 100 packets/s in; *1 → 50 viewers*: 99.7 % delivered, 24 % of a core, 106 Mbit/s out; at 8 Mbit/s 60 fps: 100 % delivered, 60 % of a core, 48 000 packets/s, **426 Mbit/s out**; *50 members × 49 previews* (2 450 streams): 99.2 % delivered, **92 % of a core**, 49 000 packets/s, 392 Mbit/s out — the single-threaded SFU is near its limit (issue 25). Target server (Ryzen 5 6600H, real 1 Gbit/s uplink) **UNVERIFIED** (S8) | `benchmarks/results/sfu-screen-{publishers,fanout,grid}-50-windows-*.json` |
 
-## Acceptance checks — S5 (IN_PROGRESS, Windows, ADR 0013)
+## Acceptance checks — S5 (DONE (Windows) 2026-11-04, ADR 0013 / 0014)
 
 | Criterion | Command / procedure | Result | Evidence |
 |---|---|---|---|
@@ -131,7 +132,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Blocking works on the server | `cargo test -p turbo-pancake-app-server --test messenger blocks`; client: failed send with the reason | **PASS**: headless (both sides 403 with the same text, edit refused, delete allowed, presence hidden both ways and restored, unblock restores sending); GUI trial phase 2: B blocks A, A's message shows "не отправлено: Вы не можете писать этому пользователю", the input is replaced by the banner | `messenger.rs::blocks_are_enforced_by_the_server`, `sync.rs::blocked_send_fails_visibly_and_revoked_session_signs_out` |
 | History and status correct after restart / reconnect | Server restart on the same database; client restart from its SQLite cache; client offline start; 300 missed messages + edit + delete | **PASS**: headless (history, tokens, nonces survive the server restart, nobody online after it; sends queued offline go out once after reconnect; a restarted client shows the cache at once and catches up exactly; offline start shows the cache); GUI trial phase 3: A restarted from the Credential Manager shows the same 3 messages (no duplicates); phase 4: server killed and restarted while A runs → reconnecting → online, still 3 | `messenger.rs::{history_tokens_and_offline_state_survive_a_server_restart,missed_events_are_recovered_from_the_change_feed}`, `sync.rs::{offline_sends_server_restart_and_client_restart_without_duplicates,resume_shows_the_cache_offline_and_catches_up}` |
 | No duplicates | Nonce retries (sequential and two at once), 80 concurrent sends, duplicate events, resync pages | **PASS (headless)**: one message per nonce, sequences 1..80 gap-free, client views stay at exactly 5 / 31 messages after resyncs | `messenger.rs::concurrent_senders_get_gap_free_order`, `cache::tests::messages_apply_idempotently_in_any_order`, `sync.rs` |
-| Security / permission tests | `cargo test -p turbo-pancake-app-server --test messenger` | **PASS**: Argon2id hashes, same 401 for unknown user/wrong password, refresh rotation, revoke + password change close other sessions, every endpoint 401 without / with a garbage / overlong token, non-members 404, author-only edit/delete 403, wrong content type / malformed / 70 KiB bodies, bad ids/queries, 429 limits, anonymous WebSocket refused off loopback, corrupted cache recovery; **TLS UNVERIFIED** (step 7) | `apps/app-server/tests/messenger.rs`, `crates/messenger-client/src/cache.rs` tests |
+| Security / permission tests | `cargo test -p turbo-pancake-app-server --test messenger` | **PASS**: Argon2id hashes, same 401 for unknown user/wrong password, refresh rotation, revoke + password change close other sessions, every endpoint 401 without / with a garbage / overlong token, non-members 404, author-only edit/delete 403, wrong content type / malformed / 70 KiB bodies, bad ids/queries, 429 limits, anonymous WebSocket refused off loopback, corrupted cache recovery; TLS (ADR 0014): HTTPS + WSS with a private CA; web-PKI-only, wrong CA, certificate for another address and plain HTTP to the TLS port all refused with "server certificate is not trusted" / no answer; desktop clients over `wss://` + `--server-ca` (`s5-trial.ps1 -Tls`) | `apps/app-server/tests/messenger.rs`, `crates/messenger-client/src/cache.rs` tests |
 
 ## Known issues and blockers
 
@@ -291,6 +292,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 * [0011 Two layers per share, layer subscriptions, previews, adaptation](ADR/0011-layers-previews-adaptation.md) — accepted
 * [0012 Windows first: other systems after the full Windows product](ADR/0012-windows-first.md) — accepted (owner)
 * [0013 Accounts, sessions, direct messages and sync](ADR/0013-accounts-and-messages.md) — accepted
+* [0014 TLS for an IP-only server: a private CA trusted by the clients](ADR/0014-tls-private-ca.md) — accepted
 * [0006 Voice pipeline](ADR/0006-voice-pipeline.md) — accepted for S1 (cpal, rtrb, rubato,
   libopus 1.6.1 via `opus` 0.4, own jitter buffer; APM open)
 
@@ -630,15 +632,34 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S5 step 7 (TLS), Windows
+## Exact next task — S6 on Windows (groups + calls in the messenger)
 
-1. Server: TLS with rustls (`--tls-cert`, `--tls-key`; PEM), HTTPS + WSS on the same port;
-   refuse plain HTTP off loopback stays. Document how the owner gets a certificate for an
-   IP address (or a self-generated key pinned in the client) — spec §2, spike 5.
-2. Client: `https://` / `wss://` with certificate verification always on (webpki roots
-   plus an optional pinned server certificate / key fingerprint from the config); a pin
-   mismatch is a clear error, never a silent fallback; tests with a self-signed test CA.
-3. Then S5 → DONE (Windows); owner-assisted: two separate machines.
+1. Write the S6 plan in `docs/STAGES.md` from spec §6, §7, §11, §17 S6 before coding:
+   groups up to 100 members (create with several people, title, creator adds/removes
+   members and renames, invite by username), group events (`conversation.updated`,
+   member changes in the change feed or a separate members revision), calls bound to
+   conversations (`/v1/calls` create/join/leave, `call.started/participant_joined/
+   participant_left/ended`, server-authoritative membership, one active call per user
+   across devices, direct calls refused across a block, call states idle → inviting/
+   connecting → active → reconnecting → ended/failed), the call `Session` signed in with
+   the account token instead of anonymous rooms, UI: group creation/settings, call
+   button in a chat, join a running call, chat ↔ call switch without losing history.
+2. Acceptance: 100-member group integration test (permissions, sync, reconnect); real
+   users start/join/leave a call without breaking history/permissions (GUI trial).
+3. Owner-assisted items of S1–S5 stay listed; they do not block S6.
+
+## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
+
+* ADR 0014: private CA via `gen-cert`, server HTTPS + WSS, clients verify always
+  (`--server-ca` or web PKI), no switch to disable it; `docs/DEPLOY-TLS.md`.
+* `docs/ONBOARDING.md` written for a second developer who continues with S6.
+* `s5-trial.ps1 -Tls` (HTTPS + WSS, private CA, `--server-ca`) green in all four phases:
+  `benchmarks/results/s5-trial-tls-windows-2026-11-04.log`.
+* Local `cargo test --workspace --no-fail-fast`: all green except
+  `media-video::hardware_1440p120_real_time` (frame count; the GPU was busy with a game,
+  same as the S5 step 5–6 run) — CI on an idle runner is the check. reqwest is built with
+  `rustls-no-provider`: every client must be built with a rustls config from `crates/tls`
+  (`Client::new()` panics without a provider).
 
 ## Session log 2026-11-04 (S5 steps 5–6 — desktop UI, two-client trial)
 

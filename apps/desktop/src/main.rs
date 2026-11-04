@@ -35,6 +35,9 @@
 //!       (e.g. place the window on a secondary monitor during tests).
 //!   `--no-activate` — create the window without activating it, so it does not
 //!       take keyboard focus from the user's current window.
+//!   `--server-ca <pem>` — trust only this CA for `wss://` / `https://` (a server with a
+//!       private certificate, e.g. reached by IP address; `gen-cert` of the server makes
+//!       it). Without it the public web PKI is used. Certificates are always verified.
 //!   Messenger (S5), the server's HTTP API is derived from `--server`:
 //!   `--profile <name>` — local profile: its own stored session and cache (several
 //!       clients on one machine, default `default`).
@@ -101,6 +104,7 @@ struct Args {
     fullscreen: bool,
     share_no_audio: bool,
     chat: messenger_ui::Script,
+    server_ca: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -177,6 +181,7 @@ fn parse_args() -> Args {
             "--share-window" => out.share_window = true,
             "--fullscreen" => out.fullscreen = true,
             "--share-no-audio" => out.share_no_audio = true,
+            "--server-ca" => out.server_ca = args.next(),
             "--profile" => {
                 if let Some(p) = args.next().filter(|p| {
                     !p.is_empty()
@@ -509,7 +514,23 @@ fn default_name() -> String {
 
 /// Starts the session thread and wires it to the window: commands from callbacks,
 /// snapshots into properties (via the event loop), device lists from a helper thread.
-fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<Session> {
+/// Trust for `wss://` / `https://`: the CA from `--server-ca`, else the web PKI.
+fn client_tls(args: &Args) -> Result<turbo_pancake_messenger_client::api::TlsConfig, String> {
+    match &args.server_ca {
+        Some(path) => {
+            let pem = std::fs::read(path).map_err(|e| format!("--server-ca: {e}"))?;
+            turbo_pancake_tls::client_config(Some(&pem)).map_err(|e| format!("--server-ca: {e}"))
+        }
+        None => Ok(turbo_pancake_messenger_client::api::web_pki()),
+    }
+}
+
+fn start_session(
+    window: &MainWindow,
+    args: &Args,
+    started: Instant,
+    tls: Option<turbo_pancake_messenger_client::api::TlsConfig>,
+) -> Option<Session> {
     let name = args.name.clone().unwrap_or_else(default_name);
     window.set_user_name(name.as_str().into());
     let server = args
@@ -517,6 +538,7 @@ fn start_session(window: &MainWindow, args: &Args, started: Instant) -> Option<S
         .clone()
         .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
     let mut cfg = SessionConfig::new(server, name);
+    cfg.tls = tls;
     cfg.engine.muted = args.mute;
     cfg.engine.voice_gate = args.voice_gate;
     cfg.send_loss = args.send_loss;
@@ -798,14 +820,25 @@ fn main() -> Result<(), slint::PlatformError> {
         )
         .into(),
     );
-    let session = start_session(&window, &args, started);
+    let tls = match client_tls(&args) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            // A broken trust file must not fall back to anything: nothing connects.
+            window.set_call_error(e.clone().into());
+            window.set_auth_error(e.into());
+            None
+        }
+    };
+    let session = tls
+        .clone()
+        .and_then(|t| start_session(&window, &args, started, Some(t)));
     // A scripted call opens on the voice room; otherwise sign-in / conversations first.
     window.set_voice_selected(args.room.is_some() || args.share.is_some());
     let server = args
         .server
         .clone()
         .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
-    let messenger = messenger_ui::start(&window, &server, args.chat.clone());
+    let messenger = tls.map(|t| messenger_ui::start(&window, &server, args.chat.clone(), t));
     let share_window: ShareWindowSlot = Rc::default();
     let _pictures = session
         .as_ref()
@@ -859,7 +892,9 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     // Leave the room and release audio devices before the process exits.
     drop(window);
-    messenger.stop();
+    if let Some(m) = messenger {
+        m.stop();
+    }
     if let Some(s) = session {
         s.stop();
     }

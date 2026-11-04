@@ -89,7 +89,12 @@ type Failure = (StatusCode, v1::ApiError);
 impl Api {
     fn new(addr: SocketAddr) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            // reqwest is built without a default crypto provider (ADR 0014): give it the
+            // same rustls config the clients use.
+            http: reqwest::Client::builder()
+                .use_preconfigured_tls((*turbo_pancake_tls::client_config(None).unwrap()).clone())
+                .build()
+                .unwrap(),
             base: format!("http://{addr}"),
         }
     }

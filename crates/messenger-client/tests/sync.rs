@@ -94,6 +94,7 @@ impl Client {
                 client_version: "test".into(),
                 cache_dir: Some(cache_dir(cache)),
                 view_limit: 500,
+                tls: None,
             },
             move |u| {
                 let _ = tx.send(u);

@@ -27,6 +27,7 @@ turbo-pancake-media-audio = { path = "../../crates/media-audio" }
 turbo-pancake-media-transport = { path = "../../crates/media-transport" }
 turbo-pancake-media-video = { path = "../../crates/media-video" }
 turbo-pancake-messenger-client = { path = "../../crates/messenger-client" }
+turbo-pancake-tls.workspace = true
 prost.workspace = true
 time = { workspace = true, features = ["local-offset"] }
 futures-util.workspace = true

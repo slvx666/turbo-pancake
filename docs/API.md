@@ -36,6 +36,13 @@ Status legend: **implemented** (code + tests exist), **planned** (stage in brack
 | POST | `/v1/calls`, `/v1/calls/{id}/join`, `/v1/calls/{id}/leave` | planned (S1/S2/S6) | |
 | GET | `/v1/updates/check` | planned (S7) | signed manifest |
 
+### Transport security (ADR 0014)
+
+With `--tls-cert/--tls-key` every endpoint (HTTP API and `/v1/signal`) is served over
+HTTPS / WSS on the same port. Clients always verify the certificate: against the private
+CA given with `--server-ca`, otherwise against the public web PKI; there is no option to
+skip verification. Setup and rotation: `docs/DEPLOY-TLS.md`.
+
 ### Messenger API conventions (S5, ADR 0013)
 
 * Bodies are protobuf (`proto/turbo_pancake/v1/api.proto`), `Content-Type:

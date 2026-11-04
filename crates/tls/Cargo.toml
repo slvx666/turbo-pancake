@@ -1,0 +1,19 @@
+[package]
+name = "turbo-pancake-tls"
+description = "TLS for the app-server and clients: rustls configs, trust of a private CA, certificate generation (S5, ADR 0014)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "1"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser"] }
+time.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

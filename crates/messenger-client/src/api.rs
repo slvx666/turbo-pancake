@@ -57,11 +57,26 @@ pub struct Api {
     token: Option<String>,
 }
 
+/// Trust for `https://` servers: always verified (ADR 0014).
+pub type TlsConfig = std::sync::Arc<turbo_pancake_tls::rustls::ClientConfig>;
+
+/// The public web PKI (Mozilla roots): a server with a publicly trusted certificate.
+pub fn web_pki() -> TlsConfig {
+    turbo_pancake_tls::client_config(None).expect("built-in roots")
+}
+
 impl Api {
+    /// `https://` servers are checked against the public web PKI.
     pub fn new(base: &str) -> Self {
+        Self::with_tls(base, web_pki())
+    }
+
+    /// `https://` servers are checked against `tls` (e.g. only the server's private CA).
+    pub fn with_tls(base: &str, tls: TlsConfig) -> Self {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(20))
+            .use_preconfigured_tls((*tls).clone())
             .build()
             .expect("HTTP client");
         Self {
@@ -260,12 +275,30 @@ impl Api {
     }
 }
 
+/// Shown when the server's certificate is not trusted (wrong or missing `--server-ca`,
+/// expired certificate, address not in the certificate). Never silently ignored.
+pub const UNTRUSTED_CERTIFICATE: &str = "server certificate is not trusted";
+
+/// Short reason of a connection error; a certificate problem anywhere in the chain of
+/// causes becomes [`UNTRUSTED_CERTIFICATE`].
+pub fn describe(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        let text = err.to_string().to_ascii_lowercase();
+        if text.contains("certificate") || text.contains("unknownissuer") {
+            return UNTRUSTED_CERTIFICATE.into();
+        }
+        cur = err.source();
+    }
+    "cannot connect".into()
+}
+
 /// reqwest errors print the URL; keep logs and UI free of query strings.
 fn without_url(e: reqwest::Error) -> String {
     if e.is_timeout() {
         "timed out".into()
     } else if e.is_connect() {
-        "cannot connect".into()
+        describe(&e)
     } else {
         e.without_url().to_string()
     }
