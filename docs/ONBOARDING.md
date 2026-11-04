@@ -125,6 +125,11 @@ Release-сборка клиента и сервера (для испытаний
   * клиентское ядро `crates/messenger-client`: SQLite-кэш, синхронизация, pending-операции,
     свой авторизованный WebSocket;
   * desktop: UI чата, сессия хранится в Windows Credential Manager;
+  * TLS (ADR 0014, `docs/DEPLOY-TLS.md`): сервер с `--tls-cert/--tls-key` отдаёт
+    HTTPS + WSS, сертификаты делает `turbo-pancake-app-server gen-cert --name <IP>`,
+    клиенты всегда проверяют сертификат (`--server-ca ca.pem` или публичный PKI).
+    reqwest собран без встроенного криптопровайдера: любой HTTP-клиент создавайте с
+    конфигом из `crates/tls` (`Client::new()` упадёт);
   * **звонки пока не привязаны к аккаунтам:** голосовая комната — это отдельное
     WebSocket-соединение по id комнаты, без токена (разрешено только на loopback-сервере
     или с `--anonymous-calls true`). Привязать звонки к диалогам и пользователям —
