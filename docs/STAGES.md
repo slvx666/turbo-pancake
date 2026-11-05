@@ -17,9 +17,43 @@ presence are recorded as owner-assisted and do not block the next stage.
 | S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | DONE (Windows) 2026-11-04; owner-assisted: RTX 4070 Super, 1440p120 capture, camera latency; macOS/M4, Linux → S9 |
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | DONE (Windows) 2026-11-04 (ADR 0013, 0014); owner-assisted: two machines |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | DONE (Windows, 2026-11-05; headless + native software/OpenGL, simulated audio; real audio/two machines owner-assisted) |
-| S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | NOT_STARTED |
+| S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | IN_PROGRESS (plan below, 2026-11-05) |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
 | S9 | macOS + Linux port (ADR 0012) | ScreenCaptureKit/VideoToolbox/`excludesCurrentProcessAudio`; portal/PipeWire/VA-API + audio exclusion validation; devices, tray, installers, signing, updates; the macOS/Linux parts of S1–S8 criteria; CI jobs back | NOT_STARTED (after S8) |
+
+## S7 plan (2026-11-05, Windows only)
+
+Scope (spec §9, §13, §14.5–14.6, §17 S7): tray and window lifecycle, persisted
+appearance, responsive layout and scaling, reconnect UX, signed atomic updates, a
+per-user installer, RAM/startup/size profiles. Each step is a separate commit with
+evidence in PROJECT_STATE. Authenticode signing needs the owner's certificate and the
+Slint license choice (ADR 0002) blocks public distribution: both are owner decisions,
+recorded, and do not block the technical steps.
+
+1. **Tray and window lifecycle.** Native notification-area icon (Win32, `cfg(windows)`)
+   with "Открыть" / "Выйти"; closing the window hides it to the tray when the setting is
+   on (default on) and the icon exists, otherwise it exits. Explicit exit quits the event
+   loop and releases audio/media/messenger resources. Local app settings file per
+   profile (close-to-tray, theme) with atomic writes; theme restored at start. Tests:
+   settings round trip/corruption, tray routing on a hidden window, lifecycle trial on
+   the invisible desktop (hide → restore → exit, clean exit markers).
+2. **Single instance and restore.** A second launch of the same profile restores the
+   running window instead of starting a second session; scripted trials opt out.
+3. **Responsive layout and scaling.** Narrow-window layout (collapsible sidebar, call
+   panels stacking), UI scale setting (100–200 %) and HiDPI checks with own-window
+   snapshots at several scale factors; keyboard focus order of the basic controls.
+4. **Reconnect UX.** Persistent connection banner for messenger and call states
+   (offline, reconnecting, restored), unsent input kept; tests on server restarts.
+5. **Signed updates (ADR).** Update manifest signed with an Ed25519 key pinned in the
+   client, `/v1/update` check, HTTPS download with size/SHA-256 limits, staged install
+   next to the current version, atomic switch and rollback when the new version does not
+   start; negative tests (bad signature, downgrade, truncated file, interrupted switch).
+6. **Installer.** Per-user installer without admin rights (Start menu entry, uninstall
+   entry, update-compatible layout), size measured against ≤ 30 MB; Authenticode
+   signing owner-assisted.
+7. **Profiles and acceptance.** RAM (software/GPU renderer, ADR 0002 decision),
+   startup and size profiles; Windows E2E: install → sign in → chat → call → update →
+   rollback → uninstall on the invisible desktop; results in `benchmarks/results/`.
 
 ## S6 plan (2026-11-05, Windows only)
 
