@@ -16,10 +16,52 @@ presence are recorded as owner-assisted and do not block the next stage.
 | S3 | Screen share 1080p60 + system audio | real share with fps/latency/bitrate measured; audio w/o echo; stop/switch monitor; platform limits stated | DONE (Windows) 2026-11-04; owner-assisted: camera latency, two machines; macOS/Linux → S9 |
 | S4 | Adaptive quality, 1440p120, previews | manual+auto quality; no stale subscriptions; FPS/latency proven on RTX & M4, Linux separately; 50 publishers / 50 previews controlled load | DONE (Windows) 2026-11-04; owner-assisted: RTX 4070 Super, 1440p120 capture, camera latency; macOS/M4, Linux → S9 |
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | DONE (Windows) 2026-11-04 (ADR 0013, 0014); owner-assisted: two machines |
-| S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | NOT_STARTED |
+| S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | IN_PROGRESS |
 | S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | NOT_STARTED |
 | S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
 | S9 | macOS + Linux port (ADR 0012) | ScreenCaptureKit/VideoToolbox/`excludesCurrentProcessAudio`; portal/PipeWire/VA-API + audio exclusion validation; devices, tray, installers, signing, updates; the macOS/Linux parts of S1–S8 criteria; CI jobs back | NOT_STARTED (after S8) |
+
+## S6 plan (2026-11-05, Windows only)
+
+Each numbered step is a separate reviewable commit with verification evidence in
+PROJECT_STATE. Existing migrations and anonymous loopback media tests remain intact.
+
+1. **Groups: protocol and server.** Add create-group (title + exact usernames), rename,
+   add-member and remove-member endpoints. Only the creator manages the group; the
+   creator cannot be removed. Serialize membership changes on the conversation row,
+   enforce 100 active members including the creator, and check message write rights
+   under the same lock. Publish conversation invalidations to affected users;
+   reconnect refetches authoritative snapshots. Verify real PostgreSQL integration:
+   100 members, concurrent additions at capacity, creator permissions, removal/rejoin,
+   history, receipts, blocks in a shared group and negative authentication cases.
+2. **Group client core.** Typed HTTP methods, service commands and authoritative cache
+   refresh after mutations/events/reconnect. Removed conversations must disappear from
+   the open view and pending sends must not escape membership checks. Test multiple
+   client services, offline changes, removal and re-add without duplicate history.
+3. **Account-bound call control.** Document lifecycle/storage decision in ADR 0015 and
+   extend protobuf/API contracts before desktop integration. Calls belong to a
+   conversation; create/join/leave and snapshots are authenticated. Track revision,
+   participant account/device ownership and typed lifecycle events. Enforce membership,
+   direct-call blocks and one active participation per account across devices;
+   switching evicts the previous media session and notifies both conversations.
+4. **Authorized media and recovery.** Authenticate the call Session with the account
+   token, authorize room/media actions against call participation, release resources
+   on leave/disconnect/revoke/removal/shutdown, end empty calls. Preserve isolated
+   anonymous development scenarios explicitly. Test concurrent joins, duplicate
+   requests, stale-device leave, reconnect, token revocation and server restart with
+   real WebSockets/SFU and simulated audio.
+5. **Windows UI.** Group creation and creator settings, member list, call controls in
+   the selected conversation, ongoing-call banner and join, incoming direct-call
+   accept/decline/cancel/busy states. Switching chat/call preserves drafts, history
+   and permissions; call errors/reconnect remain visible. Verify client core and
+   headless desktop integration before background native-window checks.
+6. **Acceptance.** Run fmt, workspace Clippy and tests through the local dev/APM
+   wrapper with real PostgreSQL. Build release client/server and exercise real native
+   clients on an isolated invisible desktop, with simulated audio and no focus/input.
+   Check group and direct call start/join/leave/switch plus chat continuity and
+   permission enforcement. Real audio, two-machine and interactive visual checks are
+   recorded separately; S6 stays open for any required unverified criterion. Do not
+   start S7 or claim remote publishing/CI without evidence.
 
 ## S5 plan (2026-11-04, Windows only, ADR 0013)
 

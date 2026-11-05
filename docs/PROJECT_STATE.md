@@ -1,11 +1,21 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S6 — groups and calls in the messenger (Windows): NOT_STARTED** — first unfinished stage; plan it in `docs/STAGES.md` (see "Exact next task"). New developer: `docs/ONBOARDING.md`.
+Current stage: **S6 — groups and calls in the messenger (Windows): IN_PROGRESS** — concrete plan in `docs/STAGES.md`; group server slice first. New developer: `docs/ONBOARDING.md`.
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-05 (new Windows environment and baseline verification; S6 remains NOT_STARTED)
+Last session: 2026-11-05 (S6 plan recorded; implementation and acceptance pending)
+
+## Session log 2026-11-05 — S6 plan
+
+* Read project guidance, private owner specification, onboarding, stage/state journals
+  and relevant signaling, media, Windows, account and TLS ADRs before changes.
+* Confirmed clean working tree on `codex/windows-environment`, starting at `5516e50`.
+* Added six concrete S6 steps in STAGES, from group server contracts through Windows
+  acceptance. No code changed in this planning commit; baseline evidence below is
+  unchanged. S6 acceptance (100-member integration and native chat/call flow) remains
+  **UNVERIFIED**. The branch remains local; no push or CI claimed.
 
 ## Session log 2026-11-05 — Windows environment baseline
 
@@ -678,6 +688,10 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
   `cargo test --workspace --locked --no-fail-fast` all green.
 
 ## Exact next task — S6 on Windows (groups + calls in the messenger)
+
+Execute step 1 of the S6 plan in `docs/STAGES.md`: group contracts and server rights,
+then real PostgreSQL integration tests and a separate implementation commit. Continue
+steps 2–6 in order. The original scope checklist below remains applicable.
 
 1. Write the S6 plan in `docs/STAGES.md` from spec §6, §7, §11, §17 S6 before coding:
    groups up to 100 members (create with several people, title, creator adds/removes
