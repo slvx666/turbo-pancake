@@ -72,6 +72,7 @@ struct Client {
     conversations: Vec<ConversationView>,
     messages: HashMap<String, Vec<MessageView>>,
     opened: Option<String>,
+    closed: Vec<String>,
     errors: Vec<String>,
 }
 
@@ -110,6 +111,7 @@ impl Client {
             conversations: Vec::new(),
             messages: HashMap::new(),
             opened: None,
+            closed: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -135,6 +137,13 @@ impl Client {
                 self.messages.insert(conversation_id, messages);
             }
             Update::Opened { conversation_id } => self.opened = Some(conversation_id),
+            Update::Closed { conversation_id } => {
+                if self.opened.as_deref() == Some(conversation_id.as_str()) {
+                    self.opened = None;
+                }
+                self.messages.remove(&conversation_id);
+                self.closed.push(conversation_id);
+            }
             Update::Error(e) => self.errors.push(e),
         }
     }
@@ -304,6 +313,312 @@ async fn exchange_receipts_edit_delete_and_presence() {
         .until("bob offline", |c| c.conv(&conv).is_some_and(|v| !v.online))
         .await;
     alice.stop().await;
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_services_sync_members_rights_removal_and_offline_rename() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let (addr, srv) = serve(&db, None).await;
+    let mut alice = Client::start(addr, "groups-alice");
+    let mut bob = Client::start(addr, "groups-bob");
+    let mut cara = Client::start(addr, "groups-cara");
+    alice.sign_up("alice").await;
+    bob.sign_up("bob").await;
+    cara.sign_up("cara").await;
+    alice.cmd(Command::CreateGroup {
+        title: "Первое имя".into(),
+        usernames: vec!["@BOB".into()],
+    });
+    alice
+        .until("group opened with creator controls", |c| {
+            c.opened.as_ref().is_some_and(|id| {
+                c.conv(id).is_some_and(|v| {
+                    v.kind == v1::ConversationKind::Group && v.can_manage && v.members.len() == 2
+                })
+            })
+        })
+        .await;
+    let cid = alice.opened.clone().unwrap();
+    bob.until("group invitation", |c| {
+        c.conv(&cid)
+            .is_some_and(|v| !v.can_manage && v.peer_user_id.is_empty())
+    })
+    .await;
+    alice.cmd(Command::AddGroupMember {
+        conversation_id: cid.clone(),
+        username: " @Cara ".into(),
+    });
+    cara.until("joined group", |c| {
+        c.conv(&cid).is_some_and(|v| v.members.len() == 3)
+    })
+    .await;
+    bob.cmd(Command::RenameGroup {
+        conversation_id: cid.clone(),
+        title: "not allowed".into(),
+    });
+    bob.until("server denies non-creator", |c| !c.errors.is_empty())
+        .await;
+    assert_eq!(
+        bob.errors.last().unwrap(),
+        "only the group creator can manage it"
+    );
+    bob.errors.clear();
+    bob.cmd(Command::Open {
+        conversation_id: Some(cid.clone()),
+    });
+    alice.cmd(Command::Send {
+        conversation_id: cid.clone(),
+        body: "История 👋".into(),
+        reply_to_id: String::new(),
+    });
+    bob.until("group history", |c| c.bodies(&cid) == ["История 👋"])
+        .await;
+    bob.cmd(Command::SaveDraft {
+        conversation_id: cid.clone(),
+        body: "несохранённый ввод".into(),
+        reply_to_id: String::new(),
+    });
+    // A rename refetches the list and exposes the saved draft without changing it.
+    alice.cmd(Command::RenameGroup {
+        conversation_id: cid.clone(),
+        title: "Второе имя".into(),
+    });
+    bob.until("renamed with draft preserved", |c| {
+        c.conv(&cid)
+            .is_some_and(|v| v.title == "Второе имя" && v.draft == "несохранённый ввод")
+    })
+    .await;
+
+    let cara_token = cara.token.clone();
+    let cara_user = cara.user.clone().unwrap();
+    cara.stop().await;
+    alice.cmd(Command::RenameGroup {
+        conversation_id: cid.clone(),
+        title: "Офлайн изменение".into(),
+    });
+    alice
+        .until("rename committed", |c| {
+            c.conv(&cid).is_some_and(|v| v.title == "Офлайн изменение")
+        })
+        .await;
+    alice.cmd(Command::Send {
+        conversation_id: cid.clone(),
+        body: "пока нет связи".into(),
+        reply_to_id: String::new(),
+    });
+    alice
+        .until("second message committed", |c| {
+            c.msgs(&cid).len() == 2 && c.msgs(&cid)[1].server_sequence == 2
+        })
+        .await;
+    let mut cara = Client::start(addr, "groups-cara");
+    cara.cmd(Command::Resume {
+        token: cara_token,
+        user: cara_user,
+    });
+    cara.until("offline metadata recovered", |c| {
+        c.status == Status::Online
+            && c.conv(&cid)
+                .is_some_and(|v| v.title == "Офлайн изменение" && v.members.len() == 3)
+    })
+    .await;
+    cara.cmd(Command::Open {
+        conversation_id: Some(cid.clone()),
+    });
+    cara.until("offline history recovered exactly", |c| {
+        c.bodies(&cid) == ["История 👋", "пока нет связи"]
+    })
+    .await;
+
+    alice.cmd(Command::RemoveGroupMember {
+        conversation_id: cid.clone(),
+        user_id: bob.user.as_ref().unwrap().user_id.clone(),
+    });
+    bob.until("open group closed and removed history cleared", |c| {
+        c.conv(&cid).is_none() && c.closed.contains(&cid) && c.msgs(&cid).is_empty()
+    })
+    .await;
+    assert_eq!(
+        bob.status,
+        Status::Online,
+        "removal is not an account logout"
+    );
+    alice.cmd(Command::AddGroupMember {
+        conversation_id: cid.clone(),
+        username: "bob".into(),
+    });
+    bob.until("re-added without draft", |c| {
+        c.conv(&cid)
+            .is_some_and(|v| v.members.len() == 3 && v.draft.is_empty())
+    })
+    .await;
+    bob.cmd(Command::Open {
+        conversation_id: Some(cid.clone()),
+    });
+    bob.until("same two messages after re-add", |c| {
+        c.bodies(&cid) == ["История 👋", "пока нет связи"]
+    })
+    .await;
+    assert!(bob.errors.is_empty());
+    assert!(cara.errors.is_empty());
+    assert!(alice.errors.is_empty());
+    alice.stop().await;
+    bob.stop().await;
+    cara.stop().await;
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_offline_removal_purges_pending_and_stale_events_cannot_restore_access() {
+    use turbo_pancake_messenger_client::{Engine, api::Api, cache::Cache};
+    use v1::server_envelope::Body as S;
+
+    let db = database().expect("S6 requires PostgreSQL");
+    let (addr, srv) = serve(&db, None).await;
+    let mut api = Api::new(&format!("http://{addr}"));
+    // The server may still be applying migrations after serve returns.
+    let alice = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Ok(a) = api
+                .register(&v1::RegisterRequest {
+                    username: "alice".into(),
+                    password: "correct horse".into(),
+                    ..Default::default()
+                })
+                .await
+            {
+                break a;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let bob = api
+        .register(&v1::RegisterRequest {
+            username: "bob".into(),
+            password: "correct horse".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    api.set_token(Some(alice.token));
+    let cid = api
+        .create_group("Удаление офлайн", &["bob".into()])
+        .await
+        .unwrap()
+        .conversation_id;
+    let original = api
+        .send_message(
+            &cid,
+            &v1::SendMessageRequest {
+                client_nonce: "existing".into(),
+                body: "existing history".into(),
+                reply_to_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut bob_api = Api::new(&format!("http://{addr}"));
+    bob_api.set_token(Some(bob.token));
+    let bob_user = bob.user.unwrap();
+    let mut engine = Engine::new(bob_api, Cache::in_memory().unwrap(), bob_user.clone());
+    engine.sync().await.unwrap();
+    engine.open(Some(&cid)).await.unwrap();
+    engine.save_draft(&cid, "private draft", "").unwrap();
+    engine.queue_send(&cid, "queued while offline", "").unwrap();
+    assert_eq!(engine.cache.pending().unwrap().len(), 1);
+    // No WebSocket: removal's invalidation is missed by this client.
+    api.remove_group_member(&cid, &bob_user.user_id)
+        .await
+        .unwrap();
+    let changes = engine.sync().await.unwrap();
+    assert_eq!(changes.closed.as_deref(), Some(cid.as_str()));
+    assert_eq!(engine.open_conversation(), None);
+    assert!(engine.cache.pending().unwrap().is_empty());
+    assert_eq!(
+        engine.cache.draft(&cid).unwrap(),
+        (String::new(), String::new())
+    );
+    assert!(engine.cache.messages(&cid, None, 100).unwrap().is_empty());
+    assert!(engine.cache.members(&cid).unwrap().is_empty());
+    assert!(
+        engine
+            .cache
+            .message(&original.message_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(engine.queue_send(&cid, "forbidden", "").is_err());
+    assert!(
+        engine
+            .save_draft(&cid, "stale composer callback", "")
+            .is_err()
+    );
+    engine
+        .on_event(S::MessageCreated(v1::MessageEvent {
+            message: Some(original.clone()),
+        }))
+        .await
+        .unwrap();
+    assert!(
+        engine.cache.conversation(&cid).unwrap().is_none(),
+        "stale event cannot recreate a removed group"
+    );
+    api.add_group_member(&cid, "bob").await.unwrap();
+    engine.sync().await.unwrap();
+    let page = api.changes(&cid, 0, 100).await.unwrap();
+    assert_eq!(
+        page.messages.len(),
+        1,
+        "queued pre-removal send was never retried on re-add"
+    );
+    assert_eq!(
+        engine.message_views(&cid, 100).unwrap()[0].message_id,
+        original.message_id
+    );
+    assert!(engine.cache.pending().unwrap().is_empty());
+    // Remove AND re-add while offline: list membership is present at reconnect,
+    // so only its revision exposes the intervening loss of access.
+    engine.open(Some(&cid)).await.unwrap();
+    engine
+        .queue_send(&cid, "must not survive a hidden membership gap", "")
+        .unwrap();
+    engine
+        .save_draft(&cid, "draft across membership gap", "")
+        .unwrap();
+    let revision = engine
+        .cache
+        .members(&cid)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.user_id == bob_user.user_id)
+        .unwrap()
+        .membership_revision;
+    api.remove_group_member(&cid, &bob_user.user_id)
+        .await
+        .unwrap();
+    api.add_group_member(&cid, "bob").await.unwrap();
+    let ch = engine.sync().await.unwrap();
+    assert_eq!(ch.closed.as_deref(), Some(cid.as_str()));
+    assert!(engine.cache.pending().unwrap().is_empty());
+    assert_eq!(
+        engine.cache.draft(&cid).unwrap(),
+        (String::new(), String::new())
+    );
+    assert_eq!(
+        engine
+            .cache
+            .members(&cid)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.user_id == bob_user.user_id)
+            .unwrap()
+            .membership_revision,
+        revision + 1
+    );
+    assert_eq!(api.changes(&cid, 0, 100).await.unwrap().messages.len(), 1);
     srv.stop().await;
 }
 

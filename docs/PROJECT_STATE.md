@@ -1,11 +1,53 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S6 — groups and calls in the messenger (Windows): IN_PROGRESS** — group server slice verified; client core next (plan in `docs/STAGES.md`). New developer: `docs/ONBOARDING.md`.
+Current stage: **S6 — groups and calls in the messenger (Windows): IN_PROGRESS** — steps 1–2 (group server + client core) verified; account-bound call control next (plan in `docs/STAGES.md`). New developer: `docs/ONBOARDING.md`.
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = IN_PROGRESS; S7–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-05 (S6 step 1: group server contracts, permissions and 100-member integration verified)
+Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unfinished)
+
+## Session log 2026-11-05 — S6 step 2: group client core
+
+* Added typed group HTTP methods, Service create/rename/add/remove commands, group kind,
+  creator controls and member snapshots in conversation views. A group is no longer
+  treated as a direct conversation with an arbitrary first peer.
+* Authoritative removal clears cached history/members, drafts and queued operations;
+  closes the open chat/composer through a typed `Closed` update. Stale events cannot
+  recreate access. Concurrent removal during history/receipt refresh resyncs metadata
+  instead of treating the account as signed out. The desktop handles the close event;
+  creation/settings UI is still step 5, not implemented in this step.
+* Found and covered an additional offline case: removal followed by re-add before
+  reconnect leaves the same conversation id in the list. Added
+  `Member.membership_revision` (protobuf field 5), PostgreSQL migration
+  `0002_membership_revision.sql`, and SQLite migration 2. Re-add increments this number;
+  the client discards old pending sends/drafts, closes the stale composer, resets its
+  message cursor and reloads the same server history. Existing migrations are intact.
+* **PASS:** fmt; workspace Clippy `-D warnings`; final workspace tests through the local
+  dev/APM wrapper: **148 passed, 0 failed, 3 ignored, 1 filtered**, 42 test/doc-test
+  binaries, real PostgreSQL. Log: `.local/logs/s6-step2-final-tests.log` (ignored).
+  Real system-audio playback test explicitly excluded as in the baseline; no GUI,
+  microphone, audio playback or capture trial was performed.
+* Evidence: `group_services_sync_members_rights_removal_and_offline_rename` (three real
+  Services/SQLite/WebSockets),
+  `group_offline_removal_purges_pending_and_stale_events_cannot_restore_access`
+  (including entirely missed remove/re-add), populated S5-cache migration unit test,
+  and pinned membership-revision wire field. Server's 100-member tests remain green.
+* Files: messenger-client API/cache/engine/service and sync tests; desktop close-event
+  handler; additive server membership revision and migration; protocol contract/docs.
+* **UNVERIFIED / not implemented:** account/conversation-bound calls and authorization,
+  account-wide device ownership, group creation/settings UI, native chat/call acceptance.
+  Existing anonymous-room behavior is unchanged and is not evidence for those items.
+  The branch remains local. No remote publishing or CI run claimed.
+
+## Acceptance checks — S6 (IN_PROGRESS, Windows)
+
+| Criterion / slice | Status | Evidence / remaining work |
+|---|---|---|
+| 100-member group server integration | PASS (headless) | 100 authenticated accounts/WebSockets; ordered history/receipts, creator rights, capacity race, removal/re-add and restart in server messenger tests |
+| Client group synchronization and permission changes | PASS (headless) | Service/engine sync tests and S5 → S6 cache migration; offline membership-gap protection |
+| Account-bound calls, block enforcement, one call across devices | UNVERIFIED; not implemented | S6 steps 3–4 next; existing anonymous media tests do not certify these rights |
+| Native group controls and chat ↔ call flow | UNVERIFIED; not implemented | S6 steps 5–6; background-only native checks, simulated audio baseline, real audio separately |
 
 ## Session log 2026-11-05 — S6 step 1: groups on the server
 
@@ -719,10 +761,12 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 
 ## Exact next task — S6 on Windows (groups + calls in the messenger)
 
-Execute step 2 of the S6 plan in `docs/STAGES.md`: typed client group operations,
-service commands, metadata/member views, safe removal of cache/open view/pending sends,
-and multi-client sync/reconnect tests. Continue steps 3–6 in order. The original scope
-checklist below remains applicable.
+Execute step 3 of the S6 plan in `docs/STAGES.md`: document ADR 0015 for call state,
+storage and ownership; add protobuf/API call lifecycle contracts and authenticated
+create/join/leave/snapshots. Enforce membership, direct blocks and one participation per
+account across devices, with deterministic concurrency/stale-device tests. Then steps
+4 (authorized media/recovery), 5 (Windows UI) and 6 (native acceptance). Do not start S7.
+The original scope reference below remains applicable; its planning prerequisite is done.
 
 1. Write the S6 plan in `docs/STAGES.md` from spec §6, §7, §11, §17 S6 before coding:
    groups up to 100 members (create with several people, title, creator adds/removes

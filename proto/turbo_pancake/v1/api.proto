@@ -141,6 +141,9 @@ message Member {
   // Highest server_sequence the member's devices have stored / shown.
   int64 delivered_sequence = 3;
   int64 read_sequence = 4;
+  // Increments when a removed member is re-added. Clients discard drafts/pending
+  // operations and reload history when their own membership revision changes.
+  int64 membership_revision = 5;
 }
 
 message Conversation {

@@ -64,6 +64,22 @@ pub enum Command {
     StartDirect {
         username: String,
     },
+    CreateGroup {
+        title: String,
+        usernames: Vec<String>,
+    },
+    RenameGroup {
+        conversation_id: String,
+        title: String,
+    },
+    AddGroupMember {
+        conversation_id: String,
+        username: String,
+    },
+    RemoveGroupMember {
+        conversation_id: String,
+        user_id: String,
+    },
     /// The conversation on screen (`None` = none): its messages are marked read.
     Open {
         conversation_id: Option<String>,
@@ -130,6 +146,10 @@ pub enum Update {
     },
     /// `StartDirect` found the user: show this conversation.
     Opened {
+        conversation_id: String,
+    },
+    /// Membership was removed: clear the open chat, including its composer.
+    Closed {
         conversation_id: String,
     },
     /// A command failed (shown to the user; never contains secrets).
@@ -264,6 +284,20 @@ impl Worker {
     /// Sends the views that `ch` touched.
     fn push(&self, ch: &Changes) {
         let Some(engine) = &self.engine else { return };
+        if let Some(id) = &ch.closed {
+            self.emit(Update::Closed {
+                conversation_id: id.clone(),
+            });
+        }
+        // Also invalidate previously displayed histories for removed conversations.
+        for id in &ch.conversations {
+            if matches!(engine.cache.conversation(id), Ok(None)) {
+                self.emit(Update::Messages {
+                    conversation_id: id.clone(),
+                    messages: Vec::new(),
+                });
+            }
+        }
         if ch.list {
             match engine.conversation_views() {
                 Ok(v) => self.emit(Update::Conversations(v)),
@@ -457,6 +491,7 @@ impl Worker {
             list: true,
             conversations: [id.to_owned()].into(),
             signed_out: false,
+            closed: None,
         };
         match cmd {
             Command::StartDirect { username } => {
@@ -467,6 +502,43 @@ impl Worker {
                 ch.merge(engine.open(Some(&id)).await?);
                 ch.merge(conv_changed(&id));
                 return Ok((Some(id), ch));
+            }
+            Command::CreateGroup { title, usernames } => {
+                let usernames: Vec<_> = usernames
+                    .iter()
+                    .map(|u| u.trim().trim_start_matches('@').to_owned())
+                    .collect();
+                let (id, c) = engine.create_group(&title, &usernames).await?;
+                ch.merge(c);
+                ch.merge(engine.open(Some(&id)).await?);
+                ch.merge(conv_changed(&id));
+                return Ok((Some(id), ch));
+            }
+            Command::RenameGroup {
+                conversation_id,
+                title,
+            } => {
+                ch.merge(engine.rename_group(&conversation_id, &title).await?);
+            }
+            Command::AddGroupMember {
+                conversation_id,
+                username,
+            } => {
+                ch.merge(
+                    engine
+                        .add_group_member(&conversation_id, username.trim().trim_start_matches('@'))
+                        .await?,
+                );
+            }
+            Command::RemoveGroupMember {
+                conversation_id,
+                user_id,
+            } => {
+                ch.merge(
+                    engine
+                        .remove_group_member(&conversation_id, &user_id)
+                        .await?,
+                );
             }
             Command::Open { conversation_id } => {
                 ch.merge(

@@ -15,7 +15,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use turbo_pancake_protocol::v1;
 
 /// Ordered migrations; index + 1 is the schema version they produce.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE conversations (
     id                 TEXT PRIMARY KEY,
@@ -70,7 +71,9 @@ CREATE TABLE drafts (
     body            TEXT NOT NULL,
     reply_to_id     TEXT NOT NULL
 );
-"#];
+"#,
+    "ALTER TABLE members ADD COLUMN membership_revision INTEGER NOT NULL DEFAULT 1;",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
@@ -138,6 +141,7 @@ pub struct StoredMember {
     pub role: i32,
     pub delivered_sequence: i64,
     pub read_sequence: i64,
+    pub membership_revision: i64,
 }
 
 pub struct Cache {
@@ -273,8 +277,8 @@ impl Cache {
             let u = m.user.clone().unwrap_or_default();
             tx.execute(
                 "INSERT INTO members (conversation_id, user_id, username, display_name, online,
-                                      role, delivered_sequence, read_sequence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                      role, delivered_sequence, read_sequence, membership_revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     c.conversation_id,
                     u.user_id,
@@ -283,7 +287,8 @@ impl Cache {
                     u.online,
                     m.role,
                     m.delivered_sequence,
-                    m.read_sequence
+                    m.read_sequence,
+                    m.membership_revision
                 ],
             )?;
         }
@@ -294,12 +299,16 @@ impl Cache {
     /// Drops conversations the server no longer lists (left / removed).
     pub fn retain_conversations(&self, ids: &[String]) -> Result<usize> {
         let all = self.conversation_ids()?;
+        let tx = self.conn.unchecked_transaction()?;
         let mut n = 0;
         for id in all.iter().filter(|id| !ids.contains(id)) {
-            n += self
-                .conn
-                .execute("DELETE FROM conversations WHERE id = ?1", [id])?;
+            // Pending/drafts predate group removal and have no FK. Purge explicitly:
+            // a later re-add must not silently send text queued before removal.
+            tx.execute("DELETE FROM pending WHERE conversation_id = ?1", [id])?;
+            tx.execute("DELETE FROM drafts WHERE conversation_id = ?1", [id])?;
+            n += tx.execute("DELETE FROM conversations WHERE id = ?1", [id])?;
         }
+        tx.commit()?;
         Ok(n)
     }
 
@@ -307,6 +316,16 @@ impl Cache {
         let mut st = self.conn.prepare("SELECT id FROM conversations")?;
         let rows = st.query_map([], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Discard the previous membership's local state before rebuilding its snapshot.
+    pub fn reset_conversation(&self, id: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM pending WHERE conversation_id = ?1", [id])?;
+        tx.execute("DELETE FROM drafts WHERE conversation_id = ?1", [id])?;
+        tx.execute("DELETE FROM conversations WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn conversation(&self, id: &str) -> Result<Option<StoredConversation>> {
@@ -349,7 +368,7 @@ impl Cache {
     pub fn members(&self, conv: &str) -> Result<Vec<StoredMember>> {
         let mut st = self.conn.prepare(
             "SELECT user_id, username, display_name, online, role, delivered_sequence,
-                    read_sequence
+                    read_sequence, membership_revision
                FROM members WHERE conversation_id = ?1 ORDER BY user_id",
         )?;
         let rows = st.query_map([conv], |r| {
@@ -361,6 +380,7 @@ impl Cache {
                 role: r.get(4)?,
                 delivered_sequence: r.get(5)?,
                 read_sequence: r.get(6)?,
+                membership_revision: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -623,6 +643,7 @@ mod tests {
                 role: 2,
                 delivered_sequence: 0,
                 read_sequence: 0,
+                membership_revision: 1,
             }],
             can_send: true,
             ..Default::default()
@@ -639,6 +660,33 @@ mod tests {
             body: body.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn s5_cache_migrates_without_losing_history_drafts_or_pending() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO conversations VALUES ('c', 1, '', 1, 1, 1, 1, 0, 1);
+             INSERT INTO members VALUES ('c', 'u1', 'bob', 'Bob', 0, 2, 1, 1);
+             INSERT INTO messages VALUES ('m', 'c', 1, 1, 'u1', 'history', '', 1, 0, 0);
+             INSERT INTO pending VALUES ('p', 'c', 1, '', 'queued', '', 1, NULL);
+             INSERT INTO drafts VALUES ('c', 'draft', '');",
+        )
+        .unwrap();
+        let mut cache = Cache { conn, path: None };
+        cache.prepare().unwrap();
+        assert_eq!(cache.members("c").unwrap()[0].membership_revision, 1);
+        assert_eq!(
+            cache.conversation("c").unwrap().unwrap().applied_change_seq,
+            1
+        );
+        assert_eq!(cache.message("m").unwrap().unwrap().body, "history");
+        assert_eq!(cache.pending().unwrap()[0].body, "queued");
+        assert_eq!(cache.draft("c").unwrap().0, "draft");
+        cache.prepare().unwrap();
+        assert_eq!(cache.pending().unwrap().len(), 1, "reopening is idempotent");
     }
 
     #[test]

@@ -220,6 +220,56 @@ impl Api {
         .await
     }
 
+    pub async fn create_group(
+        &self,
+        title: &str,
+        usernames: &[String],
+    ) -> ApiResult<v1::Conversation> {
+        self.send(
+            Method::POST,
+            "/v1/conversations/group",
+            &v1::CreateGroupRequest {
+                title: title.into(),
+                usernames: usernames.to_vec(),
+            },
+        )
+        .await
+    }
+
+    pub async fn rename_group(&self, conv: &str, title: &str) -> ApiResult<v1::Conversation> {
+        self.send(
+            Method::PATCH,
+            &format!("/v1/conversations/{conv}"),
+            &v1::RenameGroupRequest {
+                title: title.into(),
+            },
+        )
+        .await
+    }
+
+    pub async fn add_group_member(
+        &self,
+        conv: &str,
+        username: &str,
+    ) -> ApiResult<v1::Conversation> {
+        self.send(
+            Method::POST,
+            &format!("/v1/conversations/{conv}/members"),
+            &v1::AddGroupMemberRequest {
+                username: username.into(),
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_group_member(&self, conv: &str, user: &str) -> ApiResult<v1::Conversation> {
+        self.bare(
+            Method::DELETE,
+            &format!("/v1/conversations/{conv}/members/{user}"),
+        )
+        .await
+    }
+
     pub async fn changes(&self, conv: &str, after: i64, limit: u32) -> ApiResult<v1::MessagePage> {
         self.get(&format!(
             "/v1/conversations/{conv}/changes?after={after}&limit={limit}"

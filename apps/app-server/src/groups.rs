@@ -186,7 +186,8 @@ pub async fn add_member(
         sqlx::query(
             "INSERT INTO conversation_members (conversation_id, user_id, role)
              VALUES ($1, $2, 'member') ON CONFLICT (conversation_id, user_id)
-             DO UPDATE SET left_at = NULL, joined_at = now()",
+             DO UPDATE SET left_at = NULL, joined_at = now(),
+                 membership_revision = conversation_members.membership_revision + 1",
         )
         .bind(conv)
         .bind(user)

@@ -135,6 +135,10 @@ prevent shared-group messages; presence privacy continues to apply.
 refetch the authoritative conversation list and discard entries no longer listed;
 reconnect performs the same refresh to repair missed invalidations. Message change
 cursors remain dedicated to message changes; metadata never consumes their sequence.
+`Member.membership_revision` (field 5, starts at 1) increments on re-add, so a client
+can detect removal followed by re-add even when both invalidations were missed.
+On a change to its own revision the client discards the previous membership's pending
+operations, drafts and message cursor, closes the old composer, and reloads history.
 
 ### Rooms and relay
 

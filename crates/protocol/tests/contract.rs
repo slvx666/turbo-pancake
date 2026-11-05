@@ -682,6 +682,14 @@ fn api_codes_and_enums_are_pinned() {
 
 #[test]
 fn group_contract_and_limits() {
+    assert_eq!(
+        v1::Member {
+            membership_revision: 2,
+            ..Default::default()
+        }
+        .encode_to_vec(),
+        vec![40, 2]
+    );
     let req = v1::CreateGroupRequest {
         title: "g".into(),
         usernames: vec!["a".into(), "b".into()],

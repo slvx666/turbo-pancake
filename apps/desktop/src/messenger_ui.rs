@@ -546,6 +546,19 @@ fn apply(w: &MainWindow, u: Update) {
         Update::Opened { conversation_id } => {
             open_from_service(w, &conversation_id);
         }
+        Update::Closed { conversation_id } => {
+            if current().as_deref() == Some(conversation_id.as_str()) {
+                STATE.with_borrow_mut(|s| {
+                    s.current = None;
+                    s.messages.clear();
+                });
+                set_compose(w, Compose::New);
+                w.set_current_conversation("".into());
+                w.set_compose_text("".into());
+                w.set_messages(ModelRc::new(VecModel::<MessageRow>::default()));
+                w.set_chat_can_send(false);
+            }
+        }
         Update::Error(e) => {
             let text: SharedString = chat::error_text(&e).into();
             if STATE.with_borrow(|s| s.signed_in) {

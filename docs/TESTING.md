@@ -93,6 +93,20 @@ S6 group tests require PostgreSQL explicitly; skipping it cannot pass these test
 These tests do not certify native group UI or account-bound calls; those S6 slices
 remain pending. They use no real audio devices, capture, focus or input injection.
 
+Client integration (`cargo test -p turbo-pancake-messenger-client --test sync --locked`):
+
+* `group_services_sync_members_rights_removal_and_offline_rename`: three real Services
+  with separate SQLite files and authenticated WebSockets. Create/add/rename, rejected
+  non-creator rename, offline metadata/history recovery, open-chat removal and re-add
+  with exactly the original messages and no stale draft.
+* `group_offline_removal_purges_pending_and_stale_events_cannot_restore_access`:
+  real HTTP/server/PostgreSQL plus a client engine. Missed removal invalidation,
+  pending/draft/history/member purge, stale message event, re-add. Also remove + re-add
+  entirely while offline: own membership revision must expose the gap and purge the
+  old pending sends before flushing them. Existing history reloads exactly once.
+* Cache unit `s5_cache_migrates_without_losing_history_drafts_or_pending` upgrades a
+  populated S5 schema to S6 and checks retained data/cursors and idempotent reopen.
+
 ## Messenger S5 (Windows, dev machine)
 
 ```bash

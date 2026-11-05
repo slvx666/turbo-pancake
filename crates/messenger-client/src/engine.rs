@@ -16,7 +16,7 @@ use turbo_pancake_protocol::{self as proto, v1};
 use v1::server_envelope::Body as S;
 
 use crate::api::{Api, ApiError};
-use crate::cache::{Cache, CacheError, Op, PendingOp};
+use crate::cache::{Cache, CacheError, Op, PendingOp, StoredMember};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -43,6 +43,8 @@ pub struct Changes {
     pub conversations: BTreeSet<String>,
     /// This session was revoked: sign out.
     pub signed_out: bool,
+    /// The open conversation disappeared from the authoritative list.
+    pub closed: Option<String>,
 }
 
 impl Changes {
@@ -55,10 +57,13 @@ impl Changes {
         self.list |= other.list;
         self.signed_out |= other.signed_out;
         self.conversations.extend(other.conversations);
+        if other.closed.is_some() {
+            self.closed = other.closed;
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.list && self.conversations.is_empty() && !self.signed_out
+        !self.list && self.conversations.is_empty() && !self.signed_out && self.closed.is_none()
     }
 }
 
@@ -66,6 +71,9 @@ impl Changes {
 pub struct ConversationView {
     pub id: String,
     pub title: String,
+    pub kind: v1::ConversationKind,
+    pub members: Vec<StoredMember>,
+    pub can_manage: bool,
     /// Direct conversations: the other member.
     pub peer_user_id: String,
     pub peer_username: String,
@@ -169,14 +177,51 @@ impl Engine {
             .iter()
             .map(|c| c.conversation_id.clone())
             .collect();
+        let mut rejoined = BTreeSet::new();
         for c in &list.conversations {
+            if c.kind == v1::ConversationKind::Group as i32 {
+                let old_revision = self
+                    .cache
+                    .members(&c.conversation_id)?
+                    .into_iter()
+                    .find(|m| m.user_id == self.me.user_id)
+                    .map(|m| m.membership_revision);
+                let new_revision = c
+                    .members
+                    .iter()
+                    .find(|m| {
+                        m.user
+                            .as_ref()
+                            .is_some_and(|u| u.user_id == self.me.user_id)
+                    })
+                    .map(|m| m.membership_revision);
+                if old_revision.is_some() && old_revision != new_revision {
+                    self.cache.reset_conversation(&c.conversation_id)?;
+                    rejoined.insert(c.conversation_id.clone());
+                }
+            }
             self.cache.upsert_conversation(c)?;
         }
+        let removed: Vec<_> = self
+            .cache
+            .conversation_ids()?
+            .into_iter()
+            .filter(|id| !ids.contains(id))
+            .collect();
         self.cache.retain_conversations(&ids)?;
+        let closed = self
+            .open
+            .as_ref()
+            .filter(|id| !ids.contains(id) || rejoined.contains(*id))
+            .cloned();
+        if closed.is_some() {
+            self.open = None;
+        }
         Ok(Changes {
             list: true,
-            conversations: ids.into_iter().collect(),
+            conversations: ids.into_iter().chain(removed).collect(),
             signed_out: false,
+            closed,
         })
     }
 
@@ -189,7 +234,14 @@ impl Engine {
         let mut cursor = c.applied_change_seq;
         if c.server_change_seq > cursor || cursor == 0 {
             loop {
-                let page = self.api.changes(conv, cursor, PAGE).await?;
+                let page = match self.api.changes(conv, cursor, PAGE).await {
+                    Ok(page) => page,
+                    Err(e) if e.code() == Some(v1::ApiErrorCode::NotFound) => {
+                        ch.merge(self.refresh_list().await?);
+                        return Ok(ch);
+                    }
+                    Err(e) => return Err(e.into()),
+                };
                 for m in &page.messages {
                     if self.cache.apply_message(m)? {
                         ch.conv(conv);
@@ -225,7 +277,13 @@ impl Engine {
             mine.read_sequence
         };
         if newest > mine.delivered_sequence || read > mine.read_sequence {
-            let r = self.api.mark_read(conv, newest, read).await?;
+            let r = match self.api.mark_read(conv, newest, read).await {
+                Ok(r) => r,
+                Err(e) if e.code() == Some(v1::ApiErrorCode::NotFound) => {
+                    return self.refresh_list().await;
+                }
+                Err(e) => return Err(e.into()),
+            };
             if self.cache.apply_receipt(&r)? {
                 ch.conv(conv);
             }
@@ -404,6 +462,16 @@ impl Engine {
 
     /// Marks `conv` as the one on screen (its messages become read).
     pub async fn open(&mut self, conv: Option<&str>) -> Result<Changes> {
+        if let Some(id) = conv
+            && self.cache.conversation(id)?.is_none()
+        {
+            self.open = None;
+            return Ok(Changes {
+                list: true,
+                closed: Some(id.to_owned()),
+                ..Default::default()
+            });
+        }
         self.open = conv.map(str::to_owned);
         match conv {
             Some(c) => self.ack(c).await,
@@ -432,7 +500,39 @@ impl Engine {
         self.refresh_list().await
     }
 
+    pub async fn create_group(
+        &mut self,
+        title: &str,
+        usernames: &[String],
+    ) -> Result<(String, Changes)> {
+        proto::validate_group_title(title).map_err(|e| Error::Invalid(e.to_string()))?;
+        let conv = self.api.create_group(title, usernames).await?;
+        // Refetch instead of trusting a mutation response that another device may
+        // already have superseded by the time its HTTP answer arrives.
+        let ch = self.sync().await?;
+        Ok((conv.conversation_id, ch))
+    }
+
+    pub async fn rename_group(&mut self, conv: &str, title: &str) -> Result<Changes> {
+        proto::validate_group_title(title).map_err(|e| Error::Invalid(e.to_string()))?;
+        self.api.rename_group(conv, title).await?;
+        self.refresh_list().await
+    }
+
+    pub async fn add_group_member(&mut self, conv: &str, username: &str) -> Result<Changes> {
+        self.api.add_group_member(conv, username).await?;
+        self.refresh_list().await
+    }
+
+    pub async fn remove_group_member(&mut self, conv: &str, user: &str) -> Result<Changes> {
+        self.api.remove_group_member(conv, user).await?;
+        self.refresh_list().await
+    }
+
     pub fn save_draft(&mut self, conv: &str, body: &str, reply_to: &str) -> Result<()> {
+        if self.cache.conversation(conv)?.is_none() {
+            return Err(Error::Invalid("unknown conversation".into()));
+        }
         Ok(self.cache.set_draft(conv, body, reply_to)?)
     }
 
@@ -443,7 +543,10 @@ impl Engine {
         for c in self.cache.conversations()? {
             let members = self.cache.members(&c.id)?;
             let me = members.iter().find(|m| m.user_id == self.me.user_id);
-            let peer = members.iter().find(|m| m.user_id != self.me.user_id);
+            let kind = v1::ConversationKind::try_from(c.kind).unwrap_or_default();
+            let peer = members
+                .iter()
+                .find(|m| kind == v1::ConversationKind::Direct && m.user_id != self.me.user_id);
             let my_read = me.map_or(0, |m| m.read_sequence);
             let msgs = self.cache.messages(&c.id, None, 200)?;
             let unread = msgs
@@ -471,6 +574,10 @@ impl Engine {
                 draft,
                 draft_reply_to,
                 id: c.id,
+                kind,
+                can_manage: kind == v1::ConversationKind::Group
+                    && me.is_some_and(|m| m.role == v1::MemberRole::Creator as i32),
+                members,
             });
         }
         // Most recent activity first.

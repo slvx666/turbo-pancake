@@ -219,6 +219,7 @@ struct MemberRow {
     role: String,
     delivered_sequence: i64,
     read_sequence: i64,
+    membership_revision: i64,
     username_display: String,
     display_name: String,
 }
@@ -245,7 +246,7 @@ pub(crate) async fn conversations_for(
     }
     let ids: Vec<Uuid> = convs.iter().map(|c| c.id).collect();
     let members: Vec<MemberRow> = sqlx::query_as(
-        "SELECT m.conversation_id, m.user_id, m.role, m.delivered_sequence, m.read_sequence,
+        "SELECT m.conversation_id, m.user_id, m.role, m.delivered_sequence, m.read_sequence, m.membership_revision,
                 u.username_display, u.display_name
            FROM conversation_members m JOIN users u ON u.id = m.user_id
           WHERE m.conversation_id = ANY($1) AND m.left_at IS NULL
@@ -311,6 +312,7 @@ pub(crate) async fn conversations_for(
                         } as i32,
                         delivered_sequence: m.delivered_sequence,
                         read_sequence: m.read_sequence,
+                        membership_revision: m.membership_revision,
                     })
                     .collect(),
                 last_sequence: c.message_seq,

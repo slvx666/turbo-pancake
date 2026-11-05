@@ -34,10 +34,13 @@ PROJECT_STATE. Existing migrations and anonymous loopback media tests remain int
    reconnect refetches authoritative snapshots. Verify real PostgreSQL integration:
    100 members, concurrent additions at capacity, creator permissions, removal/rejoin,
    history, receipts, blocks in a shared group and negative authentication cases.
-2. **Group client core.** Typed HTTP methods, service commands and authoritative cache
+2. **Group client core — DONE (2026-11-05).** Typed HTTP methods, service commands and authoritative cache
    refresh after mutations/events/reconnect. Removed conversations must disappear from
    the open view and pending sends must not escape membership checks. Test multiple
    client services, offline changes, removal and re-add without duplicate history.
+   Own `membership_revision` detects remove/re-add entirely while offline; additive
+   PostgreSQL/SQLite migrations preserve prior data. Old queued sends/drafts are
+   discarded across that membership gap, and the old open composer is closed.
 3. **Account-bound call control.** Document lifecycle/storage decision in ADR 0015 and
    extend protobuf/API contracts before desktop integration. Calls belong to a
    conversation; create/join/leave and snapshots are authenticated. Track revision,
