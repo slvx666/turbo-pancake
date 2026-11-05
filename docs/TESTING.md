@@ -187,6 +187,19 @@ powershell -NoProfile -File benchmarks/scripts/s7-instance-trial.ps1 -Out <local
 powershell -NoProfile -File benchmarks/scripts/s7-instance-trial.ps1 -Backend winit-femtovg -Out <local-log>
 ```
 
+Layout and scale (step 3):
+
+```powershell
+# ten own-window snapshots at several physical sizes and scale factors (SLINT_SCALE_FACTOR
+# or the profile's ui_scale setting): size, factor, clean exit checked; PNGs for review
+powershell -NoProfile -File benchmarks/scripts/s7-layout-trial.ps1 -Out <local-log>
+powershell -NoProfile -File benchmarks/scripts/s7-layout-trial.ps1 -Backend winit-femtovg -Out <local-log>
+```
+
+Review the PNGs in the printed work directory by eye (clipping, overlap); they show
+the local account name and stay in the ignored build directory. Snapshot-only flags:
+`--window-size WxH`, `--open-settings`, `--sidebar-open`, `--call-tab 0|1`.
+
 Smoke/trial runs (`--smoke-exit-after-ms`) are not guarded unless `--single-instance`
 is given, so the older multi-client trials keep working; `--multi-instance` disables
 the guard for any run.

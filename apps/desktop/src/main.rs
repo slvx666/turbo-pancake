@@ -35,6 +35,10 @@
 //!       (e.g. place the window on a secondary monitor during tests).
 //!   `--no-activate` — create the window without activating it, so it does not
 //!       take keyboard focus from the user's current window.
+//!   `--window-size <W>x<H>` — initial inner size in physical pixels (layout checks).
+//!   `--open-settings` — start with the application settings panel open (snapshots).
+//!   `--sidebar-open`, `--call-tab <0|1>` — narrow-window state for snapshots: sidebar
+//!       shown, call controls (0) or screen shares (1).
 //!   `--server-ca <pem>` — trust only this CA for `wss://` / `https://` (a server with a
 //!       private certificate, e.g. reached by IP address; `gen-cert` of the server makes
 //!       it). Without it the public web PKI is used. Certificates are always verified.
@@ -81,6 +85,7 @@ use turbo_pancake_desktop::session::{
     Command, CommandSender, Session, SessionConfig, Snapshot, TransportPref, WatchLayer,
 };
 use turbo_pancake_desktop::tray::{Tray, TrayEvent};
+use turbo_pancake_desktop::ui_scale;
 use turbo_pancake_desktop::view::{self, MemberView, ShareRowView};
 use turbo_pancake_media_audio::{CpalIo, DspConfig, device};
 use turbo_pancake_media_video::{MonitorInfo, ShareConfig, ShareSource};
@@ -127,6 +132,10 @@ struct Args {
     single_instance: bool,
     multi_instance: bool,
     trial_close_after_ms: Option<u64>,
+    window_size: Option<(u32, u32)>,
+    open_settings: bool,
+    sidebar_open: bool,
+    call_tab: i32,
 }
 
 fn parse_args() -> Args {
@@ -176,6 +185,15 @@ fn parse_args() -> Args {
                 });
             }
             "--no-activate" => out.no_activate = true,
+            "--window-size" => {
+                out.window_size = args.next().and_then(|v| {
+                    let (w, h) = v.split_once('x')?;
+                    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+                });
+            }
+            "--open-settings" => out.open_settings = true,
+            "--sidebar-open" => out.sidebar_open = true,
+            "--call-tab" => out.call_tab = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             "--server" => out.server = args.next(),
             "--name" => out.name = args.next(),
             "--room" => out.room = args.next(),
@@ -556,11 +574,9 @@ fn show_pictures(
 
 /// The profile's settings, the tray icon and what closing the window does (spec §9):
 /// hidden to the tray while the user can bring it back, otherwise the app exits.
-fn window_lifecycle(window: &MainWindow, args: &Args) -> Option<Rc<Tray>> {
+fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Option<Rc<Tray>> {
     let path = app_settings::path(&args.chat.profile);
-    let settings = Rc::new(std::cell::RefCell::new(
-        path.as_deref().map(AppSettings::load).unwrap_or_default(),
-    ));
+    let settings = Rc::new(std::cell::RefCell::new(loaded));
     let save = {
         let settings = settings.clone();
         move || {
@@ -573,6 +589,14 @@ fn window_lifecycle(window: &MainWindow, args: &Args) -> Option<Rc<Tray>> {
     };
     window.invoke_apply_theme(settings.borrow().dark_theme);
     window.set_close_to_tray(settings.borrow().close_to_tray);
+    window.set_ui_scale_index(((settings.borrow().ui_scale - 100) / 25) as i32);
+    {
+        let (settings, save) = (settings.clone(), save.clone());
+        window.on_ui_scale_changed(move |i| {
+            settings.borrow_mut().ui_scale = 100 + 25 * i.clamp(0, 4) as u32;
+            save();
+        });
+    }
     {
         let (settings, save) = (settings.clone(), save.clone());
         window.on_theme_changed(move |dark| {
@@ -1015,11 +1039,28 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     selector.select()?;
+    let settings = app_settings::path(&args.chat.profile)
+        .as_deref()
+        .map(AppSettings::load)
+        .unwrap_or_default();
+    // Before the first window and before any thread (environment write).
+    let scale = ui_scale::apply(settings.ui_scale);
 
     let window = MainWindow::new()?;
+    if args.smoke_exit_after_ms.is_some() {
+        println!("TURBO_PANCAKE_SCALE factor={}", scale.unwrap_or(0.0));
+    }
+    // Physical pixels; an explicit size also stops Slint from resizing to the
+    // preferred size when the window is shown.
+    if let Some((w, h)) = args.window_size {
+        window.window().set_size(slint::PhysicalSize::new(w, h));
+    }
+    window.set_app_settings_open(args.open_settings);
+    window.set_sidebar_open(args.sidebar_open);
+    window.set_call_tab(args.call_tab);
     window.set_build_info(
         format!(
-            "turbo-pancake-desktop {} · {} · S5",
+            "turbo-pancake-desktop {} · {}",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS
         )
@@ -1083,7 +1124,7 @@ fn main() -> Result<(), slint::PlatformError> {
         timer
     });
 
-    let tray = window_lifecycle(&window, &args);
+    let tray = window_lifecycle(&window, &args, settings);
     let trial = args.trial_tray;
     if trial {
         trial_tray(&window, tray.clone());

@@ -161,9 +161,9 @@ component CallPanel inherits Rectangle {
                 }
             }
         }
-        HorizontalLayout {
+        // Wraps instead of being cut at the panel's width (narrow window, large scale).
+        FlexboxLayout {
             spacing: 12px;
-            alignment: start;
             Button {
                 text: root.muted ? "Включить микрофон" : "Выключить микрофон";
                 clicked => {
@@ -756,6 +756,17 @@ export component MainWindow inherits Window {
     in-out property <bool> app-settings-open;
     in-out property <bool> close-to-tray: true;
     in property <bool> tray-available;
+    // 0..4 = 100/125/150/175/200 % (applied at the next start).
+    in-out property <int> ui-scale-index;
+    callback ui-scale-changed(int);
+    // Narrow window (S7 step 3): the sidebar collapses behind a rail button.
+    // Set from `changed width`, not bound: a binding would feed the layout's own width
+    // back into the layout (binding loop).
+    out property <bool> compact;
+    changed width => { root.compact = root.width < 860px; }
+    in-out property <bool> sidebar-open;
+    // Narrow call view: 0 = call controls, 1 = screen shares.
+    in-out property <int> call-tab;
     callback theme-changed(bool);
     callback close-to-tray-changed(bool);
     callback quit-app();
@@ -767,17 +778,32 @@ export component MainWindow inherits Window {
 
     init => {
         Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
+        root.compact = root.width < 860px;
     }
 
     HorizontalLayout {
+        if root.compact: Rectangle {
+            width: 44px;
+            background: Theme.bg-tertiary;
+            VerticalLayout {
+                padding: 6px;
+                alignment: start;
+                IconButton {
+                    label: root.sidebar-open ? "×" : "≡";
+                    tooltip: root.sidebar-open ? "Скрыть список диалогов" : "Показать список диалогов";
+                    clicked => { root.sidebar-open = !root.sidebar-open; }
+                }
+            }
+        }
         Sidebar {
+            clip: true;
             new-group-open <=> root.new-group-open;
             active-call-title: root.active-call-title;
             incoming-title: root.incoming-title;
             create-group(t, u) => { root.create-group(t, u); }
             accept-call => { root.accept-call(); }
             decline-call => { root.decline-call(); }
-            width: 240px;
+            width: root.compact && !root.sidebar-open ? 0px : 240px;
             user-name: root.user-name;
             connection-status: root.connection-status;
             signed-in: root.signed-in;
@@ -791,8 +817,8 @@ export component MainWindow inherits Window {
             }
             open-app-settings => { root.app-settings-open = !root.app-settings-open; }
             find-user(u) => { root.find-user(u); }
-            open-conversation(id) => { root.open-conversation(id); }
-            open-voice => { root.open-voice(); }
+            open-conversation(id) => { root.sidebar-open = false; root.open-conversation(id); }
+            open-voice => { root.sidebar-open = false; root.open-voice(); }
             logout => { root.logout(); }
         }
         if !root.voice-selected && !root.signed-in: AuthPanel {
@@ -844,11 +870,27 @@ export component MainWindow inherits Window {
                 background: Theme.bg-primary;
                 HorizontalLayout {
                     padding-left: 16px;
+                    spacing: 8px;
                     Text {
                         text: "Голосовая комната";
                         color: Theme.text-normal;
                         font-weight: 600;
                         vertical-alignment: center;
+                    }
+                    if root.compact: HorizontalLayout {
+                        alignment: end;
+                        padding: 8px;
+                        spacing: 4px;
+                        Button {
+                            text: "Звонок";
+                            primary: root.call-tab == 0;
+                            clicked => { root.call-tab = 0; }
+                        }
+                        Button {
+                            text: root.watching != "" ? "Экран •" : "Экран";
+                            primary: root.call-tab == 1;
+                            clicked => { root.call-tab = 1; }
+                        }
                     }
                 }
             }
@@ -857,8 +899,10 @@ export component MainWindow inherits Window {
             CallPanel {
                 managed: root.signed-in;
                 has-participation: root.has-participation;
-                min-width: 420px;
-                max-width: 560px;
+                // Narrow window: one panel at a time, chosen in the header.
+                clip: true;
+                min-width: root.compact && root.call-tab != 0 ? 0px : (root.compact ? 300px : 420px);
+                max-width: root.compact && root.call-tab != 0 ? 0px : (root.compact ? 100000px : 560px);
                 room-text <=> root.room-text;
                 in-room: root.in-room;
                 title: root.signed-in && root.active-call-title != "" ? root.active-call-title : root.call-title;
@@ -890,8 +934,11 @@ export component MainWindow inherits Window {
                 member-volume-changed(p, v) => { root.member-volume-changed(p, v); }
                 vad-changed(on, t) => { root.vad-changed(on, t); }
             }
-            Rectangle { width: 1px; background: Theme.separator; }
+            Rectangle { width: root.compact ? 0px : 1px; background: Theme.separator; }
             ScreenPanel {
+                clip: true;
+                min-width: root.compact && root.call-tab == 0 ? 0px : 200px;
+                max-width: root.compact && root.call-tab == 0 ? 0px : 100000px;
                 in-room: root.in-room;
                 monitors: root.monitors;
                 monitor-index <=> root.monitor-index;
@@ -935,7 +982,7 @@ export component MainWindow inherits Window {
     if root.app-settings-open: Rectangle {
         x: 8px;
         y: root.height - self.height - 60px;
-        width: 320px;
+        width: 380px;
         height: settings-layout.preferred-height;
         background: Theme.bg-tertiary;
         border-radius: 8px;
@@ -959,6 +1006,25 @@ export component MainWindow inherits Window {
                 text: root.tray-available
                     ? "Звонок и переписка продолжают работать в фоне; «Выйти» в меню значка завершает приложение."
                     : "Значок в области уведомлений недоступен: закрытие окна завершает приложение.";
+                color: Theme.text-muted;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Масштаб интерфейса";
+                    color: Theme.text-normal;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    model: ["100 %", "125 %", "150 %", "175 %", "200 %"];
+                    current-index <=> root.ui-scale-index;
+                    selected => { root.ui-scale-changed(self.current-index); }
+                }
+            }
+            Text {
+                text: "Масштаб применяется после перезапуска приложения.";
                 color: Theme.text-muted;
                 font-size: 11px;
                 wrap: word-wrap;

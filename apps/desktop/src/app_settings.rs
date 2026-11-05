@@ -5,12 +5,17 @@
 
 use std::path::{Path, PathBuf};
 
+pub const UI_SCALE_MIN: u32 = 100;
+pub const UI_SCALE_MAX: u32 = 200;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppSettings {
     /// Closing the main window hides it to the notification area (the app keeps running,
     /// calls continue); off — closing the window exits.
     pub close_to_tray: bool,
     pub dark_theme: bool,
+    /// Interface scale on top of the system DPI, percent (100–200); applied at start.
+    pub ui_scale: u32,
 }
 
 impl Default for AppSettings {
@@ -18,6 +23,7 @@ impl Default for AppSettings {
         Self {
             close_to_tray: true,
             dark_theme: true,
+            ui_scale: 100,
         }
     }
 }
@@ -37,8 +43,14 @@ impl AppSettings {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            let value = parse_bool(value.trim());
+            let raw = value.trim();
+            let value = parse_bool(raw);
             match key.trim() {
+                "ui_scale" => {
+                    if let Ok(p) = raw.parse::<u32>() {
+                        s.ui_scale = p.clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+                    }
+                }
                 "close_to_tray" => s.close_to_tray = value.unwrap_or(s.close_to_tray),
                 "dark_theme" => s.dark_theme = value.unwrap_or(s.dark_theme),
                 _ => {}
@@ -49,8 +61,8 @@ impl AppSettings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# turbo-pancake settings\nclose_to_tray={}\ndark_theme={}\n",
-            self.close_to_tray, self.dark_theme
+            "# turbo-pancake settings\nclose_to_tray={}\ndark_theme={}\nui_scale={}\n",
+            self.close_to_tray, self.dark_theme, self.ui_scale
         )
     }
 
@@ -91,6 +103,7 @@ mod tests {
         let s = AppSettings {
             close_to_tray: false,
             dark_theme: false,
+            ui_scale: 150,
         };
         assert_eq!(AppSettings::parse(&s.to_text()), s);
         assert_eq!(AppSettings::parse(""), AppSettings::default());
@@ -103,6 +116,9 @@ mod tests {
         );
         assert!(s.close_to_tray, "bad value keeps the default");
         assert!(!s.dark_theme);
+        assert_eq!(AppSettings::parse("ui_scale=500").ui_scale, UI_SCALE_MAX);
+        assert_eq!(AppSettings::parse("ui_scale=50").ui_scale, UI_SCALE_MIN);
+        assert_eq!(AppSettings::parse("ui_scale=big").ui_scale, 100);
     }
 
     #[test]

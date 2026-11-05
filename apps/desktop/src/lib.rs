@@ -8,4 +8,5 @@ pub mod instance;
 pub mod screen;
 pub mod session;
 pub mod tray;
+pub mod ui_scale;
 pub mod view;
