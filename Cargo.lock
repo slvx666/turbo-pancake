@@ -7024,6 +7024,7 @@ dependencies = [
  "turbo-pancake-media-transport",
  "turbo-pancake-media-video",
  "turbo-pancake-messenger-client",
+ "turbo-pancake-pg-test",
  "turbo-pancake-protocol",
  "turbo-pancake-tls",
  "windows",

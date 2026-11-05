@@ -60,6 +60,19 @@ pub enum Command {
         user: v1::User,
     },
     Logout,
+    StartCall {
+        conversation_id: String,
+    },
+    JoinCall {
+        call_id: String,
+    },
+    LeaveCall {
+        call_id: String,
+        participation_id: String,
+    },
+    DeclineCall {
+        call_id: String,
+    },
     /// Find a user by exact username and open the direct conversation with them.
     StartDirect {
         username: String,
@@ -129,6 +142,13 @@ pub enum Status {
 
 #[derive(Debug, Clone)]
 pub enum Update {
+    Calls(Vec<v1::ConversationCall>),
+    CallEvent(v1::ConversationCall),
+    /// The media Session consumes the token directly; never pass it to UI models/logs.
+    CallReady {
+        participation: v1::CallParticipation,
+        token: String,
+    },
     Status(Status),
     /// Store the token (Credential Manager) and the user for `Resume`.
     SignedIn {
@@ -284,6 +304,9 @@ impl Worker {
     /// Sends the views that `ch` touched.
     fn push(&self, ch: &Changes) {
         let Some(engine) = &self.engine else { return };
+        if ch.calls {
+            self.emit(Update::Calls(engine.calls.clone()));
+        }
         if let Some(id) = &ch.closed {
             self.emit(Update::Closed {
                 conversation_id: id.clone(),
@@ -465,6 +488,47 @@ impl Worker {
                 }
                 self.sign_out("signed out", true);
             }
+            cmd @ (Command::StartCall { .. }
+            | Command::JoinCall { .. }
+            | Command::LeaveCall { .. }
+            | Command::DeclineCall { .. }) => {
+                let Some(engine) = self.engine.as_mut() else {
+                    self.emit(Update::Error("sign in first".into()));
+                    return;
+                };
+                let ready = match cmd {
+                    Command::StartCall { conversation_id } => {
+                        engine.api.create_call(&conversation_id).await.map(Some)
+                    }
+                    Command::JoinCall { call_id } => engine.api.join_call(&call_id).await.map(Some),
+                    Command::LeaveCall {
+                        call_id,
+                        participation_id,
+                    } => engine
+                        .api
+                        .leave_call(&call_id, &participation_id)
+                        .await
+                        .map(|_| None),
+                    Command::DeclineCall { call_id } => {
+                        engine.api.decline_call(&call_id).await.map(|_| None)
+                    }
+                    _ => unreachable!(),
+                };
+                let token = engine.api.token().unwrap_or_default().to_owned();
+                match ready {
+                    Ok(Some(participation)) => self.emit(Update::CallReady {
+                        participation,
+                        token,
+                    }),
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.settle(Err(e.into()));
+                        return;
+                    }
+                }
+                let r = self.engine.as_mut().unwrap().refresh_calls().await;
+                self.settle(r);
+            }
             other => {
                 let Some(engine) = self.engine.as_mut() else {
                     self.emit(Update::Error("sign in first".into()));
@@ -492,6 +556,7 @@ impl Worker {
             conversations: [id.to_owned()].into(),
             signed_out: false,
             closed: None,
+            calls: false,
         };
         match cmd {
             Command::StartDirect { username } => {
@@ -600,6 +665,10 @@ impl Worker {
             | Command::Login { .. }
             | Command::Resume { .. }
             | Command::Logout => {}
+            Command::StartCall { .. }
+            | Command::JoinCall { .. }
+            | Command::LeaveCall { .. }
+            | Command::DeclineCall { .. } => unreachable!("handled by worker"),
         }
         Ok((None, ch))
     }
@@ -700,6 +769,13 @@ impl Worker {
                 let Some(body) = env.body else { return };
                 if matches!(body, S::Pong(_)) {
                     return;
+                }
+                if let S::CallStarted(c)
+                | S::CallParticipantJoined(c)
+                | S::CallParticipantLeft(c)
+                | S::CallEnded(c) = &body
+                {
+                    self.emit(Update::CallEvent(c.clone()));
                 }
                 let r = match self.engine.as_mut() {
                     Some(e) => e.on_event(body).await,

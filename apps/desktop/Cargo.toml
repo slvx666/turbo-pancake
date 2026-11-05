@@ -51,6 +51,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cr
 
 [dev-dependencies]
 turbo-pancake-app-server = { path = "../app-server" }
+turbo-pancake-pg-test.workspace = true
 
 [build-dependencies]
 slint-build = "1.18"

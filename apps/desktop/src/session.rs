@@ -161,6 +161,13 @@ impl SessionConfig {
 #[derive(Debug, Clone)]
 pub enum Command {
     Join(String),
+    JoinConversation {
+        token: String,
+        participation: v1::CallParticipation,
+    },
+    SignOut,
+    /// Retry the signaling transport while preserving the authorized participation.
+    Reconnect,
     Leave,
     SetMuted(bool),
     SetDsp(DspConfig),
@@ -481,6 +488,10 @@ struct Core {
     /// Server IP the signaling connection reached (offered back as the UDP candidate).
     dialed_ip: Option<IpAddr>,
     want_room: Option<String>,
+    auth_token: String,
+    authorization: Option<v1::CallParticipation>,
+    auth_changed: bool,
+    pending_leaves: Vec<(String, String, String)>,
     joined: Option<String>,
     join_rid: u64,
     /// Other room members: peer id → (join order, display name).
@@ -560,6 +571,10 @@ impl Core {
             online: false,
             dialed_ip: None,
             want_room: None,
+            auth_token: String::new(),
+            authorization: None,
+            auth_changed: false,
+            pending_leaves: Vec::new(),
             joined: None,
             join_rid: 0,
             members: BTreeMap::new(),
@@ -612,6 +627,7 @@ impl Core {
         let mut tunnel_rx = self.tunnel_rx.take().expect("run once");
         let mut backoff = Duration::from_millis(500);
         while !self.quit {
+            self.flush_leaves().await;
             self.snap.server = ServerStatus::Connecting;
             self.publish();
             let reason = match self.connect().await {
@@ -649,6 +665,7 @@ impl Core {
             }
         }
         self.stop_share();
+        self.flush_leaves().await;
         self.unwatch();
         self.stop_audio();
         self.snap.server = ServerStatus::Disconnected("вышли".into());
@@ -656,7 +673,33 @@ impl Core {
     }
 
     /// WebSocket + Hello/Welcome. Returns the heartbeat interval.
+    async fn flush_leaves(&mut self) {
+        for (call, participation, token) in std::mem::take(&mut self.pending_leaves) {
+            let base = self
+                .cfg
+                .server_url
+                .trim_end_matches("/v1/signal")
+                .replacen("ws://", "http://", 1)
+                .replacen("wss://", "https://", 1);
+            let mut api = turbo_pancake_messenger_client::api::Api::with_tls(
+                &base,
+                self.cfg
+                    .tls
+                    .clone()
+                    .unwrap_or_else(turbo_pancake_messenger_client::api::web_pki),
+            );
+            api.set_token(Some(token));
+            // Bounded cleanup; server-side lease expiry repairs network loss.
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                api.leave_call(&call, &participation),
+            )
+            .await;
+        }
+    }
+
     async fn connect(&mut self) -> Result<(Ws, Duration), String> {
+        self.auth_changed = false;
         let (mut ws, _) = tokio::time::timeout(
             CONNECT_TIMEOUT,
             tokio_tungstenite::connect_async_tls_with_config(
@@ -690,7 +733,7 @@ impl Core {
         let hello = C::Hello(v1::Hello {
             client_version: self.cfg.client_version.clone(),
             display_name: self.cfg.display_name.clone(),
-            ..Default::default()
+            auth_token: self.auth_token.clone(),
         });
         let rid = self.rid();
         ws.send(Message::Binary(
@@ -706,7 +749,17 @@ impl Core {
                 let env = proto::decode_server(&b).map_err(|e| e.to_string())?;
                 match env.body {
                     Some(S::Welcome(w)) => return Ok(w),
-                    Some(S::Error(e)) => return Err(format!("сервер: {}", e.message)),
+                    Some(S::Error(e)) => {
+                        if e.code == v1::ErrorCode::Unauthenticated as i32
+                            && !self.auth_token.is_empty()
+                        {
+                            self.leave_room();
+                            self.want_room = None;
+                            self.stop_audio();
+                            self.snap.last_error = Some("Сессия завершена. Войдите снова.".into());
+                        }
+                        return Err(format!("сервер: {}", e.message));
+                    }
                     _ => {}
                 }
             }
@@ -740,6 +793,7 @@ impl Core {
         let mut status = tokio::time::interval(self.cfg.status_interval);
         let mut last_rx = Instant::now();
         loop {
+            self.flush_leaves().await;
             for frame in self.outbox.drain(..) {
                 if let Err(e) = sink.send(Message::Binary(frame.into())).await {
                     return e.to_string();
@@ -748,6 +802,9 @@ impl Core {
             if self.quit {
                 let _ = sink.send(Message::Close(None)).await;
                 return "вышли".into();
+            }
+            if self.auth_changed {
+                return "обновление авторизации".into();
             }
             if std::mem::take(&mut self.dirty) {
                 self.publish();
@@ -820,13 +877,59 @@ impl Core {
 
     fn send_join(&mut self, room: String) {
         if self.online {
-            self.join_rid = self.push(C::JoinRoom(v1::JoinRoom { room_id: room }));
+            self.join_rid = if let Some(p) = &self.authorization {
+                self.push(C::JoinCallMedia(v1::JoinCallMedia {
+                    call_id: p.call.as_ref().unwrap().call_id.clone(),
+                    participation_id: p.participation_id.clone(),
+                }))
+            } else {
+                self.push(C::JoinRoom(v1::JoinRoom { room_id: room }))
+            };
         }
     }
 
     fn command(&mut self, cmd: Command) {
         self.dirty = true;
         match cmd {
+            Command::Reconnect => self.auth_changed = true,
+            Command::JoinConversation {
+                token,
+                participation,
+            } => {
+                let Some(call) = &participation.call else {
+                    return;
+                };
+                let room = format!("call_{}", call.call_id);
+                if self
+                    .authorization
+                    .as_ref()
+                    .is_some_and(|p| p.participation_id == participation.participation_id)
+                {
+                    return;
+                }
+                self.leave_room();
+                self.auth_changed = self.auth_token != token;
+                self.auth_token = token;
+                self.authorization = Some(participation);
+                self.snap.last_error = None;
+                self.want_room = Some(room.clone());
+                if self.audio.is_none() {
+                    self.start_audio();
+                }
+                if self.audio.is_none() {
+                    self.leave_room();
+                    self.want_room = None;
+                    return;
+                }
+                if !self.auth_changed {
+                    self.send_join(room);
+                }
+            }
+            Command::SignOut => {
+                self.command(Command::Leave);
+                self.auth_token.clear();
+                self.auth_changed = true;
+            }
             Command::Join(room) => {
                 if let Err(e) = proto::validate_room_id(&room) {
                     self.snap.last_error = Some(e.to_string());
@@ -1294,6 +1397,12 @@ impl Core {
 
     /// Ends media and tells the server we left (also for a join still in flight).
     fn leave_room(&mut self) {
+        if let Some(p) = self.authorization.take()
+            && let Some(c) = p.call
+        {
+            self.pending_leaves
+                .push((c.call_id, p.participation_id, self.auth_token.clone()));
+        }
         self.end_media();
         self.stop_share();
         self.unwatch();
@@ -1512,6 +1621,15 @@ impl Core {
                     v1::ErrorCode::try_from(e.code).unwrap_or(v1::ErrorCode::Unspecified)
                 );
                 if env.request_id != 0 && env.request_id == self.join_rid {
+                    if let Some(p) = self.authorization.take()
+                        && let Some(c) = p.call
+                    {
+                        self.pending_leaves.push((
+                            c.call_id,
+                            p.participation_id,
+                            self.auth_token.clone(),
+                        ));
+                    }
                     self.snap.last_error = Some(msg);
                     self.want_room = None;
                     self.joined = None;

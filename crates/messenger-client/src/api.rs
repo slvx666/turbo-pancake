@@ -209,6 +209,38 @@ impl Api {
         self.get("/v1/conversations").await
     }
 
+    pub async fn calls(&self) -> ApiResult<v1::CallList> {
+        self.get("/v1/calls").await
+    }
+    pub async fn create_call(&self, conversation: &str) -> ApiResult<v1::CallParticipation> {
+        self.send(
+            Method::POST,
+            "/v1/calls",
+            &v1::CreateCallRequest {
+                conversation_id: conversation.into(),
+            },
+        )
+        .await
+    }
+    pub async fn join_call(&self, call: &str) -> ApiResult<v1::CallParticipation> {
+        self.bare(Method::POST, &format!("/v1/calls/{call}/join"))
+            .await
+    }
+    pub async fn leave_call(&self, call: &str, participation: &str) -> ApiResult<v1::Empty> {
+        self.send(
+            Method::POST,
+            &format!("/v1/calls/{call}/leave"),
+            &v1::LeaveCallRequest {
+                participation_id: participation.into(),
+            },
+        )
+        .await
+    }
+    pub async fn decline_call(&self, call: &str) -> ApiResult<v1::Empty> {
+        self.bare(Method::POST, &format!("/v1/calls/{call}/decline"))
+            .await
+    }
+
     pub async fn create_direct(&self, user_id: &str) -> ApiResult<v1::Conversation> {
         self.send(
             Method::POST,

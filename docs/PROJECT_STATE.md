@@ -9,6 +9,27 @@ Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unf
 
 ## Session log 2026-11-05 — S6 step 3: account-bound call control
 
+## Session log 2026-11-05 — S6 step 4: authenticated media and recovery
+
+* Added typed call HTTP methods and Service commands/snapshots/events. A successful
+  call operation supplies the account token and participation lease to the media
+  Session; it reauthenticates, attaches with JoinCallMedia and reconnects with the same
+  lease. Explicit leave, failed authorization and shutdown clean up participation.
+* **PASS:** fmt, workspace Clippy `-D warnings`, workspace baseline **153 passed,
+  0 failed**, 3 ignored, real system-audio test separately filtered; real PostgreSQL.
+  Log: `.local/logs/s6-step4-tests.log` (ignored).
+* New desktop Session/SFU integration: real authenticated WebSockets, tunneled media,
+  simulated bidirectional audio, account display names, second-device takeover and
+  old-device resource release, stale leave, same-lease reconnect with fresh media,
+  session revocation, final leave, unchanged chat history and server restart. New
+  Service test covers direct invitation/accept, switching to a group, leave and chat
+  continuity. No native-window or real-audio acceptance claimed yet.
+* Added only the existing pg-test workspace crate as a desktop test dependency;
+  lockfile changes by one dependency entry, with no version updates.
+* Next is step 5: wire the native group and call controls, then background acceptance.
+
+## Server-control evidence (step 3)
+
 * ADR 0015: ephemeral live call state, conversation/account ownership, session-bound
   participation UUID, revisions, reconnect grace and bounded reservations. Added
   authenticated HTTP create/join/leave/decline/list and typed lifecycle events.

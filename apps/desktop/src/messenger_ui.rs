@@ -429,6 +429,7 @@ fn status_text(s: &Status) -> String {
 fn apply(w: &MainWindow, u: Update) {
     let log = STATE.with_borrow(|s| s.chat_log);
     match u {
+        Update::Calls(_) | Update::CallEvent(_) | Update::CallReady { .. } => {}
         Update::Status(s) => {
             if STATE.with_borrow(|st| st.signed_in) {
                 w.set_connection_status(status_text(&s).into());

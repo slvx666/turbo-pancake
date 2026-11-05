@@ -47,7 +47,7 @@ PROJECT_STATE. Existing migrations and anonymous loopback media tests remain int
    participant account/device ownership and typed lifecycle events. Enforce membership,
    direct-call blocks and one active participation per account across devices;
    switching evicts the previous media session and notifies both conversations.
-4. **Authorized media and recovery.** Authenticate the call Session with the account
+4. **Authorized media and recovery — DONE (2026-11-05).** Authenticate the call Session with the account
    token, authorize room/media actions against call participation, release resources
    on leave/disconnect/revoke/removal/shutdown, end empty calls. Preserve isolated
    anonymous development scenarios explicitly. Test concurrent joins, duplicate

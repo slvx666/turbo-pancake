@@ -73,6 +73,8 @@ struct Client {
     messages: HashMap<String, Vec<MessageView>>,
     opened: Option<String>,
     closed: Vec<String>,
+    calls: Vec<v1::ConversationCall>,
+    ready: Option<v1::CallParticipation>,
     errors: Vec<String>,
 }
 
@@ -112,6 +114,8 @@ impl Client {
             messages: HashMap::new(),
             opened: None,
             closed: Vec::new(),
+            calls: Vec::new(),
+            ready: None,
             errors: Vec::new(),
         }
     }
@@ -122,6 +126,9 @@ impl Client {
 
     fn apply(&mut self, u: Update) {
         match u {
+            Update::Calls(c) => self.calls = c,
+            Update::CallReady { participation, .. } => self.ready = Some(participation),
+            Update::CallEvent(_) => {}
             Update::Status(s) => self.status = s,
             Update::SignedIn { user, token } => {
                 self.user = Some(user);
@@ -466,6 +473,92 @@ async fn group_services_sync_members_rights_removal_and_offline_rename() {
     alice.stop().await;
     bob.stop().await;
     cara.stop().await;
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn call_service_invite_join_switch_leave_and_chat_continuity() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let (addr, srv) = serve(&db, None).await;
+    let (mut alice, mut bob, cid) = pair(addr, "call-service").await;
+    alice.cmd(Command::StartCall {
+        conversation_id: cid.clone(),
+    });
+    alice
+        .until("direct participation ready", |c| c.ready.is_some())
+        .await;
+    let first = alice.ready.take().unwrap();
+    let call_id = first.call.unwrap().call_id;
+    bob.until("incoming direct call", |c| {
+        c.calls.iter().any(|call| {
+            call.call_id == call_id && call.state == v1::ConversationCallState::Inviting as i32
+        })
+    })
+    .await;
+    bob.cmd(Command::JoinCall {
+        call_id: call_id.clone(),
+    });
+    bob.until("accept ready", |c| c.ready.is_some()).await;
+    let b_part = bob.ready.take().unwrap();
+    alice
+        .until("both accounts in call", |c| {
+            c.calls
+                .iter()
+                .any(|call| call.call_id == call_id && call.participants.len() == 2)
+        })
+        .await;
+    alice.cmd(Command::Send {
+        conversation_id: cid.clone(),
+        body: "chat during call".into(),
+        reply_to_id: String::new(),
+    });
+    alice
+        .until("chat saved during call", |c| {
+            c.msgs(&cid).len() == 1 && c.msgs(&cid)[0].server_sequence == 1
+        })
+        .await;
+    alice.cmd(Command::CreateGroup {
+        title: "switch target".into(),
+        usernames: vec!["bob".into()],
+    });
+    alice
+        .until("new group opened", |c| {
+            c.opened.as_deref().is_some_and(|id| id != cid)
+        })
+        .await;
+    let group_id = alice.opened.clone().unwrap();
+    alice.cmd(Command::StartCall {
+        conversation_id: group_id.clone(),
+    });
+    alice.until("group call ready", |c| c.ready.is_some()).await;
+    let second = alice.ready.take().unwrap();
+    bob.until("old call kept only for Bob", |c| {
+        c.calls
+            .iter()
+            .any(|call| call.call_id == call_id && call.participants.len() == 1)
+    })
+    .await;
+    bob.cmd(Command::LeaveCall {
+        call_id,
+        participation_id: b_part.participation_id,
+    });
+    alice.cmd(Command::LeaveCall {
+        call_id: second.call.unwrap().call_id,
+        participation_id: second.participation_id,
+    });
+    alice.until("no active calls", |c| c.calls.is_empty()).await;
+    alice.cmd(Command::Open {
+        conversation_id: Some(cid.clone()),
+    });
+    alice
+        .until("history unchanged after calls", |c| {
+            c.bodies(&cid) == ["chat during call"]
+        })
+        .await;
+    assert!(alice.errors.is_empty());
+    assert!(bob.errors.is_empty());
+    alice.stop().await;
+    bob.stop().await;
     srv.stop().await;
 }
 

@@ -45,6 +45,7 @@ pub struct Changes {
     pub signed_out: bool,
     /// The open conversation disappeared from the authoritative list.
     pub closed: Option<String>,
+    pub calls: bool,
 }
 
 impl Changes {
@@ -55,6 +56,7 @@ impl Changes {
 
     pub fn merge(&mut self, other: Changes) {
         self.list |= other.list;
+        self.calls |= other.calls;
         self.signed_out |= other.signed_out;
         self.conversations.extend(other.conversations);
         if other.closed.is_some() {
@@ -63,7 +65,11 @@ impl Changes {
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.list && self.conversations.is_empty() && !self.signed_out && self.closed.is_none()
+        !self.list
+            && !self.calls
+            && self.conversations.is_empty()
+            && !self.signed_out
+            && self.closed.is_none()
     }
 }
 
@@ -135,6 +141,7 @@ pub struct Engine {
     pub api: Api,
     pub cache: Cache,
     pub me: v1::User,
+    pub calls: Vec<v1::ConversationCall>,
     /// The conversation on screen: its new messages count as read.
     open: Option<String>,
 }
@@ -152,6 +159,7 @@ impl Engine {
             api,
             cache,
             me,
+            calls: Vec::new(),
             open: None,
         }
     }
@@ -163,6 +171,7 @@ impl Engine {
     /// Full resync: list, feeds, receipts, pending operations.
     pub async fn sync(&mut self) -> Result<Changes> {
         let mut ch = self.refresh_list().await?;
+        ch.merge(self.refresh_calls().await?);
         for id in self.cache.conversation_ids()? {
             ch.merge(self.catch_up(&id).await?);
         }
@@ -222,6 +231,7 @@ impl Engine {
             conversations: ids.into_iter().chain(removed).collect(),
             signed_out: false,
             closed,
+            calls: false,
         })
     }
 
@@ -351,15 +361,30 @@ impl Engine {
             }
             S::ConversationUpdated(u) => {
                 ch.merge(self.refresh_list().await?);
+                ch.merge(self.refresh_calls().await?);
                 ch.merge(self.catch_up(&u.conversation_id).await?);
             }
             S::SessionRevoked(_) => ch.signed_out = true,
+            S::CallStarted(_)
+            | S::CallParticipantJoined(_)
+            | S::CallParticipantLeft(_)
+            | S::CallEnded(_) => {
+                ch.merge(self.refresh_calls().await?);
+            }
             _ => {}
         }
         Ok(ch)
     }
 
     // ---- Writes ----
+
+    pub async fn refresh_calls(&mut self) -> Result<Changes> {
+        self.calls = self.api.calls().await?.calls;
+        Ok(Changes {
+            calls: true,
+            ..Default::default()
+        })
+    }
 
     fn queue(
         &mut self,

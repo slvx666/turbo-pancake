@@ -196,6 +196,214 @@ fn serial() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+#[test]
+fn authenticated_conversation_media_switch_reconnect_revoke_and_history() {
+    use turbo_pancake_messenger_client::api::Api;
+    use turbo_pancake_protocol::v1;
+    let _serial = serial();
+    let db = turbo_pancake_pg_test::database_url().expect("S6 requires PostgreSQL");
+    let config = Config {
+        database_url: Some(db.clone()),
+        anonymous_calls: false,
+        media_udp: false,
+        limits: turbo_pancake_app_server::ratelimit::Limits::relaxed(),
+        ..Default::default()
+    };
+    let (addr, stop) = server(None, config.clone());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut api = Api::new(&format!("http://{addr}"));
+    let alice = rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if let Ok(a) = api
+                    .register(&v1::RegisterRequest {
+                        username: "alice".into(),
+                        password: "correct horse".into(),
+                        ..Default::default()
+                    })
+                    .await
+                {
+                    break a;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap()
+    });
+    let bob = rt
+        .block_on(api.register(&v1::RegisterRequest {
+            username: "bob".into(),
+            password: "correct horse".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+    api.set_token(Some(alice.token.clone()));
+    let group = rt
+        .block_on(api.create_group("Real media", &["bob".into()]))
+        .unwrap();
+    let cid = group.conversation_id;
+    rt.block_on(api.send_message(
+        &cid,
+        &v1::SendMessageRequest {
+            client_nonce: "before".into(),
+            body: "before call".into(),
+            reply_to_id: String::new(),
+        },
+    ))
+    .unwrap();
+    let first = rt.block_on(api.create_call(&cid)).unwrap();
+    let call_id = first.call.as_ref().unwrap().call_id.clone();
+    let mut bob_api = Api::new(&format!("http://{addr}"));
+    bob_api.set_token(Some(bob.token.clone()));
+    let b_part = rt.block_on(bob_api.join_call(&call_id)).unwrap();
+    let mut a = Client::start(
+        addr,
+        "ignored account name",
+        Opts {
+            mic_on: true,
+            transport: TransportPref::Tunnel,
+            ..Default::default()
+        },
+    );
+    let mut b = Client::start(
+        addr,
+        "ignored account name",
+        Opts {
+            mic_on: true,
+            transport: TransportPref::Tunnel,
+            ..Default::default()
+        },
+    );
+    a.send(Command::JoinConversation {
+        token: alice.token.clone(),
+        participation: first.clone(),
+    });
+    b.send(Command::JoinConversation {
+        token: bob.token.clone(),
+        participation: b_part.clone(),
+    });
+    a.wait("authenticated media from Bob", 15, |s| {
+        played(s) >= 100 && s.members.len() == 1
+    });
+    b.wait("authenticated media from Alice", 15, |s| {
+        played(s) >= 100 && s.members.len() == 1
+    });
+    assert_eq!(a.last.members[0].name, "bob");
+    // A second device takes over the account; the old device releases real pipelines.
+    let other = rt
+        .block_on(api.login(&v1::LoginRequest {
+            username: "alice".into(),
+            password: "correct horse".into(),
+            device_name: "second".into(),
+        }))
+        .unwrap();
+    let mut other_api = api.clone();
+    other_api.set_token(Some(other.token.clone()));
+    let moved = rt.block_on(other_api.join_call(&call_id)).unwrap();
+    let mut a2 = Client::start(
+        addr,
+        "second device",
+        Opts {
+            mic_on: true,
+            transport: TransportPref::Tunnel,
+            ..Default::default()
+        },
+    );
+    a2.send(Command::JoinConversation {
+        token: other.token.clone(),
+        participation: moved,
+    });
+    a.wait("old device evicted", 5, |s| {
+        s.room.is_none() && s.engine.is_none()
+    });
+    assert!(a.released());
+    a2.wait("new device hears Bob", 15, |s| played(s) >= 100);
+    let previous_peer = a2.last.peer_id.clone();
+    let previous_media = a2.last.media_sessions;
+    a2.send(Command::Reconnect);
+    a2.wait("same lease reconnects with fresh media", 15, |s| {
+        s.peer_id != previous_peer && s.media_sessions > previous_media && played(s) >= 100
+    });
+    rt.block_on(api.leave_call(&call_id, &first.participation_id))
+        .unwrap();
+    let calls = rt.block_on(other_api.calls()).unwrap();
+    assert_eq!(calls.calls[0].participants.len(), 2);
+    // Revocation terminates attached media and prevents automatic lease reattachment.
+    rt.block_on(api.revoke_session(&other.session_id)).unwrap();
+    a2.wait("revoked device released", 8, |s| {
+        s.room.is_none() && s.engine.is_none()
+    });
+    assert!(a2.released());
+    b.wait("only Bob remains", 8, |s| s.members.is_empty());
+    // Explicit leave is idempotent and keeps chat history intact.
+    b.send(Command::Leave);
+    b.wait("leave releases media", 5, |s| {
+        s.room.is_none() && s.engine.is_none()
+    });
+    assert!(b.released());
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if api.calls().await.unwrap().calls.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    rt.block_on(api.send_message(
+        &cid,
+        &v1::SendMessageRequest {
+            client_nonce: "after".into(),
+            body: "after call".into(),
+            reply_to_id: String::new(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        rt.block_on(api.changes(&cid, 0, 100))
+            .unwrap()
+            .messages
+            .len(),
+        2
+    );
+    a.quit();
+    a2.quit();
+    b.quit();
+    let _ = stop.send(());
+    // A restart retains the conversation but cannot resurrect an old call id.
+    let (addr, stop) = server(Some(addr), config);
+    let mut api = Api::new(&format!("http://{addr}"));
+    api.set_token(Some(alice.token));
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if let Ok(c) = api.calls().await {
+                    assert!(c.calls.is_empty());
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert_eq!(
+        rt.block_on(api.changes(&cid, 0, 100))
+            .unwrap()
+            .messages
+            .len(),
+        2
+    );
+    let _ = stop.send(());
+}
+
 /// Starts an app-server (with its SFU) on its own runtime thread; dropping the sender
 /// stops it.
 fn server(
@@ -212,7 +420,16 @@ fn server(
             .unwrap();
         rt.block_on(async move {
             let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
-            let listener = tokio::net::TcpListener::bind(bind).await.unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let listener = loop {
+                match tokio::net::TcpListener::bind(bind).await {
+                    Ok(l) => break l,
+                    Err(_) if addr.is_some() && Instant::now() < deadline => {
+                        tokio::time::sleep(Duration::from_millis(25)).await
+                    }
+                    Err(e) => panic!("test listener: {e}"),
+                }
+            };
             addr_tx.send(listener.local_addr().unwrap()).unwrap();
             turbo_pancake_app_server::serve(listener, config, async {
                 let _ = stop_rx.await;
