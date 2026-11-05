@@ -135,6 +135,7 @@ export component Sidebar inherits Rectangle {
     in property <bool> voice-selected;
     in property <string> find-error;
     callback toggle-theme;
+    callback open-app-settings;
     callback find-user(string);
     callback open-conversation(string);
     callback open-voice;
@@ -253,6 +254,14 @@ export component Sidebar inherits Rectangle {
                         label: Theme.dark ? "☀" : "☾";
                         tooltip: "Переключить тему";
                         clicked => { root.toggle-theme(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        label: "⚙";
+                        tooltip: "Настройки приложения";
+                        clicked => { root.open-app-settings(); }
                     }
                 }
                 if root.signed-in: VerticalLayout {

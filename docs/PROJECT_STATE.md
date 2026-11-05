@@ -1,11 +1,46 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S6 — groups and calls in the messenger (Windows): DONE (2026-11-05)** — automated and native acceptance passed. S7 is NOT_STARTED and was not authorized in this task. New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); S7–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, step 1 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = IN_PROGRESS**; S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-05 (S6 DONE on Windows; 154 automated tests and native software/OpenGL acceptance)
+Last session: 2026-11-05 (S7 plan + step 1 tray/window lifecycle; 158 automated tests, tray trial software/OpenGL)
+
+## Session log 2026-11-05 — S7 plan and step 1: tray and window lifecycle
+
+* Owner asked to continue with the next step: S7 authorized. Plan (7 steps) committed
+  in `docs/STAGES.md` as `793d84c`.
+* Step 1: Win32 tray icon (`apps/desktop/src/tray.rs`, `cfg(windows)`, stub elsewhere),
+  per-profile settings file (`app_settings.rs`), ⚙ panel with "Сворачивать в трей" and
+  "Выйти из приложения", theme persisted and restored. Closing hides to the tray only
+  while the icon is shown (else exits). The event loop now runs until an explicit quit
+  (`run_event_loop_until_quit`); the existing cleanup then releases media/messenger.
+  Smoke runs without `--trial-tray` add no icon, so older trial scripts are unchanged.
+  No dependency added (only `windows` 0.62 features); `Cargo.lock` unchanged.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper:
+  **158 passed, 0 failed, 4 ignored, 1 filtered**, 42 binaries, real PostgreSQL (log
+  `.local/logs/s7-step1-tests.log`). Filtered = real system-audio test, as before.
+* **PASS:** `s7-tray-trial.ps1` software + OpenGL on the invisible desktop (hidden →
+  restored → exit, 0 foreground samples); ignored real-icon test run once (`shown=true`);
+  release startup smoke both renderers. Report:
+  `benchmarks/results/s7-step1-windows-2026-11-05.md`. The trial first exposed that
+  winit's message window is always `WS_VISIBLE` (issue 43); the check now counts only
+  app windows.
+* **UNVERIFIED / owner-assisted:** clicking the real icon and its real menu. Local
+  branch only; no push or CI claimed.
+
+## Acceptance checks — S7 (IN_PROGRESS, Windows)
+
+| Criterion / slice | Status | Evidence / remaining work |
+|---|---|---|
+| Tray: close does not exit when tray mode is on; explicit exit quits and frees resources | PASS (step 1; real-icon click owner-assisted) | `s7-tray-trial.ps1` both renderers, `tray::tests`, real icon ignored test |
+| Light/dark theme persisted | PASS (unit) | `app_settings::tests`; visual check of the panel not done |
+| Responsive layout, HiDPI, scaling, keyboard focus | UNVERIFIED | step 3 |
+| Reconnect UX, unsaved input kept | UNVERIFIED (drafts exist since S5/S6) | step 4 |
+| Signed atomic updates with rollback | NOT_STARTED | step 5 |
+| Installer, size ≤ 30 MB, signing | NOT_STARTED | step 6; Authenticode and Slint license are owner decisions |
+| Windows E2E, RAM/startup/size profiles | NOT_STARTED | step 7 |
 
 ## Session log 2026-11-05 — S6 step 6: acceptance complete
 
@@ -268,6 +303,7 @@ Last session: 2026-11-05 (S6 DONE on Windows; 154 automated tests and native sof
 | **Messenger client core** (S5): typed API client, SQLite cache (migrations by `user_version`, idempotent apply by `change_seq`, `secure_delete`, corrupted file moved aside and rebuilt), sync engine (feed from the resume cursor, duplicate/gap handling of events, pending send/edit/delete with nonces, failed with the server's reason, retry/discard, delivered/read acks, drafts), views (conversation list with unread/last text/presence, messages with reply quotes and pending/failed/sent/delivered/read), worker thread with its own signed-in WebSocket, heartbeat, reconnect 0.5→5 s, offline resume from the cache, cache wiped on logout/revocation | `crates/messenger-client` | 3 unit + 4 integration tests (`tests/sync.rs`: two real `Service`s, real server + PostgreSQL) |
 | **Desktop messenger UI** (S5): sign-in / register screen, conversation list (presence dot, unread badge, last text or "черновик"), find by @username, voice room entry, Discord-like feed (avatar + name + local time, grouping, reply quote, "(изменено)", deleted placeholder, own state отправляется/отправлено/доставлено/прочитано, failed with the reason + retry/discard), hover actions reply/edit/delete, selectable text (copy), compose bar for reply/edit, drafts saved per conversation, block/unblock in the header, banner when sending is not allowed, messenger connection status in the user panel, logout; session (token + user) in the Windows Credential Manager per profile and server, resume at start (offline from the cache); scripted flags `--profile --login --register --chat-with --send --block --chat-log` | `apps/desktop/ui/{chat,theme,main}.slint`, `apps/desktop/src/{messenger_ui,chat,credentials,main}.rs` | `chat::tests` (3), `credentials::tests` (real Credential Manager), `benchmarks/scripts/s5-trial.ps1` |
 | **TLS** (S5 step 7, ADR 0014): `crates/tls` (rustls configs, private CA + server certificate with rcgen, rotation), app-server HTTPS + WSS (`--tls-cert/--tls-key`, handshakes off the accept loop, `gen-cert` / `renew-cert`), clients always verify (web PKI or only `--server-ca`), clear "certificate not trusted" errors | `crates/tls`, `apps/app-server/src/{tls,main}.rs`, `crates/messenger-client/src/{api,service}.rs`, `apps/desktop/src/{session,main}.rs`, `docs/DEPLOY-TLS.md` | `crates/tls` unit, `crates/messenger-client/tests/tls.rs` (2), `s5-trial.ps1 -Tls` |
+| **Tray and window lifecycle** (S7 step 1): Win32 notification-area icon on a hidden window of the UI thread (left click / "Открыть" restores, "Выйти" quits, re-added after an Explorer restart via `TaskbarCreated`), close hides to the tray only while the icon exists and the setting is on, else exits; event loop runs until an explicit quit, then the existing cleanup releases media/messenger; per-profile settings file (close-to-tray, theme) with atomic replace and per-key fallback; ⚙ settings panel with "Выйти из приложения"; `--trial-tray` | `apps/desktop/src/{tray,app_settings,main}.rs`, `ui/{main,chat}.slint`, `benchmarks/scripts/s7-tray-trial.ps1` | `app_settings::tests` (3), `tray::tests` (routing; real icon ignored test run once), `s7-tray-trial.ps1` software + OpenGL |
 | ADRs 0001–0014, API, ARCHITECTURE, TESTING, STAGES, ONBOARDING, DEPLOY-TLS | `docs/` | — |
 
 ## Acceptance checks — S0 (DONE)
@@ -492,6 +528,16 @@ performance results for the target hardware (RTX 4070 Super / M4).
     test tolerant of scheduler stalls (or count late only after the rebuffer) if it recurs.
 39. The bench's delivered ratio can read slightly above 1.0 (≤ 0.5 %): sent counters are
     sampled every 0.5 s, received ones continuously.
+43. **Smoke "native window seen" is a loose check:** winit's message window
+    (`Winit Thread Event Target`) is created `WS_VISIBLE`, so "a visible window of the
+    process" is true even before/without the app window. `s7-tray-trial.ps1` counts only
+    app windows (`Window Class`); the older smoke/trial scripts still rely on their
+    first-frame markers for the real window. Tighten them when they are next touched.
+44. **Tray (S7 step 1):** click on the real icon and its real context menu are not
+    exercised automatically (they need the user's pointer); routing is tested through
+    the same window messages. Owner-assisted interactive check. The icon is drawn in
+    code; the executable has no icon resource yet (installer step). No single-instance
+    guard yet: a second launch starts a second client (S7 step 2).
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -852,14 +898,19 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S6 complete; stop before S7
+## Exact next task — S7 step 2: single instance and restore
 
-S6 Windows acceptance is complete; see the acceptance table and sanitized report.
-The first unfinished stage is S7, which the owner explicitly excluded from this task.
-Do not begin it without a new owner request. Preserve the existing local branch and
-commits. GitHub publishing remains unavailable; do not open authentication windows or
-claim a remote push/CI run. Existing owner-assisted real-audio/two-machine/hardware
-checks remain separately pending under ADR 0012.
+The owner asked to continue with the next stage (2026-11-05); S7 is authorized and
+in progress. Step 1 (tray and window lifecycle) is done. Next is step 2 in
+`docs/STAGES.md`: a second launch of the same profile must restore the running window
+(the tray's hidden window is the natural target: a named per-profile mutex decides,
+the existing tray message path restores) instead of starting a second session of the
+same account on the same device. Scripted trials start several clients with the
+default profile (`voice-trial`, `group-trial`, `screen-trial`, `s4-trial`): they must
+keep working — scripted/smoke runs opt out explicitly. Test on the invisible desktop
+like `s7-tray-trial.ps1`. Then steps 3–7. GitHub publishing remains unavailable; do not
+open authentication windows or claim a remote push/CI run. Owner-assisted items stay
+pending under ADR 0012.
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 
 * ADR 0014: private CA via `gen-cert`, server HTTPS + WSS, clients verify always

@@ -152,6 +152,29 @@ The script's options use the same native callbacks as the visible controls:
 `--simulate-audio`, `--snapshot` (PPM), `--snapshot-after-ms`.
 Real audio/by-ear and two-machine checks remain separate owner-assisted trials.
 
+## Window lifecycle and tray S7 (Windows)
+
+```powershell
+# settings round trip / damaged file / atomic replace; tray click and menu routing
+# through a hidden window (no icon is added)
+cargo test -p turbo-pancake-desktop --lib
+# real notification-area icon: add + remove, no window, focus or input (touches the
+# user's taskbar for a moment, therefore ignored by default)
+cargo test -p turbo-pancake-desktop --lib real_icon -- --ignored --nocapture
+# release client on an isolated invisible desktop: close → hidden, restore through the
+# tray window's message path, exit through its menu command; both renderers
+powershell -NoProfile -File benchmarks/scripts/s7-tray-trial.ps1 -Out <local-log>
+powershell -NoProfile -File benchmarks/scripts/s7-tray-trial.ps1 -Backend winit-femtovg -Out <local-log>
+```
+
+The trial samples the client's app windows (winit class `Window Class`; winit's own
+message window `Winit Thread Event Target` is always `WS_VISIBLE` and is ignored) and
+the foreground window every 100 ms. It passes only with the visibility trace
+shown → hidden → shown, markers `closed visible=false` / `restored visible=true`, a
+clean exit marker, exit code 0 and no foreground sample. The isolated desktop has no
+shell, so there the icon is not shown (`icon=false`); the real icon is the ignored test.
+Settings live in `%LOCALAPPDATA%/turbo-pancake/settings/<profile>.conf`.
+
 ## Messenger S5 (Windows, dev machine)
 
 ```bash
@@ -192,8 +215,9 @@ primary 1920×1080 at (0,0), DISPLAY2 1920×1080 at (1920,0).
 1. `cargo run --release -p turbo-pancake-app-server` → prints `TURBO_PANCAKE_LISTENING 127.0.0.1:7878`;
    `curl http://127.0.0.1:7878/v1/version` returns protocol_version 1.
 2. `cargo run --release -p turbo-pancake-desktop -- --window-pos 2020,100 --no-activate` → a dark
-   Discord-style window with empty DM list; the ☀/☾ button toggles light/dark theme;
-   closing the window ends the process.
+   Discord-style window with empty DM list; the ☀/☾ button toggles light/dark theme.
+   Since S7 closing the window hides it to the tray icon (setting under ⚙, default on);
+   the icon's menu "Выйти" or "Выйти из приложения" ends the process.
 
 ## Not yet covered (tracked in PROJECT_STATE.md)
 

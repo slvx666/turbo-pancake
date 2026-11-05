@@ -47,6 +47,12 @@
 //!   `--send <text>` — send this message once the conversation is open (repeatable).
 //!   `--block` — block the `--chat-with` user once the conversation is open.
 //!   `--chat-log` — print `TURBO_PANCAKE_CHAT …` lines on every messenger update.
+//!   Window lifecycle (S7): closing the window hides it to the tray icon when the
+//!   profile's setting allows it; the icon's "Выйти" or "Выйти из приложения" exits.
+//!   `--trial-tray` — scripted lifecycle trial: close the window to the tray, restore it
+//!   through the tray's own message path, exit through the tray menu command, printing
+//!   `TURBO_PANCAKE_TRAY …` / `TURBO_PANCAKE_LIFECYCLE …` / `TURBO_PANCAKE_EXIT`.
+//!   Smoke runs without it add no tray icon.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -56,16 +62,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use slint::Model;
+use slint::winit_030::WinitWindowAccessor;
 use slint::winit_030::winit::dpi::PhysicalPosition;
 use slint::winit_030::winit::event::WindowEvent;
 use slint::winit_030::winit::event_loop::ActiveEventLoop;
 use slint::winit_030::winit::window::{Window as WinitWindow, WindowId};
 use slint::winit_030::{CustomApplicationHandler, EventResult};
+use turbo_pancake_desktop::app_settings::{self, AppSettings};
 use turbo_pancake_desktop::screen::PictureSlot;
 use turbo_pancake_desktop::screen::PreviewSlots;
 use turbo_pancake_desktop::session::{
     Command, CommandSender, Session, SessionConfig, Snapshot, TransportPref, WatchLayer,
 };
+use turbo_pancake_desktop::tray::{Tray, TrayEvent};
 use turbo_pancake_desktop::view::{self, MemberView, ShareRowView};
 use turbo_pancake_media_audio::{CpalIo, DspConfig, device};
 use turbo_pancake_media_video::{MonitorInfo, ShareConfig, ShareSource};
@@ -108,6 +117,7 @@ struct Args {
     share_no_audio: bool,
     chat: messenger_ui::Script,
     server_ca: Option<String>,
+    trial_tray: bool,
 }
 
 fn parse_args() -> Args {
@@ -138,6 +148,7 @@ fn parse_args() -> Args {
             "--call" => out.chat.call = true,
             "--auto-join-call" => out.chat.auto_join = true,
             "--auto-decline-call" => out.chat.auto_decline = true,
+            "--trial-tray" => out.trial_tray = true,
             "--leave-call-after-ms" => {
                 out.chat.leave_after_ms = args.next().and_then(|v| v.parse().ok())
             }
@@ -527,6 +538,114 @@ fn show_pictures(
         },
     );
     timer
+}
+
+/// The profile's settings, the tray icon and what closing the window does (spec §9):
+/// hidden to the tray while the user can bring it back, otherwise the app exits.
+fn window_lifecycle(window: &MainWindow, args: &Args) -> Option<Rc<Tray>> {
+    let path = app_settings::path(&args.chat.profile);
+    let settings = Rc::new(std::cell::RefCell::new(
+        path.as_deref().map(AppSettings::load).unwrap_or_default(),
+    ));
+    let save = {
+        let settings = settings.clone();
+        move || {
+            if let Some(p) = &path
+                && let Err(e) = settings.borrow().save(p)
+            {
+                eprintln!("settings not saved: {e}");
+            }
+        }
+    };
+    window.invoke_apply_theme(settings.borrow().dark_theme);
+    window.set_close_to_tray(settings.borrow().close_to_tray);
+    {
+        let (settings, save) = (settings.clone(), save.clone());
+        window.on_theme_changed(move |dark| {
+            settings.borrow_mut().dark_theme = dark;
+            save();
+        });
+    }
+    {
+        let settings = settings.clone();
+        window.on_close_to_tray_changed(move |on| {
+            settings.borrow_mut().close_to_tray = on;
+            save();
+        });
+    }
+    window.on_quit_app(|| {
+        let _ = slint::quit_event_loop();
+    });
+
+    let show_icon = args.smoke_exit_after_ms.is_none() || args.trial_tray;
+    let (weak, activate) = (window.as_weak(), !args.no_activate);
+    let tray = Tray::new("turbo-pancake", show_icon, move |event| match event {
+        TrayEvent::Open => {
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let _ = w.show();
+                w.window().set_minimized(false);
+                // Only after the user's own click on the icon (trials pass --no-activate).
+                if activate {
+                    w.window().with_winit_window(|ww| ww.focus_window());
+                }
+            });
+        }
+        TrayEvent::Exit => {
+            let _ = slint::quit_event_loop();
+        }
+    })
+    .map_err(|e| eprintln!("tray unavailable: {e}"))
+    .ok()
+    .map(Rc::new);
+    // The trial exercises the hidden state where no shell shows icons (an isolated
+    // desktop), restoring through the tray window's own message path.
+    let can_hide = tray.as_ref().is_some_and(|t| t.icon_shown()) || args.trial_tray;
+    window.set_tray_available(can_hide);
+    window.window().on_close_requested(move || {
+        if !(can_hide && settings.borrow().close_to_tray) {
+            let _ = slint::quit_event_loop();
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+    tray
+}
+
+/// `--trial-tray`: close → hidden, restore through the tray, exit through its menu command.
+fn trial_tray(window: &MainWindow, tray: Option<Rc<Tray>>) {
+    println!(
+        "TURBO_PANCAKE_TRAY window={} icon={}",
+        tray.is_some(),
+        tray.as_ref().is_some_and(|t| t.icon_shown())
+    );
+    let weak = window.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(1500), move || {
+        let Some(w) = weak.upgrade() else {
+            return;
+        };
+        w.window()
+            .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        println!(
+            "TURBO_PANCAKE_LIFECYCLE closed visible={}",
+            w.window().is_visible()
+        );
+        let Some(tray) = tray else {
+            let _ = slint::quit_event_loop();
+            return;
+        };
+        let weak = w.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(1500), move || {
+            tray.post(TrayEvent::Open);
+            slint::Timer::single_shot(Duration::from_millis(1500), move || {
+                if let Some(w) = weak.upgrade() {
+                    println!(
+                        "TURBO_PANCAKE_LIFECYCLE restored visible={}",
+                        w.window().is_visible()
+                    );
+                }
+                tray.post(TrayEvent::Exit);
+            });
+        });
+    });
 }
 
 fn default_name() -> String {
@@ -925,6 +1044,12 @@ fn main() -> Result<(), slint::PlatformError> {
         timer
     });
 
+    let tray = window_lifecycle(&window, &args);
+    let trial = args.trial_tray;
+    if trial {
+        trial_tray(&window, tray.clone());
+    }
+
     if let Some(exit_after) = smoke {
         // GPU renderers expose the graphics API; absence means software rendering.
         let _ = window.window().set_rendering_notifier(move |state, api| {
@@ -968,10 +1093,14 @@ fn main() -> Result<(), slint::PlatformError> {
             },
         );
     }
-    window.run()?;
+    // Runs on while the window is hidden to the tray; ends by an explicit exit.
+    window.show()?;
+    slint::run_event_loop_until_quit()?;
+    drop(tray);
     if let Some(w) = share_window.borrow_mut().take() {
         let _ = w.hide();
     }
+    let _ = window.hide();
     // Leave the room and release audio devices before the process exits.
     drop(window);
     if let Some(m) = messenger {
@@ -980,7 +1109,7 @@ fn main() -> Result<(), slint::PlatformError> {
     if let Some(s) = session {
         s.stop();
     }
-    if smoke.is_some() {
+    if smoke.is_some() || trial {
         println!("TURBO_PANCAKE_EXIT");
     }
     Ok(())

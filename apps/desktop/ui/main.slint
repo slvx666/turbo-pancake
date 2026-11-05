@@ -752,6 +752,19 @@ export component MainWindow inherits Window {
     callback previews-changed(bool, int);
     callback open-share-window(bool);
 
+    // Application settings (S7): tray mode and an explicit exit.
+    in-out property <bool> app-settings-open;
+    in-out property <bool> close-to-tray: true;
+    in property <bool> tray-available;
+    callback theme-changed(bool);
+    callback close-to-tray-changed(bool);
+    callback quit-app();
+
+    public function apply-theme(dark: bool) {
+        Theme.dark = dark;
+        Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
     init => {
         Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
     }
@@ -773,9 +786,10 @@ export component MainWindow inherits Window {
             voice-selected: root.voice-selected;
             find-error: root.find-error;
             toggle-theme => {
-                Theme.dark = !Theme.dark;
-                Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
+                root.apply-theme(!Theme.dark);
+                root.theme-changed(Theme.dark);
             }
+            open-app-settings => { root.app-settings-open = !root.app-settings-open; }
             find-user(u) => { root.find-user(u); }
             open-conversation(id) => { root.open-conversation(id); }
             open-voice => { root.open-voice(); }
@@ -913,6 +927,52 @@ export component MainWindow inherits Window {
                 color: Theme.text-muted;
                 font-size: 11px;
                 horizontal-alignment: center;
+            }
+        }
+    }
+
+    // Above the user panel, over the sidebar and the content.
+    if root.app-settings-open: Rectangle {
+        x: 8px;
+        y: root.height - self.height - 60px;
+        width: 320px;
+        height: settings-layout.preferred-height;
+        background: Theme.bg-tertiary;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.separator;
+        settings-layout := VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            Text {
+                text: "Настройки приложения";
+                color: Theme.text-normal;
+                font-weight: 600;
+            }
+            CheckBox {
+                text: "Сворачивать в трей при закрытии окна";
+                enabled: root.tray-available;
+                checked <=> root.close-to-tray;
+                toggled => { root.close-to-tray-changed(self.checked); }
+            }
+            Text {
+                text: root.tray-available
+                    ? "Звонок и переписка продолжают работать в фоне; «Выйти» в меню значка завершает приложение."
+                    : "Значок в области уведомлений недоступен: закрытие окна завершает приложение.";
+                color: Theme.text-muted;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: "Выйти из приложения";
+                    clicked => { root.quit-app(); }
+                }
+                Button {
+                    text: "Закрыть";
+                    clicked => { root.app-settings-open = false; }
+                }
             }
         }
     }
