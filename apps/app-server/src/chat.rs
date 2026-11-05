@@ -224,7 +224,7 @@ struct MemberRow {
 }
 
 /// Conversations of `me` (all, or just `only`) as `me` sees them.
-async fn conversations_for(
+pub(crate) async fn conversations_for(
     state: &AppState,
     pool: &PgPool,
     me: Uuid,
@@ -440,13 +440,17 @@ struct Access {
 
 /// `me` is a member of `conv` (else 404, so non-members learn nothing).
 async fn access(pool: &PgPool, conv: Uuid, me: Uuid) -> ApiResult<Access> {
+    access_on(&mut *pool.acquire().await?, conv, me).await
+}
+
+async fn access_on(conn: &mut sqlx::PgConnection, conv: Uuid, me: Uuid) -> ApiResult<Access> {
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
         "SELECT m.user_id, c.kind FROM conversation_members m
            JOIN conversations c ON c.id = m.conversation_id
           WHERE m.conversation_id = $1 AND m.left_at IS NULL",
     )
     .bind(conv)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     let members: Vec<Uuid> = rows.iter().map(|(u, _)| *u).collect();
     if !members.contains(&me) {
@@ -456,8 +460,16 @@ async fn access(pool: &PgPool, conv: Uuid, me: Uuid) -> ApiResult<Access> {
     let can_send = if direct {
         match members.iter().find(|u| **u != me) {
             Some(other) => {
-                let (a, b) = blocks_between(pool, me, *other).await?;
-                !a && !b
+                let blocked: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM blocks
+                     WHERE (blocker_user_id = $1 AND blocked_user_id = $2)
+                        OR (blocker_user_id = $2 AND blocked_user_id = $1))",
+                )
+                .bind(me)
+                .bind(other)
+                .fetch_one(&mut *conn)
+                .await?;
+                !blocked
             }
             None => false,
         }
@@ -639,10 +651,10 @@ pub async fn send_message(
     if !state.limiters.message_writes.check(&me.user_id) {
         return Err(ApiError::rate_limited());
     }
-    let acc = access(&pool, conv, me.user_id).await?;
-
+    access(&pool, conv, me.user_id).await?;
     let mut tx = pool.begin().await?;
     let (seq, change) = bump(&mut tx, conv, true).await?;
+    let acc = access_on(&mut tx, conv, me.user_id).await?;
     // After the lock: a concurrent retry of the same nonce has committed by now.
     let existing: Option<MsgRow> = sqlx::query_as(&format!(
         "SELECT {MSG_COLS} FROM messages WHERE author_id = $1 AND client_nonce = $2"
@@ -739,12 +751,13 @@ pub async fn edit_message(
     if !state.limiters.message_writes.check(&me.user_id) {
         return Err(ApiError::rate_limited());
     }
-    let acc = access(&pool, conv, me.user_id).await?;
+    access(&pool, conv, me.user_id).await?;
+    let mut tx = pool.begin().await?;
+    let (_, change) = bump(&mut tx, conv, false).await?;
+    let acc = access_on(&mut tx, conv, me.user_id).await?;
     if !acc.can_send {
         return Err(ApiError::forbidden(BLOCKED));
     }
-    let mut tx = pool.begin().await?;
-    let (_, change) = bump(&mut tx, conv, false).await?;
     let row = own_message(&mut tx, conv, msg, me.user_id).await?;
     if row.deleted_at.is_some() {
         return Err(ApiError::not_found());
@@ -775,9 +788,10 @@ pub async fn delete_message(
     if !state.limiters.message_writes.check(&me.user_id) {
         return Err(ApiError::rate_limited());
     }
-    let acc = access(&pool, conv, me.user_id).await?;
+    access(&pool, conv, me.user_id).await?;
     let mut tx = pool.begin().await?;
     let (_, change) = bump(&mut tx, conv, false).await?;
+    let acc = access_on(&mut tx, conv, me.user_id).await?;
     let row = own_message(&mut tx, conv, msg, me.user_id).await?;
     if row.deleted_at.is_some() {
         tx.rollback().await?;
@@ -804,7 +818,13 @@ pub async fn mark_read(
     Proto(req): Proto<v1::MarkReadRequest>,
 ) -> ApiResult<Proto<v1::Receipt>> {
     let conv = parse_id(&conv)?;
-    let acc = access(&pool, conv, me.user_id).await?;
+    access(&pool, conv, me.user_id).await?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT id FROM conversations WHERE id = $1 FOR UPDATE")
+        .bind(conv)
+        .execute(&mut *tx)
+        .await?;
+    let acc = access_on(&mut tx, conv, me.user_id).await?;
     // Clamped to the newest message; values only go up; read implies delivered.
     let row: (i64, i64, bool) = sqlx::query_as(
         "WITH old AS (
@@ -823,8 +843,9 @@ pub async fn mark_read(
     .bind(me.user_id)
     .bind(req.delivered_sequence)
     .bind(req.read_sequence)
-    .fetch_one(&pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     let receipt = v1::Receipt {
         conversation_id: conv.to_string(),
         user_id: me.user_id.to_string(),

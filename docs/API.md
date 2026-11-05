@@ -106,6 +106,36 @@ Presence = at least one live signed-in connection; a silent connection is droppe
 heartbeat timeout, so a crashed client turns offline within 30 s. Server shutdown closes all
 connections.
 
+### Group conversations (S6)
+
+All group endpoints require a valid account token. Bodies and snapshots use protobuf.
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/conversations/group` | `CreateGroupRequest{title, usernames[]}` | `Conversation` |
+| `PATCH /v1/conversations/{id}` | `RenameGroupRequest{title}` | `Conversation` |
+| `POST /v1/conversations/{id}/members` | `AddGroupMemberRequest{username}` | `Conversation` |
+| `DELETE /v1/conversations/{id}/members/{user_id}` | none | `Conversation` |
+
+Creation includes the caller as creator and resolves 1–99 distinct other accounts by
+exact case-insensitive username; invalid/missing accounts roll back the whole creation.
+Titles contain 1–100 printable Unicode characters, cannot be blank, and are trimmed.
+Only the creator can rename or change membership (403 for other active members, 404
+for outsiders); the creator cannot be removed. These endpoints cannot manage direct
+conversations. Creation and management use the per-user conversation rate limit.
+
+The limit is 100 active members including the creator (409 for a new member when
+full). Add/remove are idempotent; re-adding a removed member restores access to the
+existing history and keeps receipt cursors. Removal immediately denies server history,
+message writes and receipts. Membership mutations and message writes serialize on the
+conversation row, with rights rechecked after acquiring the lock. Direct blocks do not
+prevent shared-group messages; presence privacy continues to apply.
+
+`ConversationUpdated` goes to affected accounts, including a removed account. Clients
+refetch the authoritative conversation list and discard entries no longer listed;
+reconnect performs the same refresh to repair missed invalidations. Message change
+cursors remain dedicated to message changes; metadata never consumes their sequence.
+
 ### Rooms and relay
 
 | Client request | Success reply | Errors |

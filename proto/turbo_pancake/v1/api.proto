@@ -171,6 +171,29 @@ message CreateDirectRequest {
   string user_id = 1;
 }
 
+// POST /v1/conversations/group -> Conversation. Creator is included automatically.
+// 1..99 distinct other accounts, resolved by exact case-insensitive username.
+message CreateGroupRequest {
+  string title = 1;
+  repeated string usernames = 2;
+}
+
+// PATCH /v1/conversations/{id} -> Conversation (group creator only).
+message RenameGroupRequest {
+  string title = 1;
+}
+
+// POST /v1/conversations/{id}/members -> Conversation (group creator only).
+// Adding an active member again is idempotent, including at capacity.
+message AddGroupMemberRequest {
+  string username = 1;
+}
+
+// DELETE /v1/conversations/{id}/members/{user_id} -> Conversation.
+// Creator only; cannot remove the creator. Removed users lose all server access.
+// Removing an already removed member is idempotent. Re-add restores history access.
+// ConversationUpdated invalidates snapshots for current AND removed members.
+
 // ---- Messages ----
 
 message ChatMessage {

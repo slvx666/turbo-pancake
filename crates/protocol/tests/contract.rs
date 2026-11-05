@@ -679,3 +679,33 @@ fn api_codes_and_enums_are_pinned() {
     };
     assert_eq!(conv.encode_to_vec(), vec![0x40, 1, 0x48, 1]);
 }
+
+#[test]
+fn group_contract_and_limits() {
+    let req = v1::CreateGroupRequest {
+        title: "g".into(),
+        usernames: vec!["a".into(), "b".into()],
+    };
+    assert_eq!(
+        req.encode_to_vec(),
+        vec![10, 1, b'g', 18, 1, b'a', 18, 1, b'b']
+    );
+    assert_eq!(
+        v1::RenameGroupRequest { title: "g".into() }.encode_to_vec(),
+        vec![10, 1, b'g']
+    );
+    assert_eq!(
+        v1::AddGroupMemberRequest {
+            username: "a".into()
+        }
+        .encode_to_vec(),
+        vec![10, 1, b'a']
+    );
+    use turbo_pancake_protocol::{MAX_GROUP_MEMBERS, validate_group_title};
+    assert_eq!(MAX_GROUP_MEMBERS, 100);
+    for invalid in ["", "  ", "a\nb", "a\0b", &"я".repeat(101)] {
+        assert!(validate_group_title(invalid).is_err());
+    }
+    assert!(validate_group_title(&"я".repeat(100)).is_ok());
+    assert!(validate_group_title("Рабочая группа 👋").is_ok());
+}

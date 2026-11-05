@@ -71,6 +71,28 @@ turbo-pancake-bench sfu-screen --server-exe <target>/release/turbo-pancake-app-s
 powershell -File benchmarks/scripts/s4-trial.ps1 -Seconds 30 [-WatchLayer low] [-BRecvLoss 0.15] [-ALoss 0.15] [-Budget 1] [-ShareWindow [-Fullscreen]]
 ```
 
+## Groups S6 (Windows, headless)
+
+Run through the configured local dev/APM wrapper:
+`cargo test -p turbo-pancake-app-server --test messenger --locked`.
+S6 group tests require PostgreSQL explicitly; skipping it cannot pass these tests.
+
+* `group_100_members_fanout_capacity_permissions_and_restart`: 100 real accounts and
+  authenticated WebSockets receive a message; all 100 recover the same ordered history
+  and acknowledge reads. Tests creator-only mutations, direct-block semantics in a
+  group, removal, concurrent additions at capacity, durable snapshots after restart
+  and re-add with the same history/receipts.
+* `group_validation_authentication_and_atomic_creation`: invalid/duplicate/self/missing
+  usernames, malformed titles, missing/bad tokens and rejected management of direct
+  conversations; failed creation leaves no partial conversation.
+* `group_removal_wins_against_a_message_waiting_for_the_row_lock`: holds the actual
+  PostgreSQL conversation lock, observes a blocked HTTP send via `pg_stat_activity`,
+  removes membership and releases the lock. The send must fail without advancing
+  either counter. No sleep-based assumption about request scheduling.
+
+These tests do not certify native group UI or account-bound calls; those S6 slices
+remain pending. They use no real audio devices, capture, focus or input injection.
+
 ## Messenger S5 (Windows, dev machine)
 
 ```bash

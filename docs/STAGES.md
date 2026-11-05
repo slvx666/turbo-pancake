@@ -26,7 +26,7 @@ presence are recorded as owner-assisted and do not block the next stage.
 Each numbered step is a separate reviewable commit with verification evidence in
 PROJECT_STATE. Existing migrations and anonymous loopback media tests remain intact.
 
-1. **Groups: protocol and server.** Add create-group (title + exact usernames), rename,
+1. **Groups: protocol and server — DONE (2026-11-05).** Add create-group (title + exact usernames), rename,
    add-member and remove-member endpoints. Only the creator manages the group; the
    creator cannot be removed. Serialize membership changes on the conversation row,
    enforce 100 active members including the creator, and check message write rights

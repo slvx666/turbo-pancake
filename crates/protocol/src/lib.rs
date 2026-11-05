@@ -81,6 +81,8 @@ pub enum ValidationError {
     Id,
     #[error("session token too long")]
     Token,
+    #[error("group title must be 1..={MAX_GROUP_TITLE_CHARS} printable characters, not blank")]
+    GroupTitle,
 }
 
 // ---- Messenger limits (S5, ADR 0013) ----
@@ -93,6 +95,8 @@ pub const MAX_MESSAGE_CHARS: usize = 4000;
 pub const MAX_DEVICE_NAME_CHARS: usize = 64;
 pub const MAX_NONCE_LEN: usize = 64;
 pub const MAX_TOKEN_LEN: usize = 128;
+pub const MAX_GROUP_MEMBERS: usize = 100;
+pub const MAX_GROUP_TITLE_CHARS: usize = 100;
 /// Largest HTTP API request body.
 pub const MAX_API_BODY_BYTES: usize = 64 * 1024;
 /// Page sizes of `/messages` and `/changes`.
@@ -178,6 +182,17 @@ pub fn validate_device_name(name: &str) -> Result<(), ValidationError> {
         Ok(())
     } else {
         Err(ValidationError::DeviceName)
+    }
+}
+
+pub fn validate_group_title(title: &str) -> Result<(), ValidationError> {
+    if !title.trim().is_empty()
+        && title.chars().count() <= MAX_GROUP_TITLE_CHARS
+        && !title.chars().any(char::is_control)
+    {
+        Ok(())
+    } else {
+        Err(ValidationError::GroupTitle)
     }
 }
 

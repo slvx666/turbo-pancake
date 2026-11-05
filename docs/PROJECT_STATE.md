@@ -1,11 +1,41 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S6 — groups and calls in the messenger (Windows): IN_PROGRESS** — concrete plan in `docs/STAGES.md`; group server slice first. New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S6 — groups and calls in the messenger (Windows): IN_PROGRESS** — group server slice verified; client core next (plan in `docs/STAGES.md`). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = IN_PROGRESS; S7–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-05 (S6 plan recorded; implementation and acceptance pending)
+Last session: 2026-11-05 (S6 step 1: group server contracts, permissions and 100-member integration verified)
+
+## Session log 2026-11-05 — S6 step 1: groups on the server
+
+* Plan committed as `32a15e4`. Implemented protobuf requests and HTTP group creation,
+  rename, add by username, remove, creator-only rights, atomic capacity checks and
+  conversation invalidations including removed accounts. Reuses the existing schema;
+  no previous migration, dependency or lockfile changed.
+* Membership changes serialize with message writes/receipts on the conversation row.
+  Writes recheck access after locking, so an already-started send cannot commit after
+  removal. Re-add retains history and receipt cursors; direct blocks keep their
+  existing privacy rules and do not disable shared-group messages.
+* **PASS:** fmt check; workspace Clippy with `-D warnings`; workspace tests through
+  the local dev/APM wrapper: **145 passed, 0 failed, 3 ignored, 1 filtered**, 42 test/
+  doc-test binaries, real PostgreSQL. Log: `.local/logs/s6-step1-tests.log` (ignored).
+  The explicitly filtered test plays real system audio; it was not re-run. The final
+  unknown-member notification guard additionally passed server Clippy and all 13
+  messenger integration tests. The first sandbox build failed to canonicalize the
+  existing migration path (OS access denied); the same wrapper outside that sandbox
+  compiled and ran successfully. No source workaround for the environment failure.
+* New evidence: `group_100_members_fanout_capacity_permissions_and_restart` (100 real
+  accounts/WebSockets, delivery/history/receipts, capacity race, rights, remove/re-add,
+  restart), `group_validation_authentication_and_atomic_creation`, and deterministic
+  `group_removal_wins_against_a_message_waiting_for_the_row_lock`; protobuf contract
+  and Unicode title limit test. Documented in API and TESTING.
+* Files: `apps/app-server/src/{groups,chat,lib}.rs`, server messenger tests,
+  `proto/turbo_pancake/v1/api.proto`, protocol validation/contract tests, and docs.
+* **UNVERIFIED:** group client commands/UI, authenticated conversation-bound calls,
+  one participation across devices and native chat/call acceptance. Existing anonymous
+  media tests passed but do not certify S6 call authorization. No GUI or real-device
+  trial in this step. Local branch only; no push/remote CI claimed.
 
 ## Session log 2026-11-05 — S6 plan
 
@@ -689,9 +719,10 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 
 ## Exact next task — S6 on Windows (groups + calls in the messenger)
 
-Execute step 1 of the S6 plan in `docs/STAGES.md`: group contracts and server rights,
-then real PostgreSQL integration tests and a separate implementation commit. Continue
-steps 2–6 in order. The original scope checklist below remains applicable.
+Execute step 2 of the S6 plan in `docs/STAGES.md`: typed client group operations,
+service commands, metadata/member views, safe removal of cache/open view/pending sends,
+and multi-client sync/reconnect tests. Continue steps 3–6 in order. The original scope
+checklist below remains applicable.
 
 1. Write the S6 plan in `docs/STAGES.md` from spec §6, §7, §11, §17 S6 before coding:
    groups up to 100 members (create with several people, title, creator adds/removes

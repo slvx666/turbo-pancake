@@ -335,6 +335,498 @@ fn created(body: S) -> Option<v1::ChatMessage> {
 // ---- Tests ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_100_members_fanout_capacity_permissions_and_restart() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let srv = Server::start(&db, |_| {}).await;
+    let api = srv.api();
+    let mut accounts = Vec::new();
+    for i in 0..103 {
+        accounts.push(api.register(&format!("member{i:03}")).await);
+    }
+    let owner = &accounts[0].token;
+    let group: v1::Conversation = api
+        .call(
+            Method::POST,
+            "/v1/conversations/group",
+            Some(owner),
+            Some(&v1::CreateGroupRequest {
+                title: "Группа 👋".into(),
+                usernames: (1..100).map(|i| format!("MEMBER{i:03}")).collect(),
+            }),
+        )
+        .await
+        .unwrap();
+    let cid = group.conversation_id;
+    assert_eq!(group.kind, v1::ConversationKind::Group as i32);
+    assert_eq!(group.members.len(), 100);
+    assert_eq!(
+        group
+            .members
+            .iter()
+            .filter(|m| m.role == v1::MemberRole::Creator as i32)
+            .count(),
+        1
+    );
+    let member_path = format!("/v1/conversations/{cid}/members");
+    let conv_path = format!("/v1/conversations/{cid}");
+    // All 100 authenticated live connections receive the same real message.
+    let mut live = Vec::new();
+    for a in &accounts[..100] {
+        live.push(Live::connect(srv.addr, &a.token).await.unwrap());
+    }
+    let first = api
+        .send(owner, &cid, "group-first", "Общая история")
+        .await
+        .unwrap();
+    for ws in &mut live {
+        assert_eq!(ws.expect(created).await.message_id, first.message_id);
+    }
+    // Direct blocks don't suppress shared-group messages.
+    let blocked_id = &accounts[49].user.as_ref().unwrap().user_id;
+    api.call::<v1::Empty>(
+        Method::PUT,
+        &format!("/v1/blocks/{blocked_id}"),
+        Some(owner),
+        None,
+    )
+    .await
+    .unwrap();
+    api.send(&accounts[49].token, &cid, "group-second", "still in group")
+        .await
+        .unwrap();
+    api.send(&accounts[99].token, &cid, "group-third", "last member")
+        .await
+        .unwrap();
+    for a in &accounts[..100] {
+        let page = api.changes(&a.token, &cid, 0).await;
+        assert_eq!(page.messages.len(), 3);
+        assert_eq!(
+            page.messages
+                .iter()
+                .map(|m| m.server_sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let receipt: v1::Receipt = api
+            .call(
+                Method::POST,
+                &format!("{conv_path}/read"),
+                Some(&a.token),
+                Some(&v1::MarkReadRequest {
+                    delivered_sequence: 3,
+                    read_sequence: 3,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.read_sequence, 3);
+    }
+    // Non-creators and outsiders cannot manage; outsiders cannot read/write.
+    for (token, status) in [
+        (&accounts[1].token, StatusCode::FORBIDDEN),
+        (&accounts[100].token, StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(
+            api.call::<v1::Conversation>(
+                Method::PATCH,
+                &conv_path,
+                Some(token),
+                Some(&v1::RenameGroupRequest {
+                    title: "stolen".into()
+                })
+            )
+            .await
+            .unwrap_err()
+            .0,
+            status
+        );
+        assert_eq!(
+            api.call::<v1::Conversation>(
+                Method::POST,
+                &member_path,
+                Some(token),
+                Some(&v1::AddGroupMemberRequest {
+                    username: "member100".into()
+                })
+            )
+            .await
+            .unwrap_err()
+            .0,
+            status
+        );
+        assert_eq!(
+            api.call::<v1::Conversation>(
+                Method::DELETE,
+                &format!("{member_path}/{blocked_id}"),
+                Some(token),
+                None
+            )
+            .await
+            .unwrap_err()
+            .0,
+            status
+        );
+    }
+    assert_eq!(
+        api.send(&accounts[100].token, &cid, "outsider", "forbidden")
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let owner_id = &accounts[0].user.as_ref().unwrap().user_id;
+    assert_eq!(
+        api.call::<v1::Conversation>(
+            Method::DELETE,
+            &format!("{member_path}/{owner_id}"),
+            Some(owner),
+            None
+        )
+        .await
+        .unwrap_err()
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    // Idempotent add at capacity; a new member is rejected.
+    let same: v1::Conversation = api
+        .call(
+            Method::POST,
+            &member_path,
+            Some(owner),
+            Some(&v1::AddGroupMemberRequest {
+                username: "member001".into(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(same.members.len(), 100);
+    assert_eq!(
+        api.call::<v1::Conversation>(
+            Method::POST,
+            &member_path,
+            Some(owner),
+            Some(&v1::AddGroupMemberRequest {
+                username: "member100".into()
+            })
+        )
+        .await
+        .unwrap_err()
+        .0,
+        StatusCode::CONFLICT
+    );
+
+    // Remove two members. Drain prior invalidations before checking removal's event.
+    for i in [98, 99] {
+        let user = &accounts[i].user.as_ref().unwrap().user_id;
+        let _: v1::Conversation = api
+            .call(
+                Method::DELETE,
+                &format!("{member_path}/{user}"),
+                Some(owner),
+                None,
+            )
+            .await
+            .unwrap();
+        live[i]
+            .expect(|b| match b {
+                S::ConversationUpdated(u) if u.conversation_id == cid => Some(()),
+                _ => None,
+            })
+            .await;
+        assert!(api.conversations(&accounts[i].token).await.is_empty());
+        assert_eq!(
+            api.send(&accounts[i].token, &cid, &format!("removed-{i}"), "no")
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            api.call::<v1::MessagePage>(
+                Method::GET,
+                &format!("{conv_path}/changes"),
+                Some(&accounts[i].token),
+                None
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            api.call::<v1::Receipt>(
+                Method::POST,
+                &format!("{conv_path}/read"),
+                Some(&accounts[i].token),
+                Some(&v1::MarkReadRequest {
+                    delivered_sequence: 3,
+                    read_sequence: 3
+                })
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // Three concurrent additions compete for two free places.
+    let requests = [100, 101, 102].map(|i| v1::AddGroupMemberRequest {
+        username: format!("member{i:03}"),
+    });
+    let (a, b, c) = tokio::join!(
+        api.call::<v1::Conversation>(Method::POST, &member_path, Some(owner), Some(&requests[0])),
+        api.call::<v1::Conversation>(Method::POST, &member_path, Some(owner), Some(&requests[1])),
+        api.call::<v1::Conversation>(Method::POST, &member_path, Some(owner), Some(&requests[2]))
+    );
+    let results = [a, b, c];
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 2);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err((StatusCode::CONFLICT, _))))
+            .count(),
+        1
+    );
+    let renamed: v1::Conversation = api
+        .call(
+            Method::PATCH,
+            &conv_path,
+            Some(owner),
+            Some(&v1::RenameGroupRequest {
+                title: "После reconnect".into(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.members.len(), 100);
+    drop(live);
+    srv.stop().await;
+    let srv = Server::start(&db, |_| {}).await;
+    let api = srv.api();
+    let snapshot = api.conversations(owner).await;
+    assert_eq!(snapshot[0].title, "После reconnect");
+    assert_eq!(snapshot[0].members.len(), 100);
+    assert_eq!(api.changes(owner, &cid, 0).await.messages.len(), 3);
+    assert!(api.conversations(&accounts[99].token).await.is_empty());
+    // Re-add restores the same history and receipt cursors, no duplicate rows.
+    let user = &accounts[100].user.as_ref().unwrap().user_id;
+    let victim = if renamed
+        .members
+        .iter()
+        .any(|m| m.user.as_ref().unwrap().user_id == *user)
+    {
+        100
+    } else {
+        101
+    };
+    let user = &accounts[victim].user.as_ref().unwrap().user_id;
+    let _: v1::Conversation = api
+        .call(
+            Method::DELETE,
+            &format!("{member_path}/{user}"),
+            Some(owner),
+            None,
+        )
+        .await
+        .unwrap();
+    let restored: v1::Conversation = api
+        .call(
+            Method::POST,
+            &member_path,
+            Some(owner),
+            Some(&v1::AddGroupMemberRequest {
+                username: "member099".into(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.members.len(), 100);
+    assert_eq!(
+        restored
+            .members
+            .iter()
+            .find(|m| m.user.as_ref().unwrap().username == "member099")
+            .unwrap()
+            .read_sequence,
+        3
+    );
+    assert_eq!(
+        api.changes(&accounts[99].token, &cid, 0)
+            .await
+            .messages
+            .len(),
+        3
+    );
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_validation_authentication_and_atomic_creation() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let srv = Server::start(&db, |_| {}).await;
+    let api = srv.api();
+    let alice = api.register("alice").await;
+    let bob = api.register("bob").await;
+    for req in [
+        v1::CreateGroupRequest {
+            title: " ".into(),
+            usernames: vec!["bob".into()],
+        },
+        v1::CreateGroupRequest {
+            title: "ok".into(),
+            usernames: vec![],
+        },
+        v1::CreateGroupRequest {
+            title: "ok".into(),
+            usernames: vec!["bob".into(); 100],
+        },
+        v1::CreateGroupRequest {
+            title: "ok".into(),
+            usernames: vec!["bob".into(), "BOB".into()],
+        },
+        v1::CreateGroupRequest {
+            title: "ok".into(),
+            usernames: vec!["alice".into()],
+        },
+        v1::CreateGroupRequest {
+            title: "ok".into(),
+            usernames: vec!["bob".into(), "missing".into()],
+        },
+    ] {
+        assert!(
+            api.call::<v1::Conversation>(
+                Method::POST,
+                "/v1/conversations/group",
+                Some(&alice.token),
+                Some(&req)
+            )
+            .await
+            .is_err()
+        );
+        assert!(api.conversations(&alice.token).await.is_empty());
+        assert!(api.conversations(&bob.token).await.is_empty());
+    }
+    let direct = api
+        .direct(&alice.token, &bob.user.as_ref().unwrap().user_id)
+        .await;
+    let cid = direct.conversation_id;
+    let owner_id = &alice.user.as_ref().unwrap().user_id;
+    let actions: Vec<(Method, String, Option<Vec<u8>>)> = vec![
+        (
+            Method::POST,
+            "/v1/conversations/group".into(),
+            Some(
+                v1::CreateGroupRequest {
+                    title: "ok".into(),
+                    usernames: vec!["bob".into()],
+                }
+                .encode_to_vec(),
+            ),
+        ),
+        (
+            Method::PATCH,
+            format!("/v1/conversations/{cid}"),
+            Some(v1::RenameGroupRequest { title: "no".into() }.encode_to_vec()),
+        ),
+        (
+            Method::POST,
+            format!("/v1/conversations/{cid}/members"),
+            Some(
+                v1::AddGroupMemberRequest {
+                    username: "bob".into(),
+                }
+                .encode_to_vec(),
+            ),
+        ),
+        (
+            Method::DELETE,
+            format!("/v1/conversations/{cid}/members/{owner_id}"),
+            None,
+        ),
+    ];
+    for (method, path, body) in &actions {
+        for token in [None, Some("garbage")] {
+            assert_eq!(
+                api.raw(method.clone(), path, token, body.clone()).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+    // Group management never mutates direct conversations, even for their initiator.
+    for (method, path, body) in actions.into_iter().skip(1) {
+        assert_eq!(
+            api.raw(method, &path, Some(&alice.token), body).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_removal_wins_against_a_message_waiting_for_the_row_lock() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let srv = Server::start(&db, |_| {}).await;
+    let api = srv.api();
+    let alice = api.register("alice").await;
+    let bob = api.register("bob").await;
+    let group: v1::Conversation = api
+        .call(
+            Method::POST,
+            "/v1/conversations/group",
+            Some(&alice.token),
+            Some(&v1::CreateGroupRequest {
+                title: "race".into(),
+                usernames: vec!["bob".into()],
+            }),
+        )
+        .await
+        .unwrap();
+    let cid = group.conversation_id;
+    let pool = sqlx::PgPool::connect(&db).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM conversations WHERE id = $1::uuid FOR UPDATE")
+        .bind(&cid)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let task_api = api.clone();
+    let token = bob.token.clone();
+    let task_cid = cid.clone();
+    let task = tokio::spawn(async move {
+        task_api
+            .send(&token, &task_cid, "race-send", "must not commit")
+            .await
+    });
+    // Observe the actual blocked write; no timing assumption about the HTTP task.
+    tokio::time::timeout(STEP, async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+                 AND wait_event_type = 'Lock' AND query LIKE 'UPDATE conversations%')",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if waiting {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("message reached the row lock");
+    sqlx::query("UPDATE conversation_members SET left_at = now() WHERE conversation_id = $1::uuid AND user_id = $2::uuid")
+        .bind(&cid).bind(&bob.user.as_ref().unwrap().user_id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(task.await.unwrap().unwrap_err().0, StatusCode::NOT_FOUND);
+    let snapshot = api.conversations(&alice.token).await;
+    assert_eq!(snapshot[0].last_sequence, 0);
+    assert_eq!(snapshot[0].change_seq, 0);
+    pool.close().await;
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn accounts_sessions_and_passwords() {
     let Some(db) = database() else { return };
     let srv = Server::start(&db, |_| {}).await;

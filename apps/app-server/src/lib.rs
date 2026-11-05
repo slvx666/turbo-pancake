@@ -11,6 +11,7 @@ pub mod api;
 pub mod auth;
 pub mod chat;
 pub mod events;
+pub mod groups;
 pub mod ratelimit;
 pub mod signaling;
 pub mod tls;
@@ -194,6 +195,16 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/blocks/{id}", put(chat::block).delete(chat::unblock))
         .route("/v1/conversations", get(chat::list_conversations))
         .route("/v1/conversations/direct", post(chat::create_direct))
+        .route("/v1/conversations/group", post(groups::create))
+        .route(
+            "/v1/conversations/{id}",
+            axum::routing::patch(groups::rename),
+        )
+        .route("/v1/conversations/{id}/members", post(groups::add_member))
+        .route(
+            "/v1/conversations/{id}/members/{user_id}",
+            delete(groups::remove_member),
+        )
         .route(
             "/v1/conversations/{id}/messages",
             get(chat::history).post(chat::send_message),
