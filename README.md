@@ -8,6 +8,8 @@ Requirements: `TECHNICAL_SPEC_MESSENGER_RU.md` v1.0 (owner's spec). Current stat
 
 Prerequisites: `rustup` (toolchain pinned by `rust-toolchain.toml`), platform C toolchain
 (MSVC Build Tools on Windows). Linux packages: see `.github/workflows/ci.yml`.
+For a new Windows environment, follow [the onboarding guide](docs/ONBOARDING.md)
+first (APM/LLVM tools, PostgreSQL, and local build configuration).
 
 ```bash
 cargo test --workspace

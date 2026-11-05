@@ -3,9 +3,54 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
 Current stage: **S6 — groups and calls in the messenger (Windows): NOT_STARTED** — first unfinished stage; plan it in `docs/STAGES.md` (see "Exact next task"). New developer: `docs/ONBOARDING.md`.
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
-Last verified commit: 25c6523 (branch `main`, CI 41826651545: Windows job green incl. all messenger tests; audit green on dbfc33a, CI 41831401852, after ignoring RUSTSEC-2023-0071 — issue 41). Earlier: 48b5fc2, CI 41744388558 on 3 OS
+Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-04 (S5 steps 1–4)
+Last session: 2026-11-05 (new Windows environment and baseline verification; S6 remains NOT_STARTED)
+
+## Session log 2026-11-05 — Windows environment baseline
+
+* Cloned the complete repository history at `58021ec` and created the dedicated
+  `codex/windows-environment` branch. The existing application, Cargo manifests,
+  lockfile, protocol, and migrations are unchanged. The owner's current task is
+  environment preparation; S6 feature implementation has not started.
+* Installed the pinned Rust 1.99.1 with rustfmt, clippy, and llvm-tools. Configured
+  MSVC 2022, portable LLVM 23.1.4, meson 1.12.1, ninja 1.13.2, and PostgreSQL 17.11.
+  LLVM archive SHA-256 matched its official release digest. Machine paths and logs
+  live in ignored local configuration; the tools/build output stay in the workspace.
+* Added Codex guidance (`AGENTS.md`), ignore rules for the private specification and
+  local tools/build output, and the explicit `TURBO_PANCAKE_LLVM` option in
+  `apm-env.ps1`. A missing explicit LLVM path fails clearly instead of silently
+  selecting a different compiler. Documented the environment-variable ordering in
+  `docs/ONBOARDING.md` and linked onboarding from `README.md`.
+* **PASS:** `cargo fmt --all -- --check`;
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` via the APM wrapper.
+* **PASS (background baseline):** `cargo test --workspace --locked --no-fail-fast --
+  --skip own_sound_is_excluded_other_processes_are_captured` via the APM wrapper:
+  **141 passed, 0 failed, 3 ignored, 1 filtered**, 42 test/doc-test binaries.
+  Real temporary PostgreSQL clusters were used; no `TURBO_PANCAKE_SKIP_PG`.
+  This includes messenger auth/security, sync/restart, TLS, headless desktop
+  sessions, DSP, SFU/transport, and video tests.
+* **Not run:** the system-audio exclusion test (explicitly filtered to avoid playing
+  sound during background verification), its two normally ignored tone helpers,
+  and the normally ignored real secondary-monitor capture test. Existing
+  owner-assisted checks stay pending; this baseline does not re-certify hardware
+  performance or real-device acceptance.
+* **PASS (debug startup smoke):** the native client ran on a separate, non-visible
+  Windows desktop without switching the user's desktop or injecting input. Native
+  window observed; software first-frame marker at 294 ms; clean exit, code 0.
+  This is a startup check, not interactive visual acceptance.
+* **PASS:** `cargo build --release --locked -p turbo-pancake-desktop
+  -p turbo-pancake-app-server` via the APM wrapper. Both Windows executables built.
+* **PASS (release startup smoke, isolated non-visible desktop):** both software and
+  OpenGL renderers created a native window, emitted first-frame and clean-exit
+  markers, and exited with code 0. First-frame markers: 20 ms (software), 140 ms
+  (OpenGL); single startup checks, not a cold-start benchmark. No real microphone,
+  screen capture, input injection, or desktop switching was involved.
+  Logs: `.local/logs/{fmt,clippy,test,release}.log`, `test-summary.json`, and
+  `desktop-smoke-release-{software,femtovg}.log` (all ignored, machine-local).
+* Exact next feature task is unchanged: write the S6 plan in `docs/STAGES.md`,
+  then implement groups and account/conversation-bound calls on Windows as listed
+  in "Exact next task" below.
 
 ## Environment (dev machine, Windows)
 

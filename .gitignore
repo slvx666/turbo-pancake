@@ -5,3 +5,7 @@
 /.cargo/config.toml
 # Machine-local agent notes (paths, private locations)
 /CLAUDE.local.md
+# Private specification and workspace-local development tools/build output.
+/TECHNICAL_SPEC_MESSENGER_RU.md
+/.local/
+/t/
