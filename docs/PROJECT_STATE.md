@@ -9,6 +9,22 @@ Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unf
 
 ## Session log 2026-11-05 — S6 step 3: account-bound call control
 
+## Session log 2026-11-05 — S6 step 5: native group/call controls
+
+* Added native group creation, member/settings panel with creator-only add/remove/
+  rename; call controls in conversations, incoming accept/decline, active call view,
+  explicit leave/cancel and independent chat selection. Media receives credentials
+  directly from the worker; tokens never enter Slint models or diagnostic logs.
+* Fixed UI-local draft freshness when moving chat → call → chat; returning restores
+  text/reply, and editing the current message survives switching to the call view.
+* Added simulated-audio and scripted normal-callback trial options and an own-window
+  renderer snapshot (no desktop/screen capture), for step 6's invisible-desktop trial.
+* **PASS:** fmt, workspace Clippy, workspace baseline **153 passed, 0 failed**,
+  3 ignored, real system-audio test explicitly filtered. Log:
+  `.local/logs/s6-step5-tests.log`. Final scripted auto-join ordering fix also passed
+  fmt/Clippy; native execution is the next check, not yet a PASS claim.
+* S6 remains IN_PROGRESS until release build and native acceptance evidence below.
+
 ## Session log 2026-11-05 — S6 step 4: authenticated media and recovery
 
 * Added typed call HTTP methods and Service commands/snapshots/events. A successful

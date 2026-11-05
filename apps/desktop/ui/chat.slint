@@ -17,6 +17,8 @@ export struct ConversationRow {
     has-draft: bool,
 }
 
+export struct GroupMemberRow { id: string, name: string, creator: bool }
+
 export struct MessageRow {
     key: string,
     author: string,
@@ -119,6 +121,12 @@ component ConversationItem inherits Rectangle {
 
 // Left column: search by @username, the voice room, direct conversations, user panel.
 export component Sidebar inherits Rectangle {
+    in-out property <bool> new-group-open;
+    in property <string> active-call-title;
+    in property <string> incoming-title;
+    callback create-group(string, string);
+    callback accept-call;
+    callback decline-call;
     in property <string> user-name;
     in property <string> connection-status;
     in property <bool> signed-in;
@@ -133,6 +141,24 @@ export component Sidebar inherits Rectangle {
     callback logout;
     background: Theme.bg-secondary;
     VerticalLayout {
+        if root.signed-in: Button {
+            text: root.new-group-open ? "Закрыть создание группы" : "+ Создать группу";
+            clicked => { root.new-group-open = !root.new-group-open; }
+        }
+        if root.new-group-open && root.signed-in: VerticalLayout {
+            padding: 8px; spacing: 6px;
+            group-name := LineEdit { placeholder-text: "Название группы"; }
+            group-users := LineEdit { placeholder-text: "@имя, @имя — через запятую"; }
+            Button { text: "Создать"; clicked => { root.create-group(group-name.text, group-users.text); } }
+        }
+        if root.incoming-title != "": VerticalLayout {
+            padding: 8px; spacing: 6px;
+            Text { text: "Входящий звонок: " + root.incoming-title; color: Theme.text-normal; wrap: word-wrap; }
+            HorizontalLayout {
+                Button { text: "Принять"; clicked => { root.accept-call(); } }
+                Button { text: "Отклонить"; clicked => { root.decline-call(); } }
+            }
+        }
         Rectangle {
             height: 48px;
             HorizontalLayout {
@@ -160,13 +186,13 @@ export component Sidebar inherits Rectangle {
             padding: 8px;
             spacing: 2px;
             ConversationItem {
-                item: { title: "Голосовая комната", last-text: "звонок по id комнаты", online: false };
+                item: { title: root.signed-in ? "Звонок" : "Тестовая комната", last-text: root.active-call-title, online: false };
                 selected: root.voice-selected;
                 presence: false;
                 clicked => { root.open-voice(); }
             }
             Text {
-                text: "ЛИЧНЫЕ СООБЩЕНИЯ";
+                text: "ДИАЛОГИ И ГРУППЫ";
                 color: Theme.text-muted;
                 font-size: 11px;
                 font-weight: 700;
@@ -402,6 +428,15 @@ component MessageItem inherits Rectangle {
 
 // The open direct conversation.
 export component ChatPanel inherits Rectangle {
+    in property <bool> group;
+    in property <bool> can-manage;
+    in property <[GroupMemberRow]> group-members;
+    in property <string> call-label: "Позвонить";
+    callback call;
+    callback rename-group(string);
+    callback add-member(string);
+    callback remove-member(string);
+    in-out property <bool> settings-open;
     in property <string> title;
     in property <string> username;
     in property <bool> online;
@@ -441,26 +476,48 @@ export component ChatPanel inherits Rectangle {
                 padding-right: 8px;
                 spacing: 8px;
                 Text {
-                    text: "@ " + root.title;
+                    text: (root.group ? "# " : "@ ") + root.title;
                     color: Theme.text-normal;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
                 Text {
-                    text: "@" + root.username + (root.online ? " · в сети" : " · не в сети");
+                    text: root.group ? root.group-members.length + " участников" : "@" + root.username + (root.online ? " · в сети" : " · не в сети");
                     color: Theme.text-muted;
                     font-size: 12px;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                     overflow: elide;
                 }
-                Button {
+                Button { text: root.call-label; enabled: root.can-send; clicked => { root.call(); } }
+                if root.group: Button { text: "Участники"; clicked => { root.settings-open = !root.settings-open; } }
+                if !root.group: Button {
                     text: root.blocked-by-me ? "Разблокировать" : "Заблокировать";
                     clicked => { root.toggle-block(); }
                 }
             }
         }
         Rectangle { height: 1px; background: Theme.separator; }
+        if root.group && root.settings-open: Rectangle {
+            height: root.can-manage ? 240px : 170px;
+            background: Theme.bg-secondary;
+            VerticalLayout {
+                padding: 8px; spacing: 6px;
+                if root.can-manage: HorizontalLayout {
+                    rename := LineEdit { text: root.title; placeholder-text: "Название группы"; }
+                    Button { text: "Переименовать"; clicked => { root.rename-group(rename.text); } }
+                    add := LineEdit { placeholder-text: "@username"; }
+                    Button { text: "Добавить"; clicked => { root.add-member(add.text); add.text = ""; } }
+                }
+                ListView {
+                    for member in root.group-members: HorizontalLayout {
+                        height: 30px;
+                        Text { text: member.name + (member.creator ? " · создатель" : ""); color: Theme.text-normal; vertical-alignment: center; }
+                        if root.can-manage && !member.creator: Button { text: "Удалить"; clicked => { root.remove-member(member.id); } }
+                    }
+                }
+            }
+        }
         list := ListView {
             vertical-stretch: 1;
             for m in root.messages: MessageItem {

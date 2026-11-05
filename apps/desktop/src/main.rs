@@ -77,6 +77,9 @@ mod messenger_ui;
 
 #[derive(Default)]
 struct Args {
+    simulate_audio: bool,
+    snapshot: Option<String>,
+    snapshot_after_ms: Option<u64>,
     smoke_exit_after_ms: Option<u64>,
     window_pos: Option<(i32, i32)>,
     no_activate: bool,
@@ -116,6 +119,27 @@ fn parse_args() -> Args {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--simulate-audio" => out.simulate_audio = true,
+            "--trial-chat-switch" => out.chat.trial_switch = true,
+            "--snapshot" => out.snapshot = args.next(),
+            "--snapshot-after-ms" => {
+                out.snapshot_after_ms = args.next().and_then(|v| v.parse().ok())
+            }
+            "--group-title" => out.chat.group_title = args.next(),
+            "--group-members" => {
+                out.chat.group_members = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect()
+            }
+            "--open-group" => out.chat.open_group = args.next(),
+            "--call" => out.chat.call = true,
+            "--auto-join-call" => out.chat.auto_join = true,
+            "--leave-call-after-ms" => {
+                out.chat.leave_after_ms = args.next().and_then(|v| v.parse().ok())
+            }
             "--smoke-exit-after-ms" => {
                 out.smoke_exit_after_ms = args.next().and_then(|v| v.parse().ok());
             }
@@ -591,14 +615,21 @@ fn start_session(
             tx.send(Command::Watch(Some(first.peer_id.clone())));
         }
         let v = view::render(s);
+        let (room, error) = (s.room.clone(), s.last_error.clone());
+        let has_room = room.is_some();
         let _ = weak.upgrade_in_event_loop(move |w| {
+            messenger_ui::media_state(&w, room, error);
             // Signed in, the sidebar shows the messenger connection instead.
             if !w.get_signed_in() {
                 w.set_connection_status(v.connection.into());
             }
             w.set_in_room(v.in_room);
             w.set_call_title(v.title.into());
-            w.set_call_detail(v.detail.into());
+            w.set_call_detail(if w.get_signed_in() && !has_room {
+                "Начните звонок из личного или группового диалога".into()
+            } else {
+                v.detail.into()
+            });
             w.set_call_stats(v.stats.into());
             w.set_call_devices(v.devices.into());
             w.set_call_error(v.error.into());
@@ -624,7 +655,22 @@ fn start_session(
             show_shares(&w, v.shares);
         });
     };
-    let session = match Session::start(cfg, || CpalIo, on_update) {
+    let started_session = if args.simulate_audio {
+        Session::start(
+            cfg,
+            || {
+                use turbo_pancake_media_audio::sim::{SimDevice, SimIo};
+                SimIo::new(
+                    vec![SimDevice::new("simulated mic", 48_000)],
+                    vec![SimDevice::new("simulated speaker", 48_000)],
+                )
+            },
+            on_update,
+        )
+    } else {
+        Session::start(cfg, || CpalIo, on_update)
+    };
+    let session = match started_session {
         Ok(s) => s,
         Err(e) => {
             window.set_call_error(format!("не удалось запустить сессию: {e}").into());
@@ -838,7 +884,15 @@ fn main() -> Result<(), slint::PlatformError> {
         .server
         .clone()
         .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
-    let messenger = tls.map(|t| messenger_ui::start(&window, &server, args.chat.clone(), t));
+    let messenger = tls.map(|t| {
+        messenger_ui::start(
+            &window,
+            &server,
+            args.chat.clone(),
+            t,
+            session.as_ref().map(Session::sender),
+        )
+    });
     let share_window: ShareWindowSlot = Rc::default();
     let _pictures = session
         .as_ref()
@@ -886,6 +940,33 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    if let Some(path) = args.snapshot {
+        let weak = window.as_weak();
+        slint::Timer::single_shot(
+            Duration::from_millis(args.snapshot_after_ms.unwrap_or(8000)),
+            move || {
+                if let Some(w) = weak.upgrade() {
+                    match w.window().take_snapshot() {
+                        Ok(pixels) => {
+                            use std::io::Write;
+                            let result = (|| -> std::io::Result<()> {
+                                let mut file =
+                                    std::io::BufWriter::new(std::fs::File::create(&path)?);
+                                write!(file, "P6\n{} {}\n255\n", pixels.width(), pixels.height())?;
+                                for p in pixels.as_slice() {
+                                    file.write_all(&[p.r, p.g, p.b])?;
+                                }
+                                file.flush()?;
+                                Ok(())
+                            })();
+                            println!("TURBO_PANCAKE_SNAPSHOT success={}", result.is_ok());
+                        }
+                        Err(_) => println!("TURBO_PANCAKE_SNAPSHOT success=false"),
+                    }
+                }
+            },
+        );
+    }
     window.run()?;
     if let Some(w) = share_window.borrow_mut().take() {
         let _ = w.hide();

@@ -223,6 +223,14 @@ pub fn error_text(e: &str) -> String {
         "username is taken" => "Это имя пользователя уже занято".into(),
         "not found" | "no such user" => "Пользователь не найден".into(),
         "you cannot message this user" => "Вы не можете писать этому пользователю".into(),
+        "you cannot call this user" => "Вы не можете позвонить этому пользователю".into(),
+        "user is busy" => "Собеседник занят другим звонком".into(),
+        "only the group creator can manage it" => "Только создатель может изменять группу".into(),
+        "group is full (100 members)" => "В группе уже 100 участников".into(),
+        "cannot remove the group creator" => "Создателя группы удалить нельзя".into(),
+        e if e.starts_with("group title must be") => {
+            "Название группы: 1–100 печатных символов".into()
+        }
         "too many requests, try again later" => "Слишком много попыток, подождите".into(),
         "session ended, sign in again" => "Сессия завершена, войдите снова".into(),
         "this session was ended on another device" => {

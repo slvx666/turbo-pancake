@@ -8,11 +8,13 @@ use std::rc::Rc;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use turbo_pancake_desktop::chat::{self, Compose};
 use turbo_pancake_desktop::credentials;
+use turbo_pancake_desktop::session::{Command as MediaCommand, CommandSender};
 use turbo_pancake_messenger_client::{
     Command, ConversationView, MessageView, Service, ServiceConfig, Status, Update,
 };
+use turbo_pancake_protocol::v1;
 
-use crate::{ConversationRow, MainWindow, MessageRow};
+use crate::{ConversationRow, GroupMemberRow, MainWindow, MessageRow};
 
 /// Scripted use for trials without input (`--login`, `--chat-with`, `--send`).
 #[derive(Clone, Debug, Default)]
@@ -25,10 +27,23 @@ pub struct Script {
     /// Block the `chat_with` user once the conversation is open.
     pub block: bool,
     pub chat_log: bool,
+    pub group_title: Option<String>,
+    pub group_members: Vec<String>,
+    pub open_group: Option<String>,
+    pub call: bool,
+    pub auto_join: bool,
+    pub leave_after_ms: Option<u64>,
+    pub trial_switch: bool,
 }
 
 #[derive(Default)]
 struct UiState {
+    user_id: String,
+    calls: Vec<v1::ConversationCall>,
+    participation: Option<v1::CallParticipation>,
+    incoming: Option<String>,
+    media_seen: bool,
+    script: Script,
     current: Option<String>,
     compose: Compose,
     conversations: Vec<ConversationView>,
@@ -76,6 +91,7 @@ pub fn start(
     server: &str,
     script: Script,
     tls: turbo_pancake_messenger_client::api::TlsConfig,
+    media: Option<CommandSender>,
 ) -> Messenger {
     let http = chat::http_base(server);
     window.set_server_label(chat::server_label(&http).into());
@@ -84,10 +100,12 @@ pub fn start(
         s.queued_sends = script.send.clone();
         s.queued_block = script.block;
         s.chat_log = script.chat_log;
+        s.script = script.clone();
     });
 
     let weak = window.as_weak();
     let cred_target = target.clone();
+    let media_out = media.clone();
     let service = Rc::new(Service::start(
         ServiceConfig {
             server: http,
@@ -112,18 +130,40 @@ pub fn start(
                 Update::SignedOut { .. } => credentials::delete(&cred_target),
                 _ => {}
             }
+            if let Some(media) = &media_out {
+                match &u {
+                    Update::CallReady {
+                        participation,
+                        token,
+                    } => {
+                        media.send(MediaCommand::JoinConversation {
+                            token: token.clone(),
+                            participation: participation.clone(),
+                        });
+                    }
+                    Update::SignedOut { .. } => {
+                        media.send(MediaCommand::SignOut);
+                    }
+                    _ => {}
+                }
+            }
             let u = match u {
                 Update::SignedIn { user, .. } => Update::SignedIn {
                     user,
                     token: String::new(),
                 },
+                Update::CallReady { participation, .. } => Update::CallReady {
+                    participation,
+                    token: String::new(),
+                },
                 other => other,
             };
-            let _ = weak.upgrade_in_event_loop(move |w| apply(&w, u));
+            let media = media_out.clone();
+            let _ = weak.upgrade_in_event_loop(move |w| apply(&w, u, media.as_ref()));
         },
     ));
 
-    wire(window, &service);
+    wire(window, &service, media);
 
     // Start: scripted sign-in, else the stored session (works offline from the cache).
     if let Some(name) = &script.login {
@@ -170,7 +210,109 @@ fn device_name() -> String {
         .collect()
 }
 
-fn wire(window: &MainWindow, service: &Rc<Service>) {
+fn wire(window: &MainWindow, service: &Rc<Service>, media: Option<CommandSender>) {
+    let s = service.clone();
+    window.on_create_group(move |title, users| {
+        s.send(Command::CreateGroup {
+            title: title.to_string(),
+            usernames: users
+                .split([',', ';', ' ', '\n'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        })
+    });
+    let s = service.clone();
+    window.on_rename_group(move |title| {
+        if let Some(id) = current() {
+            s.send(Command::RenameGroup {
+                conversation_id: id,
+                title: title.to_string(),
+            });
+        }
+    });
+    let s = service.clone();
+    window.on_add_group_member(move |username| {
+        if let Some(id) = current() {
+            s.send(Command::AddGroupMember {
+                conversation_id: id,
+                username: username.to_string(),
+            });
+        }
+    });
+    let s = service.clone();
+    window.on_remove_group_member(move |user| {
+        if let Some(id) = current() {
+            s.send(Command::RemoveGroupMember {
+                conversation_id: id,
+                user_id: user.to_string(),
+            });
+        }
+    });
+    let s = service.clone();
+    let weak = window.as_weak();
+    window.on_conversation_call(move || {
+        let Some(id) = current() else { return };
+        let (call, mine) = STATE.with_borrow(|st| {
+            (
+                st.calls.iter().find(|c| c.conversation_id == id).cloned(),
+                st.participation
+                    .as_ref()
+                    .and_then(|p| p.call.as_ref())
+                    .is_some_and(|c| c.conversation_id == id),
+            )
+        });
+        if mine {
+            if let Some(w) = weak.upgrade() {
+                w.invoke_open_voice();
+            }
+        } else if let Some(call) = call {
+            s.send(Command::JoinCall {
+                call_id: call.call_id,
+            });
+        } else {
+            s.send(Command::StartCall {
+                conversation_id: id,
+            });
+        }
+    });
+    let s = service.clone();
+    window.on_accept_call(move || {
+        if let Some(call_id) = STATE.with_borrow(|s| s.incoming.clone()) {
+            s.send(Command::JoinCall { call_id });
+        }
+    });
+    let s = service.clone();
+    window.on_decline_call(move || {
+        if let Some(call_id) = STATE.with_borrow(|s| s.incoming.clone()) {
+            s.send(Command::DeclineCall { call_id });
+        }
+    });
+    let s = service.clone();
+    let media_leave = media.clone();
+    let weak = window.as_weak();
+    window.on_leave(move || {
+        if let Some(media) = &media_leave {
+            media.send(MediaCommand::Leave);
+        }
+        if let Some(p) = STATE.with_borrow_mut(|s| s.participation.take())
+            && let Some(call) = p.call
+        {
+            s.send(Command::LeaveCall {
+                call_id: call.call_id,
+                participation_id: p.participation_id,
+            });
+        }
+        if let Some(w) = weak.upgrade() {
+            update_calls(&w);
+        }
+    });
+    window.on_retry_call(move || {
+        if let Some(media) = &media {
+            media.send(MediaCommand::Reconnect);
+        }
+    });
     let s = service.clone();
     let weak = window.as_weak();
     window.on_login(move |u, p| {
@@ -329,6 +471,12 @@ fn wire(window: &MainWindow, service: &Rc<Service>) {
         let Some(conv) = current() else { return };
         let compose = STATE.with_borrow(|st| st.compose.clone());
         if !matches!(compose, Compose::Edit { .. }) {
+            STATE.with_borrow_mut(|st| {
+                if let Some(c) = st.conversations.iter_mut().find(|c| c.id == conv) {
+                    c.draft = text.to_string();
+                    c.draft_reply_to = compose.reply_to().to_owned();
+                }
+            });
             s.send(Command::SaveDraft {
                 conversation_id: conv,
                 body: text.to_string(),
@@ -353,6 +501,10 @@ fn set_compose(w: &MainWindow, c: Compose) {
 }
 
 fn open(w: &MainWindow, service: &Service, id: &str) {
+    let editing = STATE.with_borrow(|s| {
+        (s.current.as_deref() == Some(id) && matches!(s.compose, Compose::Edit { .. }))
+            .then(|| (s.compose.clone(), w.get_compose_text()))
+    });
     let draft = STATE.with_borrow_mut(|s| {
         s.current = Some(id.to_owned());
         s.messages.clear();
@@ -371,6 +523,20 @@ fn open(w: &MainWindow, service: &Service, id: &str) {
             .unwrap_or("")
             .into(),
     );
+    if let Some((compose, text)) = editing {
+        set_compose(w, compose);
+        w.set_compose_text(text);
+    } else if let Some(c) = &draft
+        && !c.draft_reply_to.is_empty()
+    {
+        set_compose(
+            w,
+            Compose::Reply {
+                message_id: c.draft_reply_to.clone(),
+                label: "Ответ на сообщение".into(),
+            },
+        );
+    }
     show_header(w);
     service.send(Command::Open {
         conversation_id: Some(id.to_owned()),
@@ -406,11 +572,89 @@ fn show_header(w: &MainWindow) {
         s.conversations.iter().find(|c| c.id == cur).cloned()
     });
     if let Some(c) = row {
+        w.set_chat_group(c.kind == v1::ConversationKind::Group);
+        w.set_chat_can_manage(c.can_manage);
+        w.set_group_members(ModelRc::new(VecModel::from(
+            c.members
+                .iter()
+                .map(|m| GroupMemberRow {
+                    id: m.user_id.clone().into(),
+                    name: format!("{} · @{}", m.display_name, m.username).into(),
+                    creator: m.role == v1::MemberRole::Creator as i32,
+                })
+                .collect::<Vec<_>>(),
+        )));
         w.set_chat_title(c.title.as_str().into());
         w.set_chat_username(c.peer_username.as_str().into());
         w.set_chat_online(c.online);
         w.set_chat_can_send(c.can_send);
         w.set_chat_blocked_by_me(c.blocked_by_me);
+    }
+    update_calls(w);
+}
+
+fn update_calls(w: &MainWindow) {
+    let (title, incoming, incoming_title, label, has) = STATE.with_borrow(|s| {
+        let name = |id: &str| {
+            s.conversations
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.title.clone())
+                .unwrap_or_else(|| "Звонок".into())
+        };
+        let own = s.participation.as_ref().and_then(|p| p.call.as_ref());
+        let incoming = s.calls.iter().find(|c| {
+            c.state == v1::ConversationCallState::Inviting as i32
+                && c.started_by != s.user_id
+                && !c.participants.iter().any(|p| p.user_id == s.user_id)
+        });
+        let selected = s
+            .calls
+            .iter()
+            .find(|c| Some(&c.conversation_id) == s.current.as_ref());
+        let label = if own.is_some_and(|c| Some(&c.conversation_id) == s.current.as_ref()) {
+            "Открыть звонок".into()
+        } else if let Some(c) = selected {
+            format!("Войти в звонок ({})", c.participants.len())
+        } else {
+            "Позвонить".into()
+        };
+        (
+            own.map(|c| name(&c.conversation_id)).unwrap_or_default(),
+            incoming.map(|c| c.call_id.clone()),
+            incoming
+                .map(|c| name(&c.conversation_id))
+                .unwrap_or_default(),
+            label,
+            own.is_some(),
+        )
+    });
+    STATE.with_borrow_mut(|s| s.incoming = incoming);
+    w.set_active_call_title(title.into());
+    w.set_incoming_title(incoming_title.into());
+    w.set_chat_call_label(label.into());
+    w.set_has_participation(has);
+}
+
+pub fn media_state(w: &MainWindow, room: Option<String>, error: Option<String>) {
+    let ended = STATE.with_borrow_mut(|s| {
+        let own = s.participation.as_ref().and_then(|p| p.call.as_ref());
+        if own.is_some_and(|c| room.as_deref() == Some(format!("call_{}", c.call_id).as_str())) {
+            s.media_seen = true;
+        }
+        if s.media_seen && room.is_none() {
+            s.participation = None;
+            s.media_seen = false;
+            true
+        } else {
+            false
+        }
+    });
+    if ended {
+        update_calls(w);
+        if let Some(e) = error {
+            w.set_find_error(chat::error_text(&e).into());
+        }
     }
 }
 
@@ -426,10 +670,128 @@ fn status_text(s: &Status) -> String {
 }
 
 /// One update from the service, on the UI thread.
-fn apply(w: &MainWindow, u: Update) {
+fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
     let log = STATE.with_borrow(|s| s.chat_log);
     match u {
-        Update::Calls(_) | Update::CallEvent(_) | Update::CallReady { .. } => {}
+        Update::Calls(calls) => {
+            let stop = STATE.with_borrow_mut(|s| {
+                let lost = s
+                    .participation
+                    .as_ref()
+                    .and_then(|p| p.call.as_ref())
+                    .is_some_and(|own| {
+                        !calls.iter().any(|c| {
+                            c.call_id == own.call_id
+                                && c.participants.iter().any(|p| p.user_id == s.user_id)
+                        })
+                    });
+                if lost {
+                    s.participation = None;
+                    s.media_seen = false;
+                }
+                s.calls = calls;
+                lost
+            });
+            if stop && let Some(media) = media {
+                media.send(MediaCommand::Leave);
+            }
+            update_calls(w);
+            let auto = STATE.with_borrow_mut(|s| {
+                if !s.script.auto_join || s.participation.is_some() {
+                    return None;
+                }
+                let call = s
+                    .calls
+                    .iter()
+                    .find(|c| !c.participants.iter().any(|p| p.user_id == s.user_id))?;
+                s.incoming = Some(call.call_id.clone());
+                s.script.auto_join = false;
+                Some((call.conversation_id.clone(), call.call_id.clone()))
+            });
+            if let Some((cid, call_id)) = auto {
+                w.invoke_open_conversation(cid.into());
+                STATE.with_borrow_mut(|s| s.incoming = Some(call_id));
+                w.invoke_accept_call();
+            }
+        }
+        Update::CallReady { participation, .. } => {
+            STATE.with_borrow_mut(|s| {
+                s.participation = Some(participation);
+                s.media_seen = false;
+            });
+            w.invoke_open_voice();
+            w.set_find_error("".into());
+            update_calls(w);
+            if STATE.with_borrow_mut(|s| std::mem::take(&mut s.script.trial_switch)) {
+                let weak = w.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(2000), move || {
+                    if let Some(w) = weak.upgrade()
+                        && let Some(id) = current()
+                    {
+                        w.invoke_open_conversation(id.clone().into());
+                        w.set_compose_text("s6 retained draft".into());
+                        w.invoke_draft_changed("s6 retained draft".into());
+                        w.invoke_open_voice();
+                        let weak = w.as_weak();
+                        slint::Timer::single_shot(
+                            std::time::Duration::from_millis(1000),
+                            move || {
+                                if let Some(w) = weak.upgrade() {
+                                    w.invoke_open_conversation(id.into());
+                                    println!(
+                                        "TURBO_PANCAKE_S6_SWITCH draft_preserved={}",
+                                        w.get_compose_text() == "s6 retained draft"
+                                    );
+                                    w.set_group_settings_open(true);
+                                }
+                            },
+                        );
+                    }
+                });
+            }
+            if let Some(ms) = STATE.with_borrow_mut(|s| s.script.leave_after_ms.take()) {
+                let weak = w.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(ms), move || {
+                    if let Some(w) = weak.upgrade() {
+                        w.invoke_leave();
+                        if let Some(id) = current() {
+                            w.invoke_open_conversation(id.into());
+                        }
+                    }
+                });
+            }
+        }
+        Update::CallEvent(call) => {
+            if call.state == v1::ConversationCallState::Ended as i32 {
+                let mine = STATE.with_borrow(|s| {
+                    s.participation
+                        .as_ref()
+                        .and_then(|p| p.call.as_ref())
+                        .is_some_and(|c| c.call_id == call.call_id)
+                });
+                if mine {
+                    if let Some(media) = media {
+                        media.send(MediaCommand::Leave);
+                    }
+                    let text = match call.end_reason.as_str() {
+                        "declined" => "Звонок отклонён",
+                        "timeout" => "Нет ответа: время ожидания истекло",
+                        "blocked" => "Звонок завершён: прямой контакт недоступен",
+                        _ => "Звонок завершён",
+                    };
+                    w.set_find_error(text.into());
+                }
+            }
+            if log {
+                println!(
+                    "TURBO_PANCAKE_CALL_EVENT revision={} state={} participants={} reason={}",
+                    call.revision,
+                    call.state,
+                    call.participants.len(),
+                    call.end_reason
+                );
+            }
+        }
         Update::Status(s) => {
             if STATE.with_borrow(|st| st.signed_in) {
                 w.set_connection_status(status_text(&s).into());
@@ -447,13 +809,25 @@ fn apply(w: &MainWindow, u: Update) {
             }
         }
         Update::SignedIn { user, .. } => {
-            STATE.with_borrow_mut(|s| s.signed_in = true);
+            STATE.with_borrow_mut(|s| {
+                s.signed_in = true;
+                s.user_id = user.user_id.clone();
+            });
             w.set_signed_in(true);
             w.set_auth_busy(false);
             w.set_auth_error("".into());
             w.set_user_name(user.display_name.as_str().into());
             if log {
                 println!("TURBO_PANCAKE_CHAT signed_in user={}", user.username);
+            }
+            let group = STATE.with_borrow_mut(|s| {
+                s.script
+                    .group_title
+                    .take()
+                    .map(|t| (t, s.script.group_members.join(",")))
+            });
+            if let Some((title, users)) = group {
+                w.invoke_create_group(title.into(), users.into());
             }
         }
         Update::SignedOut { reason } => {
@@ -503,6 +877,20 @@ fn apply(w: &MainWindow, u: Update) {
             }
             update_model(w.get_conversations(), model, |m| w.set_conversations(m));
             show_header(w);
+            let open = STATE.with_borrow_mut(|s| {
+                let title = s.script.open_group.as_ref()?;
+                let id = s
+                    .conversations
+                    .iter()
+                    .find(|c| &c.title == title)?
+                    .id
+                    .clone();
+                s.script.open_group = None;
+                Some(id)
+            });
+            if let Some(id) = open {
+                w.invoke_open_conversation(id.into());
+            }
         }
         Update::Messages {
             conversation_id,
@@ -545,6 +933,7 @@ fn apply(w: &MainWindow, u: Update) {
             w.set_messages(ModelRc::new(VecModel::from(model)));
         }
         Update::Opened { conversation_id } => {
+            w.set_new_group_open(false);
             open_from_service(w, &conversation_id);
         }
         Update::Closed { conversation_id } => {
@@ -586,6 +975,14 @@ fn open_from_service(w: &MainWindow, id: &str) {
     w.set_current_conversation(id.into());
     w.set_compose_mode("".into());
     show_header(w);
+    if STATE.with_borrow_mut(|s| std::mem::take(&mut s.script.call)) {
+        let weak = w.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
+            if let Some(w) = weak.upgrade() {
+                w.invoke_conversation_call();
+            }
+        });
+    }
     let queued = STATE.with_borrow_mut(|s| std::mem::take(&mut s.queued_sends));
     if STATE.with_borrow_mut(|s| std::mem::take(&mut s.queued_block)) {
         let weak = w.as_weak();

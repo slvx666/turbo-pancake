@@ -4,8 +4,8 @@
 
 import { Button, LineEdit, CheckBox, ComboBox, Slider, Palette } from "std-widgets.slint";
 import { Theme, IconButton } from "theme.slint";
-import { ConversationRow, MessageRow, Sidebar, AuthPanel, ChatPanel } from "chat.slint";
-export { Theme, ConversationRow, MessageRow }
+import { ConversationRow, MessageRow, GroupMemberRow, Sidebar, AuthPanel, ChatPanel } from "chat.slint";
+export { Theme, ConversationRow, MessageRow, GroupMemberRow }
 
 // One other member of the voice room.
 export struct MemberRow {
@@ -91,6 +91,8 @@ component MemberItem inherits Rectangle {
 
 // S1/S2: a voice room joined by id (accounts and dialogs arrive in S5).
 component CallPanel inherits Rectangle {
+    in property <bool> managed;
+    in property <bool> has-participation;
     in-out property <string> room-text;
     in property <bool> in-room;
     in property <string> title;
@@ -140,20 +142,21 @@ component CallPanel inherits Rectangle {
         }
         HorizontalLayout {
             spacing: 8px;
-            room := LineEdit {
+            if !root.managed: LineEdit {
                 placeholder-text: "id комнаты";
                 text <=> root.room-text;
                 enabled: !root.in-room;
                 accepted(t) => { root.join(t); }
             }
             Button {
-                text: root.in-room ? "Выйти" : "Войти";
+                text: root.managed ? "Завершить звонок" : root.in-room ? "Выйти" : "Войти";
+                enabled: !root.managed || root.has-participation;
                 primary: !root.in-room;
                 clicked => {
-                    if root.in-room {
+                    if root.in-room || root.managed {
                         root.leave();
                     } else {
-                        root.join(room.text);
+                        root.join(root.room-text);
                     }
                 }
             }
@@ -626,6 +629,23 @@ export component ShareWindow inherits Window {
 }
 
 export component MainWindow inherits Window {
+    in-out property <bool> group-settings-open;
+    in-out property <bool> new-group-open;
+    in property <bool> chat-group;
+    in property <bool> chat-can-manage;
+    in property <[GroupMemberRow]> group-members;
+    in property <string> chat-call-label: "Позвонить";
+    in property <string> active-call-title;
+    in property <string> incoming-title;
+    in property <bool> has-participation;
+    callback create-group(string, string);
+    callback rename-group(string);
+    callback add-group-member(string);
+    callback remove-group-member(string);
+    callback conversation-call;
+    callback accept-call;
+    callback decline-call;
+    callback retry-call;
     title: "turbo-pancake";
     preferred-width: 1280px;
     preferred-height: 700px;
@@ -738,6 +758,12 @@ export component MainWindow inherits Window {
 
     HorizontalLayout {
         Sidebar {
+            new-group-open <=> root.new-group-open;
+            active-call-title: root.active-call-title;
+            incoming-title: root.incoming-title;
+            create-group(t, u) => { root.create-group(t, u); }
+            accept-call => { root.accept-call(); }
+            decline-call => { root.decline-call(); }
             width: 240px;
             user-name: root.user-name;
             connection-status: root.connection-status;
@@ -770,6 +796,15 @@ export component MainWindow inherits Window {
             }
         }
         if !root.voice-selected && root.signed-in && root.current-conversation != "": ChatPanel {
+            settings-open <=> root.group-settings-open;
+            group: root.chat-group;
+            can-manage: root.chat-can-manage;
+            group-members: root.group-members;
+            call-label: root.chat-call-label;
+            call => { root.conversation-call(); }
+            rename-group(t) => { root.rename-group(t); }
+            add-member(u) => { root.add-group-member(u); }
+            remove-member(u) => { root.remove-group-member(u); }
             title: root.chat-title;
             username: root.chat-username;
             online: root.chat-online;
@@ -806,11 +841,13 @@ export component MainWindow inherits Window {
             Rectangle { height: 1px; background: Theme.separator; }
             HorizontalLayout {
             CallPanel {
+                managed: root.signed-in;
+                has-participation: root.has-participation;
                 min-width: 420px;
                 max-width: 560px;
                 room-text <=> root.room-text;
                 in-room: root.in-room;
-                title: root.call-title;
+                title: root.signed-in && root.active-call-title != "" ? root.active-call-title : root.call-title;
                 detail: root.call-detail;
                 stats: root.call-stats;
                 devices: root.call-devices;

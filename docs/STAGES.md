@@ -53,7 +53,7 @@ PROJECT_STATE. Existing migrations and anonymous loopback media tests remain int
    anonymous development scenarios explicitly. Test concurrent joins, duplicate
    requests, stale-device leave, reconnect, token revocation and server restart with
    real WebSockets/SFU and simulated audio.
-5. **Windows UI.** Group creation and creator settings, member list, call controls in
+5. **Windows UI — implemented, native acceptance in step 6.** Group creation and creator settings, member list, call controls in
    the selected conversation, ongoing-call banner and join, incoming direct-call
    accept/decline/cancel/busy states. Switching chat/call preserves drafts, history
    and permissions; call errors/reconnect remain visible. Verify client core and
