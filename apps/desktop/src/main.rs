@@ -53,6 +53,11 @@
 //!   through the tray's own message path, exit through the tray menu command, printing
 //!   `TURBO_PANCAKE_TRAY …` / `TURBO_PANCAKE_LIFECYCLE …` / `TURBO_PANCAKE_EXIT`.
 //!   Smoke runs without it add no tray icon.
+//!   One client per `--profile`: a second launch shows the running client's window and
+//!   exits (`TURBO_PANCAKE_SINGLE_INSTANCE forwarded=…`). Smoke runs skip the check
+//!   unless `--single-instance`; `--multi-instance` always skips it.
+//!   `--trial-close-after-ms <N>` — close the window to the tray after N ms (trials;
+//!   hiding is allowed even where the shell shows no icon).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -69,6 +74,7 @@ use slint::winit_030::winit::event_loop::ActiveEventLoop;
 use slint::winit_030::winit::window::{Window as WinitWindow, WindowId};
 use slint::winit_030::{CustomApplicationHandler, EventResult};
 use turbo_pancake_desktop::app_settings::{self, AppSettings};
+use turbo_pancake_desktop::instance;
 use turbo_pancake_desktop::screen::PictureSlot;
 use turbo_pancake_desktop::screen::PreviewSlots;
 use turbo_pancake_desktop::session::{
@@ -118,6 +124,9 @@ struct Args {
     chat: messenger_ui::Script,
     server_ca: Option<String>,
     trial_tray: bool,
+    single_instance: bool,
+    multi_instance: bool,
+    trial_close_after_ms: Option<u64>,
 }
 
 fn parse_args() -> Args {
@@ -149,6 +158,11 @@ fn parse_args() -> Args {
             "--auto-join-call" => out.chat.auto_join = true,
             "--auto-decline-call" => out.chat.auto_decline = true,
             "--trial-tray" => out.trial_tray = true,
+            "--single-instance" => out.single_instance = true,
+            "--multi-instance" => out.multi_instance = true,
+            "--trial-close-after-ms" => {
+                out.trial_close_after_ms = args.next().and_then(|v| v.parse().ok())
+            }
             "--leave-call-after-ms" => {
                 out.chat.leave_after_ms = args.next().and_then(|v| v.parse().ok())
             }
@@ -579,27 +593,34 @@ fn window_lifecycle(window: &MainWindow, args: &Args) -> Option<Rc<Tray>> {
 
     let show_icon = args.smoke_exit_after_ms.is_none() || args.trial_tray;
     let (weak, activate) = (window.as_weak(), !args.no_activate);
-    let tray = Tray::new("turbo-pancake", show_icon, move |event| match event {
-        TrayEvent::Open => {
-            let _ = weak.upgrade_in_event_loop(move |w| {
-                let _ = w.show();
-                w.window().set_minimized(false);
-                // Only after the user's own click on the icon (trials pass --no-activate).
-                if activate {
-                    w.window().with_winit_window(|ww| ww.focus_window());
-                }
-            });
-        }
-        TrayEvent::Exit => {
-            let _ = slint::quit_event_loop();
-        }
-    })
+    let tray = Tray::new(
+        "turbo-pancake",
+        &args.chat.profile,
+        show_icon,
+        move |event| match event {
+            TrayEvent::Open => {
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    let _ = w.show();
+                    w.window().set_minimized(false);
+                    // Only after the user's own click on the icon (trials pass --no-activate).
+                    if activate {
+                        w.window().with_winit_window(|ww| ww.focus_window());
+                    }
+                });
+            }
+            TrayEvent::Exit => {
+                let _ = slint::quit_event_loop();
+            }
+        },
+    )
     .map_err(|e| eprintln!("tray unavailable: {e}"))
     .ok()
     .map(Rc::new);
     // The trial exercises the hidden state where no shell shows icons (an isolated
     // desktop), restoring through the tray window's own message path.
-    let can_hide = tray.as_ref().is_some_and(|t| t.icon_shown()) || args.trial_tray;
+    let can_hide = tray.as_ref().is_some_and(|t| t.icon_shown())
+        || args.trial_tray
+        || args.trial_close_after_ms.is_some();
     window.set_tray_available(can_hide);
     window.window().on_close_requested(move || {
         if !(can_hide && settings.borrow().close_to_tray) {
@@ -952,6 +973,24 @@ fn main() -> Result<(), slint::PlatformError> {
     let started = Instant::now();
     let args = parse_args();
     let smoke = args.smoke_exit_after_ms;
+    // Scripted runs (smoke/trials) start several clients of one profile: no guard there
+    // unless a trial asks for it.
+    let guarded = !args.multi_instance && (smoke.is_none() || args.single_instance);
+    let _instance = if guarded {
+        match instance::claim(&args.chat.profile, Duration::from_secs(3)) {
+            Ok(instance::Launch::First(lock)) => Some(lock),
+            Ok(instance::Launch::AlreadyRunning(pid)) => {
+                println!("TURBO_PANCAKE_SINGLE_INSTANCE forwarded={}", pid.is_some());
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("single-instance check failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let renderer = Rc::new(Cell::new("software"));
 
     // SLINT_BACKEND (e.g. `winit-software`) still selects the renderer.
@@ -1049,6 +1088,39 @@ fn main() -> Result<(), slint::PlatformError> {
     if trial {
         trial_tray(&window, tray.clone());
     }
+    if let Some(ms) = args.trial_close_after_ms {
+        let weak = window.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(ms), move || {
+            if let Some(w) = weak.upgrade() {
+                w.window()
+                    .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+                println!(
+                    "TURBO_PANCAKE_LIFECYCLE closed visible={}",
+                    w.window().is_visible()
+                );
+            }
+        });
+    }
+    // Restored by another launch of this profile (or a click): report it for trials.
+    let _restore_watch = args.trial_close_after_ms.map(|_| {
+        let weak = window.as_weak();
+        let timer = slint::Timer::default();
+        let mut was_visible = true;
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(100),
+            move || {
+                if let Some(w) = weak.upgrade() {
+                    let visible = w.window().is_visible();
+                    if visible && !was_visible {
+                        println!("TURBO_PANCAKE_LIFECYCLE restored visible=true");
+                    }
+                    was_visible = visible;
+                }
+            },
+        );
+        timer
+    });
 
     if let Some(exit_after) = smoke {
         // GPU renderers expose the graphics API; absence means software rendering.

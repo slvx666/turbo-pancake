@@ -1,11 +1,30 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, step 1 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, steps 1–2 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = IN_PROGRESS**; S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-05 (S7 plan + step 1 tray/window lifecycle; 158 automated tests, tray trial software/OpenGL)
+Last session: 2026-11-05 (S7 steps 1–2: tray/window lifecycle, one client per profile)
+
+## Session log 2026-11-05 — S7 step 2: one client per profile
+
+* `apps/desktop/src/instance.rs`: named mutex `Local\turbo-pancake-<profile>`; a later
+  launch finds the running client's tray window (title names the profile), allows it
+  the foreground and posts the tray "open" message, then exits
+  (`TURBO_PANCAKE_SINGLE_INSTANCE forwarded=…`); waits up to 3 s for a client that is
+  still starting. Check runs before any window/session is created.
+* Scripted runs (`--smoke-exit-after-ms`) are unguarded unless `--single-instance`;
+  `--multi-instance` disables it. Older multi-client trial scripts are unchanged.
+  `--trial-close-after-ms` hides the window for trials. `windows` feature
+  `Win32_System_Threading` added; `Cargo.lock` unchanged.
+* **PASS:** `s7-instance-trial.ps1` software + OpenGL (4 clients on one invisible
+  desktop: hand-over in 0.1 s without a window, A restored, same-profile scripted and
+  other-profile clients unaffected, 0 foreground samples, all exit 0); tray trial and
+  startup smoke regressions. Report: `benchmarks/results/s7-step2-windows-2026-11-05.md`.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper:
+  **161 passed, 0 failed, 4 ignored, 1 filtered**, 42 binaries, real PostgreSQL (log
+  `.local/logs/s7-step2-tests.log`). Local branch only; no push or CI claimed.
 
 ## Session log 2026-11-05 — S7 plan and step 1: tray and window lifecycle
 
@@ -35,6 +54,7 @@ Last session: 2026-11-05 (S7 plan + step 1 tray/window lifecycle; 158 automated 
 | Criterion / slice | Status | Evidence / remaining work |
 |---|---|---|
 | Tray: close does not exit when tray mode is on; explicit exit quits and frees resources | PASS (step 1; real-icon click owner-assisted) | `s7-tray-trial.ps1` both renderers, `tray::tests`, real icon ignored test |
+| One client per profile; a second launch restores the running window | PASS (step 2; foreground hand-over on the user's desktop owner-assisted) | `s7-instance-trial.ps1` both renderers, `instance::tests`, `tray::tests` |
 | Light/dark theme persisted | PASS (unit) | `app_settings::tests`; visual check of the panel not done |
 | Responsive layout, HiDPI, scaling, keyboard focus | UNVERIFIED | step 3 |
 | Reconnect UX, unsaved input kept | UNVERIFIED (drafts exist since S5/S6) | step 4 |
@@ -536,8 +556,9 @@ performance results for the target hardware (RTX 4070 Super / M4).
 44. **Tray (S7 step 1):** click on the real icon and its real context menu are not
     exercised automatically (they need the user's pointer); routing is tested through
     the same window messages. Owner-assisted interactive check. The icon is drawn in
-    code; the executable has no icon resource yet (installer step). No single-instance
-    guard yet: a second launch starts a second client (S7 step 2).
+    code; the executable has no icon resource yet (installer step). One client per
+    profile since step 2; the foreground hand-over to the restored window on the
+    user's own desktop (a double-click on the shortcut) is owner-assisted.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -898,19 +919,19 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S7 step 2: single instance and restore
+## Exact next task — S7 step 3: responsive layout and scaling
 
-The owner asked to continue with the next stage (2026-11-05); S7 is authorized and
-in progress. Step 1 (tray and window lifecycle) is done. Next is step 2 in
-`docs/STAGES.md`: a second launch of the same profile must restore the running window
-(the tray's hidden window is the natural target: a named per-profile mutex decides,
-the existing tray message path restores) instead of starting a second session of the
-same account on the same device. Scripted trials start several clients with the
-default profile (`voice-trial`, `group-trial`, `screen-trial`, `s4-trial`): they must
-keep working — scripted/smoke runs opt out explicitly. Test on the invisible desktop
-like `s7-tray-trial.ps1`. Then steps 3–7. GitHub publishing remains unavailable; do not
-open authentication windows or claim a remote push/CI run. Owner-assisted items stay
-pending under ADR 0012.
+S7 is authorized (owner, 2026-11-05) and in progress; steps 1 (tray/lifecycle) and 2
+(one client per profile) are done. Next is step 3 in `docs/STAGES.md`: narrow-window
+layout (the sidebar is a fixed 240 px and the call view puts `CallPanel` (420–560 px)
+beside `ScreenPanel` in `apps/desktop/ui/main.slint`; below ~900 px the sidebar should
+collapse and the call panels stack), a UI scale setting (100–200 %, stored in the
+step-1 settings file; Slint honours a scale factor per window) and checks with
+own-window snapshots (`--snapshot`) at several sizes and scale factors on the invisible
+desktop, plus tab/focus order of the basic controls. Then steps 4–7. GitHub
+publishing remains unavailable; do not open authentication windows or claim a remote
+push/CI run. Owner-assisted items stay pending under ADR 0012.
+
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 
 * ADR 0014: private CA via `gen-cert`, server HTTPS + WSS, clients verify always

@@ -4,6 +4,7 @@
 pub mod app_settings;
 pub mod chat;
 pub mod credentials;
+pub mod instance;
 pub mod screen;
 pub mod session;
 pub mod tray;

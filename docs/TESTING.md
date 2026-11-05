@@ -175,6 +175,22 @@ clean exit marker, exit code 0 and no foreground sample. The isolated desktop ha
 shell, so there the icon is not shown (`icon=false`); the real icon is the ignored test.
 Settings live in `%LOCALAPPDATA%/turbo-pancake/settings/<profile>.conf`.
 
+One client per profile (step 2):
+
+```powershell
+# lock per profile, give-up wait, signal finds only its own profile's tray window
+cargo test -p turbo-pancake-desktop --lib instance tray
+# four release clients on one invisible desktop: A hides to the tray, B (same profile)
+# hands over and exits without a window, A comes back; a scripted smoke client of the
+# same profile and a guarded client of another profile both start normally
+powershell -NoProfile -File benchmarks/scripts/s7-instance-trial.ps1 -Out <local-log>
+powershell -NoProfile -File benchmarks/scripts/s7-instance-trial.ps1 -Backend winit-femtovg -Out <local-log>
+```
+
+Smoke/trial runs (`--smoke-exit-after-ms`) are not guarded unless `--single-instance`
+is given, so the older multi-client trials keep working; `--multi-instance` disables
+the guard for any run.
+
 ## Messenger S5 (Windows, dev machine)
 
 ```bash

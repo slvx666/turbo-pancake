@@ -12,7 +12,7 @@ pub enum TrayEvent {
     Exit,
 }
 
-pub use imp::Tray;
+pub use imp::{Tray, signal_running};
 
 /// Dispatches the messages already queued for this thread (tests without an event loop).
 pub fn pump_pending() {
@@ -33,12 +33,13 @@ mod imp {
         NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-        DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, HICON, MF_SEPARATOR, MF_STRING,
-        MSG, PM_REMOVE, PeekMessageW, PostMessageW, RegisterClassW, RegisterWindowMessageW,
-        SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-        WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-        WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+        AllowSetForegroundWindow, AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW,
+        DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW,
+        GetCursorPos, GetWindowThreadProcessId, HICON, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE,
+        PeekMessageW, PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+        TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
+        WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+        WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
     use windows::core::{PCWSTR, w};
 
@@ -166,6 +167,36 @@ mod imp {
         }
     }
 
+    /// The hidden window's title names the profile, so another launch of the same
+    /// profile finds exactly this window (and other profiles never match).
+    fn window_title(instance: &str) -> Vec<u16> {
+        format!("turbo-pancake tray {instance}")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Asks the running client of `instance` to show its window (the same message as a
+    /// click on its icon) and lets it take the foreground: the user started this launch,
+    /// so the foreground right is ours to hand over. Returns that client's process id.
+    pub fn signal_running(instance: &str) -> Option<u32> {
+        let title = window_title(instance);
+        unsafe {
+            let hwnd = FindWindowW(CLASS, PCWSTR(title.as_ptr())).ok()?;
+            let mut pid = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            let _ = AllowSetForegroundWindow(pid);
+            PostMessageW(
+                Some(hwnd),
+                WM_TRAY,
+                WPARAM(0),
+                LPARAM(WM_LBUTTONUP as isize),
+            )
+            .ok()?;
+            Some(pid)
+        }
+    }
+
     pub struct Tray {
         hwnd: HWND,
         icon: Option<HICON>,
@@ -178,10 +209,12 @@ mod imp {
         /// test desktop) the window still exists but [`Tray::icon_shown`] is false.
         pub fn new(
             tooltip: &str,
+            instance: &str,
             show_icon: bool,
             handler: impl Fn(TrayEvent) + 'static,
         ) -> Result<Tray, String> {
             static CLASS_ONCE: OnceLock<()> = OnceLock::new();
+            let title = window_title(instance);
             let _ = taskbar_created();
             unsafe {
                 let module = GetModuleHandleW(None).map_err(|e| e.message())?;
@@ -199,7 +232,7 @@ mod imp {
                 let hwnd = CreateWindowExW(
                     WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0),
                     CLASS,
-                    w!("turbo-pancake tray"),
+                    PCWSTR(title.as_ptr()),
                     WS_POPUP,
                     0,
                     0,
@@ -302,6 +335,7 @@ mod imp {
     impl Tray {
         pub fn new(
             _tooltip: &str,
+            _instance: &str,
             _show_icon: bool,
             _handler: impl Fn(TrayEvent) + 'static,
         ) -> Result<Tray, String> {
@@ -311,6 +345,10 @@ mod imp {
             false
         }
         pub fn post(&self, _event: TrayEvent) {}
+    }
+
+    pub fn signal_running(_instance: &str) -> Option<u32> {
+        None
     }
 
     pub fn pump_pending() {}
@@ -327,7 +365,10 @@ mod tests {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let s = seen.clone();
         // No icon: routing only, nothing appears in the user's notification area.
-        let tray = Tray::new("test", false, move |e| s.borrow_mut().push(e)).unwrap();
+        let tray = Tray::new("test", "tray-routing-test", false, move |e| {
+            s.borrow_mut().push(e)
+        })
+        .unwrap();
         assert!(!tray.icon_shown());
         tray.post(TrayEvent::Open);
         tray.post(TrayEvent::Exit);
@@ -339,12 +380,28 @@ mod tests {
         assert_eq!(seen.borrow().len(), 2);
     }
 
+    #[test]
+    fn another_launch_finds_only_its_own_profile() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        let tray = Tray::new("test", "signal-test-a", false, move |e| {
+            s.borrow_mut().push(e)
+        })
+        .unwrap();
+        assert_eq!(signal_running("signal-test-b"), None, "other profile");
+        assert_eq!(signal_running("signal-test-a"), Some(std::process::id()));
+        pump_pending();
+        assert_eq!(*seen.borrow(), [TrayEvent::Open]);
+        drop(tray);
+        assert_eq!(signal_running("signal-test-a"), None, "gone with the tray");
+    }
+
     /// Adds and removes a real icon in the shell's notification area (no window, no
     /// focus, no input). Ignored by default: it touches the user's taskbar.
     #[test]
     #[ignore]
     fn real_icon_is_added_and_removed() {
-        let tray = Tray::new("turbo-pancake test", true, |_| {}).unwrap();
+        let tray = Tray::new("turbo-pancake test", "tray-icon-test", true, |_| {}).unwrap();
         assert!(tray.icon_shown(), "Shell_NotifyIconW(NIM_ADD) failed");
         println!("TURBO_PANCAKE_TRAY_ICON shown={}", tray.icon_shown());
     }
