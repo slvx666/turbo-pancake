@@ -90,8 +90,8 @@ S6 group tests require PostgreSQL explicitly; skipping it cannot pass these test
   removes membership and releases the lock. The send must fail without advancing
   either counter. No sleep-based assumption about request scheduling.
 
-These tests do not certify native group UI or account-bound calls; those S6 slices
-remain pending. They use no real audio devices, capture, focus or input injection.
+These group-only tests do not by themselves certify native UI or account-bound calls;
+that coverage is listed below. They use no real audio devices, capture, focus or input injection.
 
 Client integration (`cargo test -p turbo-pancake-messenger-client --test sync --locked`):
 
@@ -106,6 +106,51 @@ Client integration (`cargo test -p turbo-pancake-messenger-client --test sync --
   old pending sends before flushing them. Existing history reloads exactly once.
 * Cache unit `s5_cache_migrates_without_losing_history_drafts_or_pending` upgrades a
   populated S5 schema to S6 and checks retained data/cursors and idempotent reopen.
+
+Authenticated call coverage:
+
+* Server `conversation_calls_enforce_account_ownership_blocks_and_removal` and
+  `calls_concurrent_devices_stale_leave_decline_busy_and_restart`: account/session
+  ownership, three concurrent devices, stale leave/attach, anonymous namespace
+  isolation, blocks, member removal, busy, decline, restart and unchanged messages.
+* `call_http_authentication_invitation_timeout_and_revoked_reservation` uses the real
+  supervisor (35-second upper bound) to prove unanswered invitation expiry; also
+  verifies authentication on every call endpoint and revoked unattached participation.
+* Desktop `authenticated_conversation_media_switch_reconnect_revoke_and_history`:
+  real authenticated signaling/SFU and simulated bidirectional audio, second-device
+  takeover, old-device resource release, same-lease reconnect, revoke, leave/restart
+  and preserved chat history. `pg-test` is required, never skipped for S6.
+* Client Service `call_service_invite_join_switch_leave_and_chat_continuity` checks
+  invitation/accept, group switch, leave and the saved-draft snapshot after moving
+  away from the chat. Group history sync also verifies removed authors' names in a
+  fresh new member's cache (protobuf field 12, additive SQLite migration 3).
+
+Native release acceptance, without disturbing the user's desktop:
+
+```powershell
+# Build via the configured dev/APM wrapper, then supply the local PostgreSQL bin dir.
+powershell -NoProfile -File benchmarks/scripts/s6-trial.ps1 -PgBin <postgres-bin> -Out <local-log>
+# Only after the software run passes:
+powershell -NoProfile -File benchmarks/scripts/s6-trial.ps1 -PgBin <postgres-bin> -Backend winit-femtovg -Out <local-log>
+```
+
+The script creates its own temporary PostgreSQL cluster and private CA, starts the
+TLS server and three native release clients on an isolated **invisible** Windows
+desktop (never switches desktops), samples their native windows and foreground
+ownership, and exercises normal UI callbacks without mouse/keyboard input. Audio is
+simulated; no microphone, playback device or screen capture is opened. Group creation,
+three-member audio, two messages, chat/call draft switches, leave, direct invitation/
+accept/leave and explicit decline must pass. Every client must exit cleanly. Renderer
+snapshots contain only the app's own pixels, not the user's desktop. Software and
+OpenGL snapshots are visually checked separately. Profiles are unique and <=32 chars;
+test credentials are removed at exit. Logs, snapshots, TLS keys and test DB stay in
+the ignored build directory; publish only sanitized result summaries.
+
+The script's options use the same native callbacks as the visible controls:
+`--group-title`, `--group-members`, `--open-group`, `--call`, `--auto-join-call`,
+`--auto-decline-call`, `--leave-call-after-ms`, `--trial-chat-switch`,
+`--simulate-audio`, `--snapshot` (PPM), `--snapshot-after-ms`.
+Real audio/by-ear and two-machine checks remain separate owner-assisted trials.
 
 ## Messenger S5 (Windows, dev machine)
 
@@ -152,5 +197,6 @@ primary 1920×1080 at (0,0), DISPLAY2 1920×1080 at (1920,0).
 
 ## Not yet covered (tracked in PROJECT_STATE.md)
 
-OS-level netem (in-process impairment exists for audio), E2E between two desktop clients, PostgreSQL integration, security
-negative tests for auth (no auth yet), cross-platform smoke on macOS/Linux hardware.
+OS-level netem (in-process impairment exists for audio), real-device/two-machine
+owner-assisted trials and macOS/Linux hardware (S9). PostgreSQL, auth/security and
+native messenger/call scenarios are covered above; target-server load is S8.

@@ -494,6 +494,7 @@ struct MsgRow {
     server_sequence: i64,
     change_seq: i64,
     author_id: Uuid,
+    author_display_name: String,
     client_nonce: String,
     body: Option<String>,
     reply_to_id: Option<Uuid>,
@@ -503,7 +504,8 @@ struct MsgRow {
 }
 
 const MSG_COLS: &str = "id, conversation_id, server_sequence, change_seq, author_id, client_nonce, \
-                        body, reply_to_id, created_at, edited_at, deleted_at";
+                        body, reply_to_id, created_at, edited_at, deleted_at, \
+                        (SELECT u.display_name FROM users u WHERE u.id = messages.author_id) AS author_display_name";
 
 impl MsgRow {
     /// The nonce is the author's own idempotency key: others do not get it.
@@ -514,6 +516,7 @@ impl MsgRow {
             server_sequence: self.server_sequence,
             change_seq: self.change_seq,
             author_id: self.author_id.to_string(),
+            author_display_name: self.author_display_name.clone(),
             client_nonce: if viewer == self.author_id {
                 self.client_nonce.clone()
             } else {

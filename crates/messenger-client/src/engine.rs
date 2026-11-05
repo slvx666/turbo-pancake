@@ -639,7 +639,13 @@ impl Engine {
             Ok(Some(match self.cache.message(id)? {
                 Some(r) => ReplyView {
                     message_id: id.into(),
-                    author_name: name(&r.author_id),
+                    author_name: if !members.iter().any(|m| m.user_id == r.author_id)
+                        && !r.author_display_name.is_empty()
+                    {
+                        r.author_display_name.clone()
+                    } else {
+                        name(&r.author_id)
+                    },
                     text: first_line(&r.body),
                     deleted: r.deleted,
                 },
@@ -657,7 +663,13 @@ impl Engine {
             let mut v = MessageView {
                 key: m.message_id.clone(),
                 message_id: m.message_id.clone(),
-                author_name: name(&m.author_id),
+                author_name: if !members.iter().any(|p| p.user_id == m.author_id)
+                    && !m.author_display_name.is_empty()
+                {
+                    m.author_display_name.clone()
+                } else {
+                    name(&m.author_id)
+                },
                 author_id: m.author_id.clone(),
                 mine,
                 body: m.body.clone(),

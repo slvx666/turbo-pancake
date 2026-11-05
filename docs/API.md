@@ -139,6 +139,10 @@ cursors remain dedicated to message changes; metadata never consumes their seque
 can detect removal followed by re-add even when both invalidations were missed.
 On a change to its own revision the client discards the previous membership's pending
 operations, drafts and message cursor, closes the old composer, and reloads history.
+History messages carry `author_display_name` (ChatMessage field 12), so removing an
+author from the active member list does not erase the author label in old messages
+or replies. SQLite migration 3 refreshes existing group cursors to fill that field;
+the cached message bodies and pending operations remain intact.
 
 ### Rooms and relay
 
@@ -168,9 +172,10 @@ and unanswered invitations expire in 30 seconds; disconnect grace is 10 seconds.
 | `Signal{room_id, to_peer_id, description \| ice_candidate}` | none; target gets `SignalRelay{from_peer_id, ...}` | `NOT_IN_ROOM`, `PEER_NOT_FOUND`, `BAD_REQUEST` (self-target, missing payload, SDP > 32 KiB, untyped SDP, candidate > 1 KiB) |
 | `Ping{client_time_us}` | `Pong{client_time_us}` | — |
 
-* A connection is in at most one room at a time (spec: one active call per user): a new
-  join closes the previous call. `ALREADY_IN_ROOM` is no longer sent (kept reserved). Until
-  accounts (S5) "user" means connection: two connections of one person are two members.
+* An anonymous development connection is in at most one room at a time: a new join
+  closes the previous room. `ALREADY_IN_ROOM` stays reserved. Authenticated S6 calls
+  enforce one participation per account across devices through the lease described
+  above, and cannot use this anonymous `JoinRoom` path.
 * A `RoomLeft` for the room the client is in, without its own leave, means the server
   ended the membership; the desktop client ends the call and does not rejoin by itself.
 * Room id: 1–64 chars of `[A-Za-z0-9_-]`.

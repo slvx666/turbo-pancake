@@ -32,6 +32,7 @@ pub struct Script {
     pub open_group: Option<String>,
     pub call: bool,
     pub auto_join: bool,
+    pub auto_decline: bool,
     pub leave_after_ms: Option<u64>,
     pub trial_switch: bool,
 }
@@ -696,6 +697,17 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
                 media.send(MediaCommand::Leave);
             }
             update_calls(w);
+            let decline = STATE.with_borrow_mut(|s| {
+                if s.script.auto_decline && s.incoming.is_some() {
+                    s.script.auto_decline = false;
+                    true
+                } else {
+                    false
+                }
+            });
+            if decline {
+                w.invoke_decline_call();
+            }
             let auto = STATE.with_borrow_mut(|s| {
                 if !s.script.auto_join || s.participation.is_some() {
                     return None;

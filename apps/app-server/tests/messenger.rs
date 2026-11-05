@@ -354,6 +354,110 @@ fn created(body: S) -> Option<v1::ChatMessage> {
 // ---- Tests ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn call_http_authentication_invitation_timeout_and_revoked_reservation() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let srv = Server::start(&db, |_| {}).await;
+    let api = srv.api();
+    let alice = api.register("alice").await;
+    let bob = api.register("bob").await;
+    let conv = api
+        .direct(&alice.token, &bob.user.as_ref().unwrap().user_id)
+        .await;
+    let request = v1::CreateCallRequest {
+        conversation_id: conv.conversation_id,
+    };
+    let first: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            "/v1/calls",
+            Some(&alice.token),
+            Some(&request),
+        )
+        .await
+        .unwrap();
+    let id = first.call.as_ref().unwrap().call_id.clone();
+    let operations = [
+        (Method::GET, "/v1/calls".into(), None),
+        (
+            Method::POST,
+            "/v1/calls".into(),
+            Some(request.encode_to_vec()),
+        ),
+        (Method::POST, format!("/v1/calls/{id}/join"), None),
+        (Method::POST, format!("/v1/calls/{id}/decline"), None),
+        (
+            Method::POST,
+            format!("/v1/calls/{id}/leave"),
+            Some(
+                v1::LeaveCallRequest {
+                    participation_id: first.participation_id.clone(),
+                }
+                .encode_to_vec(),
+            ),
+        ),
+    ];
+    for (method, path, body) in operations {
+        for token in [None, Some("garbage")] {
+            assert_eq!(
+                api.raw(method.clone(), &path, token, body.clone()).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+    // Real supervisor and real time: an unanswered/unattached invitation must end.
+    tokio::time::timeout(Duration::from_secs(35), async {
+        loop {
+            let list: v1::CallList = api
+                .call(Method::GET, "/v1/calls", Some(&alice.token), None)
+                .await
+                .unwrap();
+            if list.calls.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("unanswered invitation expired");
+    let mut live = Live::connect(srv.addr, &alice.token).await.unwrap();
+    assert!(!live.attach_call(&first).await);
+    let second: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            "/v1/calls",
+            Some(&alice.token),
+            Some(&request),
+        )
+        .await
+        .unwrap();
+    assert_ne!(second.call.unwrap().call_id, id);
+    let other = api.login("alice", "correct horse").await.unwrap();
+    api.call::<v1::Empty>(
+        Method::DELETE,
+        &format!("/v1/sessions/{}", alice.session_id),
+        Some(&other.token),
+        None,
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let list: v1::CallList = api
+                .call(Method::GET, "/v1/calls", Some(&other.token), None)
+                .await
+                .unwrap();
+            if list.calls.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("revoked unattached reservation released");
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn conversation_calls_enforce_account_ownership_blocks_and_removal() {
     let db = database().expect("S6 requires PostgreSQL");
     let srv = Server::start(&db, |_| {}).await;

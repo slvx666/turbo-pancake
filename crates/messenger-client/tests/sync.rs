@@ -488,6 +488,23 @@ async fn call_service_invite_join_switch_leave_and_chat_continuity() {
         .until("direct participation ready", |c| c.ready.is_some())
         .await;
     let first = alice.ready.take().unwrap();
+    alice.cmd(Command::SaveDraft {
+        conversation_id: cid.clone(),
+        body: "retained while in call".into(),
+        reply_to_id: String::new(),
+    });
+    alice.cmd(Command::Open {
+        conversation_id: None,
+    });
+    alice
+        .until("saved draft snapshot supersedes earlier open view", |c| {
+            c.conv(&cid)
+                .is_some_and(|v| v.draft == "retained while in call")
+        })
+        .await;
+    alice.cmd(Command::Open {
+        conversation_id: Some(cid.clone()),
+    });
     let call_id = first.call.unwrap().call_id;
     bob.until("incoming direct call", |c| {
         c.calls.iter().any(|call| {
@@ -712,6 +729,44 @@ async fn group_offline_removal_purges_pending_and_stale_events_cannot_restore_ac
         revision + 1
     );
     assert_eq!(api.changes(&cid, 0, 100).await.unwrap().messages.len(), 1);
+    let authored = engine
+        .api
+        .send_message(
+            &cid,
+            &v1::SendMessageRequest {
+                client_nonce: "removed-author".into(),
+                body: "former member message".into(),
+                reply_to_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    api.remove_group_member(&cid, &bob_user.user_id)
+        .await
+        .unwrap();
+    let mut fresh_api = Api::new(&format!("http://{addr}"));
+    let cara = fresh_api
+        .register(&v1::RegisterRequest {
+            username: "cara".into(),
+            password: "correct horse".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    api.add_group_member(&cid, "cara").await.unwrap();
+    fresh_api.set_token(Some(cara.token));
+    let mut fresh = Engine::new(fresh_api, Cache::in_memory().unwrap(), cara.user.unwrap());
+    fresh.sync().await.unwrap();
+    let history = fresh.message_views(&cid, 100).unwrap();
+    let former = history
+        .iter()
+        .find(|m| m.message_id == authored.message_id)
+        .unwrap();
+    assert_eq!(
+        former.author_name, "bob",
+        "fresh caches retain removed authors' names"
+    );
+    assert_eq!(former.body, "former member message");
     srv.stop().await;
 }
 

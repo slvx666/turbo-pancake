@@ -1652,7 +1652,11 @@ impl Core {
                 self.leave_room();
                 self.want_room = None;
                 self.stop_audio();
-                self.snap.last_error = Some(format!("звонок в «{}» завершён сервером", r.room_id));
+                self.snap.last_error = Some(if r.room_id.starts_with("call_") {
+                    "Звонок завершён сервером".into()
+                } else {
+                    format!("звонок в «{}» завершён сервером", r.room_id)
+                });
             }
             // Welcome, relayed signals; messenger events go to the messenger's own
             // connection (crates/messenger-client).

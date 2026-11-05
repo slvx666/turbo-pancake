@@ -73,6 +73,8 @@ CREATE TABLE drafts (
 );
 "#,
     "ALTER TABLE members ADD COLUMN membership_revision INTEGER NOT NULL DEFAULT 1;",
+    "ALTER TABLE messages ADD COLUMN author_display_name TEXT NOT NULL DEFAULT '';
+     UPDATE conversations SET applied_change_seq = 0 WHERE kind = 2;",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -433,12 +435,13 @@ impl Cache {
         }
         let changed = self.conn.execute(
             "INSERT INTO messages (id, conversation_id, server_sequence, change_seq, author_id,
-                                   body, reply_to_id, created_at, edited_at, deleted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                   body, reply_to_id, created_at, edited_at, deleted, author_display_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (id) DO UPDATE SET change_seq = excluded.change_seq,
                  body = excluded.body, edited_at = excluded.edited_at,
-                 deleted = excluded.deleted
-             WHERE excluded.change_seq > messages.change_seq",
+                 deleted = excluded.deleted, author_display_name = excluded.author_display_name
+             WHERE excluded.change_seq > messages.change_seq OR
+                 (excluded.change_seq = messages.change_seq AND messages.author_display_name = '' AND excluded.author_display_name <> '')",
             params![
                 m.message_id,
                 m.conversation_id,
@@ -449,7 +452,8 @@ impl Cache {
                 m.reply_to_id,
                 m.created_at_ms,
                 m.edited_at_ms,
-                m.deleted
+                m.deleted,
+                m.author_display_name
             ],
         )? > 0;
         if changed {
@@ -472,7 +476,7 @@ impl Cache {
     ) -> Result<Vec<v1::ChatMessage>> {
         let mut st = self.conn.prepare(
             "SELECT id, conversation_id, server_sequence, change_seq, author_id, body,
-                    reply_to_id, created_at, edited_at, deleted
+                    reply_to_id, created_at, edited_at, deleted, author_display_name
                FROM messages WHERE conversation_id = ?1 AND server_sequence < ?2
               ORDER BY server_sequence DESC LIMIT ?3",
         )?;
@@ -490,7 +494,7 @@ impl Cache {
             .conn
             .query_row(
                 "SELECT id, conversation_id, server_sequence, change_seq, author_id, body,
-                        reply_to_id, created_at, edited_at, deleted
+                        reply_to_id, created_at, edited_at, deleted, author_display_name
                    FROM messages WHERE id = ?1",
                 [id],
                 Self::msg_row,
@@ -522,6 +526,7 @@ impl Cache {
             server_sequence: r.get(2)?,
             change_seq: r.get(3)?,
             author_id: r.get(4)?,
+            author_display_name: r.get(10)?,
             client_nonce: String::new(),
             body: r.get(5)?,
             reply_to_id: r.get(6)?,

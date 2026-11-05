@@ -137,6 +137,7 @@ fn parse_args() -> Args {
             "--open-group" => out.chat.open_group = args.next(),
             "--call" => out.chat.call = true,
             "--auto-join-call" => out.chat.auto_join = true,
+            "--auto-decline-call" => out.chat.auto_decline = true,
             "--leave-call-after-ms" => {
                 out.chat.leave_after_ms = args.next().and_then(|v| v.parse().ok())
             }

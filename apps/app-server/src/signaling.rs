@@ -35,6 +35,9 @@ use crate::{AppState, Config, SERVER_VERSION};
 
 pub type PeerId = String;
 
+// Keep frames inline: boxing here adds an allocation to every tunneled media packet.
+// The channel has a fixed capacity; Close is a rare shutdown marker.
+#[allow(clippy::large_enum_variant)]
 enum Out {
     Frame { request_id: u64, body: S },
     Close,

@@ -570,6 +570,7 @@ fn hello_token_and_welcome_user_are_pinned() {
 #[test]
 fn chat_message_field_numbers_are_pinned() {
     let m = v1::ChatMessage {
+        author_display_name: String::new(),
         message_id: "m".into(),
         conversation_id: "c".into(),
         server_sequence: 3,
@@ -720,6 +721,14 @@ fn group_contract_and_limits() {
 
 #[test]
 fn conversation_call_contracts_are_additive_and_pinned() {
+    assert_eq!(
+        v1::ChatMessage {
+            author_display_name: "a".into(),
+            ..Default::default()
+        }
+        .encode_to_vec(),
+        vec![98, 1, b'a']
+    );
     let variants = [
         S::CallStarted(v1::ConversationCall::default()),
         S::CallParticipantJoined(v1::ConversationCall::default()),

@@ -217,6 +217,8 @@ message ChatMessage {
   // 0 = never edited.
   int64 edited_at_ms = 10;
   bool deleted = 11;
+  // Available in history even after the author leaves the current member list.
+  string author_display_name = 12;
 }
 
 // POST /v1/conversations/{id}/messages -> ChatMessage (201, or 200 for a retried nonce).

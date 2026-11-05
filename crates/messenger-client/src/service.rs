@@ -657,6 +657,10 @@ impl Worker {
                 reply_to_id,
             } => {
                 engine.save_draft(&conversation_id, &body, &reply_to_id)?;
+                // A prior Open/receipt snapshot may still be queued for the UI.
+                // Publish the saved value after it so returning from a call cannot
+                // restore the old composer text.
+                ch.list = true;
             }
             Command::Block { user_id, blocked } => {
                 ch.merge(engine.set_blocked(&user_id, blocked).await?);

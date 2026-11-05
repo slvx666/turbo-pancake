@@ -1,15 +1,49 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S6 — groups and calls in the messenger (Windows): IN_PROGRESS** — steps 1–2 (group server + client core) verified; account-bound call control next (plan in `docs/STAGES.md`). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = IN_PROGRESS; S7–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S6 — groups and calls in the messenger (Windows): DONE (2026-11-05)** — automated and native acceptance passed. S7 is NOT_STARTED and was not authorized in this task. New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); S7–S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
-Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unfinished)
+Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
+Last session: 2026-11-05 (S6 DONE on Windows; 154 automated tests and native software/OpenGL acceptance)
 
-## Session log 2026-11-05 — S6 step 3: account-bound call control
+## Session log 2026-11-05 — S6 step 6: acceptance complete
 
-## Session log 2026-11-05 — S6 step 5: native group/call controls
+* **PASS:** fmt; workspace Clippy `-D warnings`; final workspace tests via the local
+  dev/APM wrapper: **154 passed, 0 failed, 3 ignored, 1 filtered**, 42 test/doc-test
+  binaries. PostgreSQL required and used; no skip-PG. The real system-audio playback
+  test is explicitly filtered, as in the baseline, not counted as passed.
+* **PASS:** release client/server build. **PASS:** separate software and OpenGL native
+  runs through `s6-trial.ps1`, each using its own PostgreSQL/private CA and seven real
+  Windows client processes across group, direct accept/leave, and direct decline
+  scenarios. TLS/WSS, real SFU, simulated audio. Native windows and clean exits for
+  every process; no test process observed in foreground, no desktop switching/input.
+  All draft switches and message histories passed; sampled decode errors = 0.
+* Visually inspected only own-renderer snapshots: creator controls, member-only view,
+  group/direct history and retained draft; OpenGL member view checked too. No user
+  desktop/screen capture, microphone, real output device or interactive QA.
+* First native run exposed a real race: a queued old Open snapshot replaced the local
+  draft while SaveDraft did not publish its new value. Fixed Service publication,
+  added regression evidence and repeated native passes. A direct-trial harness
+  failure came from profile names exceeding the pre-existing 32-character CLI limit;
+  shortened them and repeated both backends. Only final passes certify acceptance.
+* Preserved historical author labels after membership removal: additive protobuf
+  `ChatMessage.author_display_name` field 12 and SQLite migration 3, with fresh-cache
+  history/reply fallback. Old group cursors refresh; cached bodies/pending operations
+  survive. Server migration history remains unchanged. A native queue lint exception
+  documents why frames stay inline (bounded queue, no per-media-packet allocation).
+* Added real supervisor timeout/authentication/revoked-reservation coverage. Earlier
+  steps cover 100 members, creator rights, offline membership gaps, session ownership,
+  stale devices, blocks, removal, media reconnect/revoke/release and restart/history.
+* Sanitized evidence: `benchmarks/results/s6-windows-2026-11-05.md`. Raw logs, renderer
+  snapshots, test databases/CA and credentials stay ignored under the workspace;
+  synthetic test credentials cleaned up. Local logs: `s6-final-tests.log`,
+  `s6-release.log`, `s6-native-{software,opengl}.log` under `.local/logs`.
+* **Owner-assisted, separate:** real audio/by-ear, interactive navigation/visual QA
+  and two machines. Not claimed as verified; ADR 0012 permits proceeding with these
+  recorded. S7 was not started. All changes remain local; no push or CI claimed.
+
+## Session log 2026-11-05 — S6 step 5: native group/call controls (780ae1e)
 
 * Added native group creation, member/settings panel with creator-only add/remove/
   rename; call controls in conversations, incoming accept/decline, active call view,
@@ -25,7 +59,7 @@ Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unf
   fmt/Clippy; native execution is the next check, not yet a PASS claim.
 * S6 remains IN_PROGRESS until release build and native acceptance evidence below.
 
-## Session log 2026-11-05 — S6 step 4: authenticated media and recovery
+## Session log 2026-11-05 — S6 step 4: authenticated media and recovery (a6389b1)
 
 * Added typed call HTTP methods and Service commands/snapshots/events. A successful
   call operation supplies the account token and participation lease to the media
@@ -44,7 +78,7 @@ Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unf
   lockfile changes by one dependency entry, with no version updates.
 * Next is step 5: wire the native group and call controls, then background acceptance.
 
-## Server-control evidence (step 3)
+## Session log 2026-11-05 — S6 step 3: account-bound call control (4493d0a)
 
 * ADR 0015: ephemeral live call state, conversation/account ownership, session-bound
   participation UUID, revisions, reconnect grace and bounded reservations. Added
@@ -96,14 +130,14 @@ Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unf
   Existing anonymous-room behavior is unchanged and is not evidence for those items.
   The branch remains local. No remote publishing or CI run claimed.
 
-## Acceptance checks — S6 (IN_PROGRESS, Windows)
+## Acceptance checks — S6 (DONE, Windows; real audio/two machines owner-assisted)
 
 | Criterion / slice | Status | Evidence / remaining work |
 |---|---|---|
 | 100-member group server integration | PASS (headless) | 100 authenticated accounts/WebSockets; ordered history/receipts, creator rights, capacity race, removal/re-add and restart in server messenger tests |
 | Client group synchronization and permission changes | PASS (headless) | Service/engine sync tests and S5 → S6 cache migration; offline membership-gap protection |
-| Account-bound calls, block enforcement, one call across devices | UNVERIFIED; not implemented | S6 steps 3–4 next; existing anonymous media tests do not certify these rights |
-| Native group controls and chat ↔ call flow | UNVERIFIED; not implemented | S6 steps 5–6; background-only native checks, simulated audio baseline, real audio separately |
+| Account-bound calls, block enforcement, one call across devices | PASS (headless) | Server device races/stale operations and desktop authenticated Session/SFU integration; revoke, reconnect, block/removal and history |
+| Native group controls and chat ↔ call flow | PASS (software + OpenGL; simulated audio) | Real release clients on invisible desktop: 3-member group, direct accept/leave, direct decline, preserved history/drafts, clean exits; sanitized report in benchmarks/results/s6-windows-2026-11-05.md |
 
 ## Session log 2026-11-05 — S6 step 1: groups on the server
 
@@ -284,7 +318,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 | Automated 20-participant scenario | 20 desktop `Session`s (simulated devices, real UDP) through one in-process app-server + SFU: 3 talk, 17 listen with voice activation and a silent mic. Everyone hears every talker (listeners 3 streams, talkers 2), speaking indicators match, listeners send 0 frames; a talker leaves + a listener switches rooms → the 17 left hear 2 talkers; both return → all hear 3; server outage → all 20 reconnect and hear 3 again | **PASS (headless, Windows debug build, 3 runs)**: all heard after ≈ 1.97 s, recovered after outage ≈ 2.4 s, worst concealed 0.0 %, test process CPU 9.8–15.2 s over 6.0–7.3 s wall (≈ 1.6 of 12 logical CPUs for 20 clients + server) | `cargo test -p turbo-pancake-desktop --test session twenty -- --nocapture` (prints `TURBO_PANCAKE_TWENTY …`) |
 | Join / leave | 3-member test: leave → others keep hearing each other, rejoin → all hear all | **PASS (headless)** | same test |
 | Reconnection | signaling outage: 2 members, and 3 members (server restart → all rejoin, each hears both others as exactly 2 fresh streams) | **PASS (headless)**; real network roaming **UNVERIFIED** | `signaling_outage_ends_media_and_reconnects`, `group_call_reconnects_after_a_server_outage` |
-| New call closes the previous one | server: join of another room → `RoomLeft{old}`, old members `PeerLeft{SWITCHED}`, SFU session ends; repeated join/leave idempotent; full room refuses without ending the current call. Client: 3 sessions, Алиса switches from Боб's room to Вера's — Боб loses her stream at once, Алиса and Вера hear each other, repeated join changes nothing | **PASS (headless, per connection)**; per *user* across devices **UNVERIFIED** until accounts (S5) | `apps/app-server/tests/signaling.rs::{joining_another_room_closes_the_previous_call,switch_to_a_full_room_keeps_the_current_call}`, `apps/desktop/tests/session.rs::joining_another_room_closes_the_previous_call` |
+| New call closes the previous one | server: join of another room → `RoomLeft{old}`, old members `PeerLeft{SWITCHED}`, SFU session ends; repeated join/leave idempotent; full room refuses without ending the current call. Client: 3 sessions, Алиса switches from Боб's room to Вера's — Боб loses her stream at once, Алиса and Вера hear each other, repeated join changes nothing | **PASS (headless, per connection)**; extended to **PASS per account across devices in S6**, see S6 acceptance above | `apps/app-server/tests/signaling.rs::{joining_another_room_closes_the_previous_call,switch_to_a_full_room_keeps_the_current_call}`, `apps/desktop/tests/session.rs::joining_another_room_closes_the_previous_call` |
 | No per-viewer transcoding | SFU forwards RTP payloads untouched (code + ADR 0008); load measured with `turbo-pancake-bench sfu` (release server process, 20 real call drivers) | **PASS**: no transcoding by design; 20 members, 1 / 3 / 10 / 20 talking → server 6.9 / 6.2 / 14.4 / 25.4 % of one core, 951 – 18 991 packets/s out, 99–100 % delivered, egress ≈ 1.3 – 25.2 Mbit/s (re-measured after the burst fix) | `crates/media-sfu/src/lib.rs`, `benchmarks/results/sfu-20m-windows-1793711275.json`, `sfu-50m-windows-1793711325.json` |
 | Per-member volume, speaking indicator, voice activation, AEC/NS toggle | 3 headless members through the real server: speaking indicators (own + per member), voice activation stops sending in silence (0 frames sent, ≥ 25 gated) and the next talkspurt plays (late ≤ 5), member volume 0 silences only that member, call volume scales all | **PASS (headless)**; UI rendered on Windows (window-check screenshot, not driven by input); by-ear check with real devices **UNVERIFIED**; AEC/NS toggle from S1 | `cargo test -p turbo-pancake-desktop --test session speaking_indicators`, `cargo test -p turbo-pancake-media-audio --test engine voice_activation` |
 
@@ -347,7 +381,9 @@ performance results for the target hardware (RTX 4070 Super / M4).
 14. Physical unplug and sleep/wake are not tested on real hardware (only simulated devices); engine thread runs at default OS priority.
 15. Desktop release exe grew 9.1 → 17.9 MiB (APM, str0m/aws-lc, Tokio, Slint std-widgets); installer ≤ 30 MB target to be measured in S7.
 16. Media: host + server-reflexive (STUN) candidates since 2026-11-02; no TURN, so symmetric NAT / CGNAT on both sides cannot connect. In the trial `rx_peak` stayed 0.000 with remote volume 0 although B's mic peak was 0.05 — the peak is measured after the volume; audible quality needs an owner-assisted trial.
-17. The S1 room is joined by id without authentication (accounts in S5); a third member in a room is ignored (1:1 only).
+17. **Historical S1 limitation, closed by S2/S6:** group media supports multiple members;
+    messenger calls now require authenticated account/conversation participation.
+    Anonymous rooms remain an isolated explicit development path (ADR 0015).
 19. **Media goes through the server since 2026-11-02 (ADR 0007):** UDP to the server or a
     WebSocket tunnel. Since S2 step 1 every member hears every other member as its own
     SSRC (ADR 0008). No E2EE (the SFU decrypts SRTP). No speaker cap yet: N·(N−1)
@@ -373,13 +409,14 @@ performance results for the target hardware (RTX 4070 Super / M4).
     (voice-trial, group-trial, the bench harness) already used CreateProcess. Any new GUI
     launcher must do the same.
 22. Per-member volumes are keyed by the connection's peer id and reset on reconnect or
-    rejoin (accounts with stable ids arrive in S5).
+    rejoin; persisting those settings by the stable account identity is a polish item.
 23. With voice activation the receiver conceals ~200 ms after each talkspurt (counted as
     concealed/underrun ticks) before it rebuffers; Opus PLC fades out, so it is quiet, but
     `concealed_ratio` overstates loss for gated senders. A comfort-noise / end-of-talkspurt
     marker would remove it.
-24. One active call is enforced per connection; the same person on two devices can be in
-    two rooms until accounts (S5) give a user identity to enforce it per user.
+24. **Fixed in S6 (ADR 0015):** one participation per account across devices. A new
+    join evicts the old hub/SFU session; stale leave/attachment cannot end or restore
+    ownership. Verified by concurrent-device server tests and authenticated media test.
 25. **The SFU is one thread:** ≈ 11–14 µs per forwarded packet, saturates one core at
     ≈ 72–78 000 packets/s out (≈ 1 500 concurrent streams); 50 members all talking
     delivered 59–64 % (dev machine shared with other work). No speaker cap yet (ADR 0008:
@@ -815,29 +852,14 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S6 on Windows (groups + calls in the messenger)
+## Exact next task — S6 complete; stop before S7
 
-Execute step 3 of the S6 plan in `docs/STAGES.md`: document ADR 0015 for call state,
-storage and ownership; add protobuf/API call lifecycle contracts and authenticated
-create/join/leave/snapshots. Enforce membership, direct blocks and one participation per
-account across devices, with deterministic concurrency/stale-device tests. Then steps
-4 (authorized media/recovery), 5 (Windows UI) and 6 (native acceptance). Do not start S7.
-The original scope reference below remains applicable; its planning prerequisite is done.
-
-1. Write the S6 plan in `docs/STAGES.md` from spec §6, §7, §11, §17 S6 before coding:
-   groups up to 100 members (create with several people, title, creator adds/removes
-   members and renames, invite by username), group events (`conversation.updated`,
-   member changes in the change feed or a separate members revision), calls bound to
-   conversations (`/v1/calls` create/join/leave, `call.started/participant_joined/
-   participant_left/ended`, server-authoritative membership, one active call per user
-   across devices, direct calls refused across a block, call states idle → inviting/
-   connecting → active → reconnecting → ended/failed), the call `Session` signed in with
-   the account token instead of anonymous rooms, UI: group creation/settings, call
-   button in a chat, join a running call, chat ↔ call switch without losing history.
-2. Acceptance: 100-member group integration test (permissions, sync, reconnect); real
-   users start/join/leave a call without breaking history/permissions (GUI trial).
-3. Owner-assisted items of S1–S5 stay listed; they do not block S6.
-
+S6 Windows acceptance is complete; see the acceptance table and sanitized report.
+The first unfinished stage is S7, which the owner explicitly excluded from this task.
+Do not begin it without a new owner request. Preserve the existing local branch and
+commits. GitHub publishing remains unavailable; do not open authentication windows or
+claim a remote push/CI run. Existing owner-assisted real-audio/two-machine/hardware
+checks remain separately pending under ADR 0012.
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 
 * ADR 0014: private CA via `gen-cert`, server HTTPS + WSS, clients verify always

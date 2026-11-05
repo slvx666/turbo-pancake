@@ -86,7 +86,7 @@ component ConversationItem inherits Rectangle {
             y: (parent.height - self.height) / 2;
             name: root.item.title;
             online: root.item.online;
-            show-presence: root.presence;
+            show-presence: root.presence && root.item.peer-id != "";
         }
         VerticalLayout {
             alignment: center;
