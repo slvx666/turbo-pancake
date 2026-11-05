@@ -717,3 +717,46 @@ fn group_contract_and_limits() {
     assert!(validate_group_title(&"я".repeat(100)).is_ok());
     assert!(validate_group_title("Рабочая группа 👋").is_ok());
 }
+
+#[test]
+fn conversation_call_contracts_are_additive_and_pinned() {
+    let variants = [
+        S::CallStarted(v1::ConversationCall::default()),
+        S::CallParticipantJoined(v1::ConversationCall::default()),
+        S::CallParticipantLeft(v1::ConversationCall::default()),
+        S::CallEnded(v1::ConversationCall::default()),
+    ];
+    for (field, body) in (31u32..=34).zip(variants) {
+        let bytes = v1::ServerEnvelope {
+            body: Some(body),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let tag = (field << 3) | 2;
+        assert_eq!(&bytes[..2], &[(tag as u8) | 128, (tag >> 7) as u8]);
+    }
+    assert_eq!(
+        v1::JoinCallMedia {
+            call_id: "c".into(),
+            participation_id: "p".into()
+        }
+        .encode_to_vec(),
+        vec![10, 1, b'c', 18, 1, b'p']
+    );
+    assert_eq!(
+        v1::LeaveCallRequest {
+            participation_id: "p".into()
+        }
+        .encode_to_vec(),
+        vec![10, 1, b'p']
+    );
+    assert_eq!(
+        v1::ConversationCall {
+            revision: 7,
+            state: 2,
+            ..Default::default()
+        }
+        .encode_to_vec(),
+        vec![24, 7, 32, 2]
+    );
+}

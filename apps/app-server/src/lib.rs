@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod calls;
 pub mod chat;
 pub mod events;
 pub mod groups;
@@ -100,6 +101,7 @@ pub struct AppState {
     pub db: Option<sqlx::PgPool>,
     pub registry: Arc<events::Registry>,
     pub limiters: Arc<ratelimit::Limiters>,
+    pub calls: Arc<tokio::sync::Mutex<calls::Book>>,
     /// Becomes `true` when the server shuts down: WebSocket connections end.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
@@ -121,6 +123,7 @@ impl AppState {
             db: None,
             registry: Arc::new(events::Registry::default()),
             limiters,
+            calls: Arc::new(tokio::sync::Mutex::new(calls::Book::default())),
         }
     }
 
@@ -195,6 +198,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/blocks/{id}", put(chat::block).delete(chat::unblock))
         .route("/v1/conversations", get(chat::list_conversations))
         .route("/v1/conversations/direct", post(chat::create_direct))
+        .route("/v1/calls", get(calls::list).post(calls::create))
+        .route("/v1/calls/{id}/join", post(calls::join))
+        .route("/v1/calls/{id}/leave", post(calls::leave))
+        .route("/v1/calls/{id}/decline", post(calls::decline))
         .route("/v1/conversations/group", post(groups::create))
         .route(
             "/v1/conversations/{id}",
@@ -271,6 +278,7 @@ pub async fn serve(
         .map_err(|e| std::io::Error::other(format!("messenger database: {e}")))?
         .with_media(local.ip(), local.port());
     let sfu = state.sfu.clone();
+    calls::supervise(state.clone());
     let stop_connections = state.shutdown_tx.clone();
     let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
     let stop = async move {

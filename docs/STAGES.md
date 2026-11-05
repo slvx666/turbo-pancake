@@ -41,7 +41,7 @@ PROJECT_STATE. Existing migrations and anonymous loopback media tests remain int
    Own `membership_revision` detects remove/re-add entirely while offline; additive
    PostgreSQL/SQLite migrations preserve prior data. Old queued sends/drafts are
    discarded across that membership gap, and the old open composer is closed.
-3. **Account-bound call control.** Document lifecycle/storage decision in ADR 0015 and
+3. **Account-bound call control — DONE (2026-11-05).** Document lifecycle/storage decision in ADR 0015 and
    extend protobuf/API contracts before desktop integration. Calls belong to a
    conversation; create/join/leave and snapshots are authenticated. Track revision,
    participant account/device ownership and typed lifecycle events. Enforce membership,

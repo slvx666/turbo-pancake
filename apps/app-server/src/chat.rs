@@ -155,6 +155,7 @@ pub async fn block(
     Path(id): Path<String>,
 ) -> ApiResult<Proto<v1::Empty>> {
     let other = parse_id(&id)?;
+    let mut calls = state.calls.lock().await;
     if other == me.user_id {
         return Err(ApiError::bad_request("cannot block yourself"));
     }
@@ -174,6 +175,9 @@ pub async fn block(
     if added {
         tracing::info!(target: "security", event = "blocked", user = %me.user_id, blocked = %other);
         after_block_change(&state, &pool, me.user_id, other).await?;
+        if let Some(conv) = direct_between(&pool, me.user_id, other).await? {
+            calls.end_conversation(&state, conv, "blocked");
+        }
     }
     Ok(Proto(v1::Empty {}))
 }

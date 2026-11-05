@@ -263,6 +263,10 @@ impl Hub {
         Ok(())
     }
 
+    pub(crate) fn evict(&self, room: &str, peer_id: &str, reason: LeaveReason) -> bool {
+        self.leave(room, peer_id, reason)
+    }
+
     fn leave(&self, room: &str, peer_id: &str, reason: LeaveReason) -> bool {
         let mut rooms = self.rooms.lock().expect("hub lock poisoned");
         let Some(members) = rooms.get_mut(room) else {
@@ -323,6 +327,7 @@ pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> 
 /// The account behind a signed-in connection.
 struct SignedIn {
     user_id: uuid::Uuid,
+    session_id: uuid::Uuid,
     conn_id: u64,
 }
 
@@ -440,6 +445,13 @@ async fn connection(socket: WebSocket, state: AppState, _permit: OwnedSemaphoreP
     };
 
     if let (Some(peer_id), Some(room)) = (&session.peer_id, session.room.take()) {
+        if let Some(user) = &session.user {
+            state
+                .calls
+                .lock()
+                .await
+                .disconnect(&state, user.user_id, peer_id, false);
+        }
         state.hub.leave(&room, peer_id, reason);
     }
     if let (Some(peer_id), true, Some(sfu)) = (&session.peer_id, session.media, &state.sfu) {
@@ -552,6 +564,7 @@ async fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
                     .register(auth.user_id, auth.session_id, s.handle());
             s.user = Some(SignedIn {
                 user_id: auth.user_id,
+                session_id: auth.session_id,
                 conn_id,
             });
             if first {
@@ -574,7 +587,46 @@ async fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
         return Flow::Continue;
     };
 
+    let mut calls = state.calls.lock().await;
+    // A control-side eviction removes authorization before any later media offer.
+    if let (Some(u), Some(current)) = (&s.user, &s.room)
+        && current.starts_with("call_")
+        && !calls.authorized(u.user_id, u.session_id, &peer_id, current)
+    {
+        let old = current.clone();
+        s.leave_room(hub, state, &peer_id, LeaveReason::Switched);
+        s.reply(0, S::RoomLeft(v1::RoomLeft { room_id: old }));
+    }
+    let body = match body {
+        C::JoinCallMedia(req) => {
+            let Some(u) = &s.user else {
+                s.reply_error(rid, ErrorCode::Unauthenticated, "sign in first");
+                return Flow::Continue;
+            };
+            let me = crate::api::AuthUser {
+                user_id: u.user_id,
+                session_id: u.session_id,
+            };
+            match calls.attach(state, &me, &peer_id, s.handle(), &req).await {
+                Ok(room_id) => C::JoinRoom(v1::JoinRoom { room_id }),
+                Err(e) => {
+                    s.reply_error(rid, ErrorCode::NotInRoom, &e.message);
+                    return Flow::Continue;
+                }
+            }
+        }
+        C::JoinRoom(j) if s.user.is_some() || j.room_id.starts_with("call_") => {
+            s.reply_error(
+                rid,
+                ErrorCode::NotInRoom,
+                "use an authorized conversation call",
+            );
+            return Flow::Continue;
+        }
+        other => other,
+    };
     match body {
+        C::JoinCallMedia(_) => unreachable!("normalized above"),
         C::Hello(_) => s.reply_error(rid, ErrorCode::BadRequest, "duplicate Hello"),
         C::Ping(p) => s.reply(
             rid,
@@ -615,6 +667,9 @@ async fn handle_frame(bytes: &[u8], s: &mut Session, state: &AppState) -> Flow {
             // Idempotent: leaving a room we are not in (already left, switched, never
             // joined) only confirms it.
             if s.room.as_deref() == Some(l.room_id.as_str()) {
+                if let Some(u) = &s.user {
+                    calls.disconnect(state, u.user_id, &peer_id, true);
+                }
                 s.leave_room(hub, state, &peer_id, LeaveReason::Left);
             }
             s.reply(rid, S::RoomLeft(v1::RoomLeft { room_id: l.room_id }));

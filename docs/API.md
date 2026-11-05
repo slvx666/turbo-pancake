@@ -142,6 +142,25 @@ operations, drafts and message cursor, closes the old composer, and reloads hist
 
 ### Rooms and relay
 
+Account calls (S6, ADR 0015): `GET /v1/calls -> CallList`,
+`POST /v1/calls (CreateCallRequest) -> CallParticipation`,
+`POST /v1/calls/{id}/join -> CallParticipation`,
+`POST /v1/calls/{id}/leave (LeaveCallRequest) -> Empty`,
+`POST /v1/calls/{id}/decline -> Empty`. All require account authentication and current
+conversation membership; direct create/join refuses blocks. Creating a direct call to
+a participant already busy elsewhere returns 409. Accept/join switches the caller's
+old participation across all devices; a retry by the owning session keeps its lease.
+Only that session and participation id can leave; stale leave is a no-op.
+
+Media attaches with `JoinCallMedia{call_id, participation_id}` on an authenticated
+WebSocket. Regular `JoinRoom` is anonymous development only and cannot use `call_`
+room ids. A removed/blocked/revoked/switched participant loses the hub/SFU session;
+stale media offers cannot restore it. `CallStarted`, `CallParticipantJoined`,
+`CallParticipantLeft`, `CallEnded` carry a full `ConversationCall` snapshot with a
+monotonic revision. List snapshots repair missed events. The live call state is
+ephemeral: restart ends calls, never restores media from old ids. Unattached leases
+and unanswered invitations expire in 30 seconds; disconnect grace is 10 seconds.
+
 | Client request | Success reply | Errors |
 |---|---|---|
 | `JoinRoom{room_id}` | `RoomJoined{room_id, peers[]}` (existing members); others get `PeerJoined`. While in another room: first `RoomLeft{old room}` (event, `request_id` 0), the old room's members get `PeerLeft{reason=SWITCHED}` and the media session ends; then `RoomJoined`. Same room again: `RoomJoined` with the current members, nobody else is told | `BAD_REQUEST` (invalid id), `ROOM_FULL` (default 100; checked before leaving, so the current call goes on) |

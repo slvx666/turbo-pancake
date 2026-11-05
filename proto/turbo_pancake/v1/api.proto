@@ -259,3 +259,38 @@ message Receipt {
   int64 delivered_sequence = 3;
   int64 read_sequence = 4;
 }
+
+// ---- Conversation calls (S6, ADR 0015) ----
+enum ConversationCallState {
+  CONVERSATION_CALL_STATE_UNSPECIFIED = 0;
+  CONVERSATION_CALL_STATE_INVITING = 1;
+  CONVERSATION_CALL_STATE_ACTIVE = 2;
+  CONVERSATION_CALL_STATE_ENDED = 3;
+}
+message CallParticipant {
+  string user_id = 1;
+  string peer_id = 2; // empty while connecting/reconnecting
+}
+message ConversationCall {
+  string call_id = 1;
+  string conversation_id = 2;
+  uint64 revision = 3;
+  ConversationCallState state = 4;
+  repeated CallParticipant participants = 5;
+  string started_by = 6;
+  // Empty while live; ended: left, declined, timeout, removed, blocked, revoked.
+  string end_reason = 7;
+}
+// POST /v1/calls -> CallParticipation. Existing call: joins it.
+message CreateCallRequest { string conversation_id = 1; }
+// POST /v1/calls/{call_id}/join -> CallParticipation. Same owning session: idempotent.
+message CallParticipation {
+  ConversationCall call = 1;
+  // Only returned to the owning account session, never in events or public snapshots.
+  string participation_id = 2;
+}
+// POST /v1/calls/{call_id}/leave -> Empty. Stale ownership is a harmless no-op.
+message LeaveCallRequest { string participation_id = 1; }
+// POST /v1/calls/{call_id}/decline -> Empty (invited direct-call recipient only).
+// GET /v1/calls -> CallList: current calls in the caller's conversations.
+message CallList { repeated ConversationCall calls = 1; }

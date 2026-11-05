@@ -7,6 +7,25 @@ Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx
 Platform matrix: Windows = PASS (CI + dev machine). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
 Last session: 2026-11-05 (S6 steps 1–2 verified; calls and group UI remain unfinished)
 
+## Session log 2026-11-05 — S6 step 3: account-bound call control
+
+* ADR 0015: ephemeral live call state, conversation/account ownership, session-bound
+  participation UUID, revisions, reconnect grace and bounded reservations. Added
+  authenticated HTTP create/join/leave/decline/list and typed lifecycle events.
+* Joining on another device evicts the old hub/SFU peer. Stale leave cannot end the
+  new participation; stale attachment/media cannot restore it. Direct calls enforce
+  blocks/busy; removal/block terminates participation. Anonymous rooms cannot use the
+  reserved call namespace; authenticated accounts cannot join arbitrary rooms.
+* Membership removal and lifecycle operations share a control lock. A supervisor
+  expires abandoned leases/invitations and revoked sessions. Restart ends live calls.
+* **PASS:** fmt, workspace Clippy, workspace baseline **151 passed, 0 failed**
+  (3 ignored, real system-audio test filtered separately), real PostgreSQL. Log:
+  `.local/logs/s6-step3-tests.log`. Two new server tests cover device races/stale leave,
+  blocks/removal, busy/decline/restart, invalid media attachment and preserved history;
+  protobuf contract numbers pinned. Native/media-client integration remains step 4.
+* Files: server calls/control hooks and tests, protobuf contracts, ADR/API/STAGES/state.
+  All commits remain local. S6 is IN_PROGRESS; do not treat this as native acceptance.
+
 ## Session log 2026-11-05 — S6 step 2: group client core
 
 * Added typed group HTTP methods, Service create/rename/add/remove commands, group kind,

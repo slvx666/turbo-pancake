@@ -242,6 +242,25 @@ struct Live {
 }
 
 impl Live {
+    async fn attach_call(&mut self, call: &v1::CallParticipation) -> bool {
+        let req = client(
+            900,
+            C::JoinCallMedia(v1::JoinCallMedia {
+                call_id: call.call.as_ref().unwrap().call_id.clone(),
+                participation_id: call.participation_id.clone(),
+            }),
+        );
+        self.ws
+            .send(Message::Binary(encode(&req).into()))
+            .await
+            .unwrap();
+        self.expect(|body| match body {
+            S::RoomJoined(_) => Some(true),
+            S::Error(_) => Some(false),
+            _ => None,
+        })
+        .await
+    }
     async fn connect(addr: SocketAddr, token: &str) -> Result<Self, v1::Error> {
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/signal"))
             .await
@@ -333,6 +352,374 @@ fn created(body: S) -> Option<v1::ChatMessage> {
 }
 
 // ---- Tests ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn conversation_calls_enforce_account_ownership_blocks_and_removal() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let srv = Server::start(&db, |_| {}).await;
+    let api = srv.api();
+    let alice = api.register("alice").await;
+    let bob = api.register("bob").await;
+    let cara = api.register("cara").await;
+    let group: v1::Conversation = api
+        .call(
+            Method::POST,
+            "/v1/conversations/group",
+            Some(&alice.token),
+            Some(&v1::CreateGroupRequest {
+                title: "calls".into(),
+                usernames: vec!["bob".into()],
+            }),
+        )
+        .await
+        .unwrap();
+    let cid = group.conversation_id;
+    let first = api
+        .send(&alice.token, &cid, "before-call", "history before call")
+        .await
+        .unwrap();
+    let mut a = Live::connect(srv.addr, &alice.token).await.unwrap();
+    let mut b = Live::connect(srv.addr, &bob.token).await.unwrap();
+    let started: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            "/v1/calls",
+            Some(&alice.token),
+            Some(&v1::CreateCallRequest {
+                conversation_id: cid.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(a.attach_call(&started).await);
+    let call_id = started.call.as_ref().unwrap().call_id.clone();
+    let joined: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            &format!("/v1/calls/{call_id}/join"),
+            Some(&bob.token),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(b.attach_call(&joined).await);
+    // Non-member cannot observe or join it; anonymous and ordinary room joins cannot bypass it.
+    let list: v1::CallList = api
+        .call(Method::GET, "/v1/calls", Some(&cara.token), None)
+        .await
+        .unwrap();
+    assert!(list.calls.is_empty());
+    assert_eq!(
+        api.call::<v1::CallParticipation>(
+            Method::POST,
+            &format!("/v1/calls/{call_id}/join"),
+            Some(&cara.token),
+            None
+        )
+        .await
+        .unwrap_err()
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let mut anon = Live::connect(srv.addr, "").await.unwrap();
+    assert!(!anon.attach_call(&started).await);
+    anon.ws
+        .send(Message::Binary(
+            encode(&client(
+                901,
+                C::JoinRoom(v1::JoinRoom {
+                    room_id: format!("call_{call_id}"),
+                }),
+            ))
+            .into(),
+        ))
+        .await
+        .unwrap();
+    anon.expect(|b| matches!(b, S::Error(_)).then_some(()))
+        .await;
+    let other = api.login("alice", "correct horse").await.unwrap();
+    let mut a2 = Live::connect(srv.addr, &other.token).await.unwrap();
+    let moved: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            &format!("/v1/calls/{call_id}/join"),
+            Some(&other.token),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_ne!(moved.participation_id, started.participation_id);
+    a.expect(|b| matches!(b, S::RoomLeft(_)).then_some(()))
+        .await;
+    assert!(a2.attach_call(&moved).await);
+    // Repeated join preserves the new lease; stale leave/reattach cannot end or steal it.
+    let retry: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            &format!("/v1/calls/{call_id}/join"),
+            Some(&other.token),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.participation_id, moved.participation_id);
+    let _: v1::Empty = api
+        .call(
+            Method::POST,
+            &format!("/v1/calls/{call_id}/leave"),
+            Some(&alice.token),
+            Some(&v1::LeaveCallRequest {
+                participation_id: started.participation_id.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!a.attach_call(&started).await);
+    let list: v1::CallList = api
+        .call(Method::GET, "/v1/calls", Some(&bob.token), None)
+        .await
+        .unwrap();
+    assert_eq!(list.calls[0].participants.len(), 2);
+    assert_eq!(
+        list.calls[0]
+            .participants
+            .iter()
+            .filter(|p| p.user_id == alice.user.as_ref().unwrap().user_id)
+            .count(),
+        1
+    );
+    // Accepting a new conversation call evicts old participation, preserving the group for Bob.
+    let direct = api
+        .direct(&other.token, &cara.user.as_ref().unwrap().user_id)
+        .await;
+    let d: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            "/v1/calls",
+            Some(&other.token),
+            Some(&v1::CreateCallRequest {
+                conversation_id: direct.conversation_id.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    a2.expect(|b| matches!(b, S::RoomLeft(_)).then_some(()))
+        .await;
+    let list: v1::CallList = api
+        .call(Method::GET, "/v1/calls", Some(&bob.token), None)
+        .await
+        .unwrap();
+    assert_eq!(list.calls[0].participants.len(), 1);
+    assert_eq!(
+        list.calls[0].participants[0].user_id,
+        bob.user.as_ref().unwrap().user_id
+    );
+    // A block ends the direct invitation and prevents either direction of direct calls.
+    let _: v1::Empty = api
+        .call(
+            Method::PUT,
+            &format!("/v1/blocks/{}", alice.user.as_ref().unwrap().user_id),
+            Some(&cara.token),
+            None,
+        )
+        .await
+        .unwrap();
+    for token in [&other.token, &cara.token] {
+        assert_eq!(
+            api.call::<v1::CallParticipation>(
+                Method::POST,
+                "/v1/calls",
+                Some(token),
+                Some(&v1::CreateCallRequest {
+                    conversation_id: direct.conversation_id.clone()
+                })
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let d_id = &d.call.as_ref().unwrap().call_id;
+    assert_eq!(
+        api.call::<v1::CallParticipation>(
+            Method::POST,
+            &format!("/v1/calls/{d_id}/join"),
+            Some(&other.token),
+            None
+        )
+        .await
+        .unwrap_err()
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    // Removing the last group caller ends the call and its media authorization.
+    let _: v1::Conversation = api
+        .call(
+            Method::DELETE,
+            &format!(
+                "/v1/conversations/{cid}/members/{}",
+                bob.user.as_ref().unwrap().user_id
+            ),
+            Some(&alice.token),
+            None,
+        )
+        .await
+        .unwrap();
+    b.expect(|b| matches!(b, S::RoomLeft(_)).then_some(()))
+        .await;
+    assert!(!b.attach_call(&joined).await);
+    let list: v1::CallList = api
+        .call(Method::GET, "/v1/calls", Some(&alice.token), None)
+        .await
+        .unwrap();
+    assert!(list.calls.is_empty());
+    api.send(&alice.token, &cid, "after-call", "history after call")
+        .await
+        .unwrap();
+    let history = api.changes(&alice.token, &cid, 0).await;
+    assert_eq!(history.messages.len(), 2);
+    assert_eq!(history.messages[0].message_id, first.message_id);
+    srv.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn calls_concurrent_devices_stale_leave_decline_busy_and_restart() {
+    let db = database().expect("S6 requires PostgreSQL");
+    let srv = Server::start(&db, |_| {}).await;
+    let api = srv.api();
+    let alice = api.register("alice").await;
+    let bob = api.register("bob").await;
+    let cara = api.register("cara").await;
+    let group: v1::Conversation = api
+        .call(
+            Method::POST,
+            "/v1/conversations/group",
+            Some(&alice.token),
+            Some(&v1::CreateGroupRequest {
+                title: "call race".into(),
+                usernames: vec!["bob".into()],
+            }),
+        )
+        .await
+        .unwrap();
+    let req = v1::CreateCallRequest {
+        conversation_id: group.conversation_id.clone(),
+    };
+    let a2 = api.login("alice", "correct horse").await.unwrap();
+    let a3 = api.login("alice", "correct horse").await.unwrap();
+    let (x, y, z) = tokio::join!(
+        api.call::<v1::CallParticipation>(
+            Method::POST,
+            "/v1/calls",
+            Some(&alice.token),
+            Some(&req)
+        ),
+        api.call::<v1::CallParticipation>(Method::POST, "/v1/calls", Some(&a2.token), Some(&req)),
+        api.call::<v1::CallParticipation>(Method::POST, "/v1/calls", Some(&a3.token), Some(&req))
+    );
+    let participants = [x.unwrap(), y.unwrap(), z.unwrap()];
+    let tokens = [&alice.token, &a2.token, &a3.token];
+    let list: v1::CallList = api
+        .call(Method::GET, "/v1/calls", Some(&bob.token), None)
+        .await
+        .unwrap();
+    assert_eq!(list.calls.len(), 1);
+    assert_eq!(list.calls[0].participants.len(), 1);
+    let mut winners = Vec::new();
+    let mut connections = Vec::new();
+    for i in 0..3 {
+        let mut ws = Live::connect(srv.addr, tokens[i]).await.unwrap();
+        if ws.attach_call(&participants[i]).await {
+            winners.push(i);
+        }
+        connections.push(ws);
+    }
+    assert_eq!(winners.len(), 1, "only the final owning device can attach");
+    for i in (0..3).filter(|i| *i != winners[0]) {
+        let id = &participants[i].call.as_ref().unwrap().call_id;
+        let _: v1::Empty = api
+            .call(
+                Method::POST,
+                &format!("/v1/calls/{id}/leave"),
+                Some(tokens[i]),
+                Some(&v1::LeaveCallRequest {
+                    participation_id: participants[i].participation_id.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    let direct = api
+        .direct(&cara.token, &alice.user.as_ref().unwrap().user_id)
+        .await;
+    assert_eq!(
+        api.call::<v1::CallParticipation>(
+            Method::POST,
+            "/v1/calls",
+            Some(&cara.token),
+            Some(&v1::CreateCallRequest {
+                conversation_id: direct.conversation_id.clone()
+            })
+        )
+        .await
+        .unwrap_err()
+        .0,
+        StatusCode::CONFLICT
+    );
+    let winner = winners[0];
+    let id = &participants[winner].call.as_ref().unwrap().call_id;
+    let _: v1::Empty = api
+        .call(
+            Method::POST,
+            &format!("/v1/calls/{id}/leave"),
+            Some(tokens[winner]),
+            Some(&v1::LeaveCallRequest {
+                participation_id: participants[winner].participation_id.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    let invitation: v1::CallParticipation = api
+        .call(
+            Method::POST,
+            "/v1/calls",
+            Some(&cara.token),
+            Some(&v1::CreateCallRequest {
+                conversation_id: direct.conversation_id,
+            }),
+        )
+        .await
+        .unwrap();
+    let id = &invitation.call.as_ref().unwrap().call_id;
+    let _: v1::Empty = api
+        .call(
+            Method::POST,
+            &format!("/v1/calls/{id}/decline"),
+            Some(&alice.token),
+            None,
+        )
+        .await
+        .unwrap();
+    let list: v1::CallList = api
+        .call(Method::GET, "/v1/calls", Some(&cara.token), None)
+        .await
+        .unwrap();
+    assert!(list.calls.is_empty());
+    drop(connections);
+    srv.stop().await;
+    let srv = Server::start(&db, |_| {}).await;
+    let list: v1::CallList = srv
+        .api()
+        .call(Method::GET, "/v1/calls", Some(&alice.token), None)
+        .await
+        .unwrap();
+    assert!(
+        list.calls.is_empty(),
+        "restart cannot restore dead media sessions"
+    );
+    srv.stop().await;
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn group_100_members_fanout_capacity_permissions_and_restart() {

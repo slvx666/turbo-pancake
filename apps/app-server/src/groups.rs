@@ -171,6 +171,7 @@ pub async fn add_member(
 ) -> ApiResult<Proto<v1::Conversation>> {
     let conv = parse_id(&id)?;
     rate_limit(&state, me.user_id)?;
+    let mut calls = state.calls.lock().await;
     let mut tx = pool.begin().await?;
     creator(&mut tx, conv, me.user_id).await?;
     let user = resolve(&mut tx, &req.username).await?;
@@ -196,6 +197,8 @@ pub async fn add_member(
         recipients.push(user);
     }
     tx.commit().await?;
+    calls.add_member(&state, conv, user);
+    drop(calls);
     finish(&state, &pool, me.user_id, conv, &recipients).await
 }
 
@@ -207,6 +210,7 @@ pub async fn remove_member(
 ) -> ApiResult<Proto<v1::Conversation>> {
     let (conv, user) = (parse_id(&id)?, parse_id(&user)?);
     rate_limit(&state, me.user_id)?;
+    let mut calls = state.calls.lock().await;
     let mut tx = pool.begin().await?;
     creator(&mut tx, conv, me.user_id).await?;
     if user == me.user_id {
@@ -236,5 +240,7 @@ pub async fn remove_member(
         recipients.push(user);
     }
     tx.commit().await?;
+    calls.remove_member(&state, conv, user);
+    drop(calls);
     finish(&state, &pool, me.user_id, conv, &recipients).await
 }
