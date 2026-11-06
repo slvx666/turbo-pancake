@@ -3,9 +3,12 @@
 #
 #   bash install-server.sh <public IP> [branch]
 #
-# Before the first run, copy server.pem and server.key (from `gen-cert`, docs/DEPLOY-TLS.md)
-# to /root/turbo-pancake-tls/. Re-running the script updates the source, rebuilds and
-# restarts the service; the database and certificates are kept.
+# Before the first run, put server.pem and server.key (from `gen-cert`, docs/DEPLOY-TLS.md)
+# into `tls/` next to this script. With `src.tar.gz` next to it (`git archive`) that source
+# is built; otherwise the branch is fetched from GitHub. Re-running updates, rebuilds and
+# restarts the service; the database and certificates are kept. Firewall rules are added
+# only when ufw is already active (the script never turns a firewall on).
+# Behind NAT, forward TCP and UDP 7878 to this host.
 set -euo pipefail
 
 PUBLIC_IP="${1:?usage: install-server.sh <public IP> [branch]}"
@@ -14,7 +17,8 @@ REPO="${TURBO_PANCAKE_REPO:-https://github.com/slvx666/turbo-pancake.git}"
 PORT=7878
 SRC=/opt/turbo-pancake/src
 ETC=/etc/turbo-pancake
-TLS_IN=/root/turbo-pancake-tls
+HERE="$(cd "$(dirname "$0")" && pwd)"
+TLS_IN="$HERE/tls"
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
 
@@ -22,7 +26,7 @@ echo "== packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q git curl ca-certificates build-essential pkg-config cmake clang \
-    postgresql ufw
+    postgresql
 
 # A release build of the server needs ~2 GB of memory; add swap on small hosts.
 if [ "$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)" -lt 3000 ] && ! swapon --show | grep -q .; then
@@ -37,12 +41,18 @@ if ! command -v cargo >/dev/null && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
 fi
 export PATH="$HOME/.cargo/bin:$PATH"
 
-echo "== source ($BRANCH)"
-if [ -d "$SRC/.git" ]; then
+if [ -f "$HERE/src.tar.gz" ]; then
+    echo "== source (src.tar.gz)"
+    mkdir -p "$SRC"
+    find "$SRC" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
+    tar -xzf "$HERE/src.tar.gz" -C "$SRC"
+elif [ -d "$SRC/.git" ]; then
+    echo "== source ($BRANCH)"
     git -C "$SRC" fetch --depth 1 origin "$BRANCH"
     git -C "$SRC" checkout -q -B "$BRANCH" FETCH_HEAD
 else
-    mkdir -p "$(dirname "$SRC")"
+    echo "== source ($BRANCH)"
+    rm -rf "$SRC" && mkdir -p "$(dirname "$SRC")"
     git clone --depth 1 --branch "$BRANCH" "$REPO" "$SRC"
 fi
 
@@ -62,6 +72,7 @@ if [ -f "$TLS_IN/server.pem" ]; then
 fi
 [ -f "$ETC/tls/server.pem" ] || { echo "missing $TLS_IN/server.pem and server.key"; exit 1; }
 [ ! -f "$TLS_IN/ca.key" ] || echo "WARNING: ca.key does not belong on the server; delete $TLS_IN/ca.key"
+rm -f "$TLS_IN/server.key"
 
 echo "== database"
 systemctl enable --now postgresql
@@ -113,14 +124,11 @@ WorkingDirectory=/var/lib/turbo-pancake
 WantedBy=multi-user.target
 EOF
 
-echo "== firewall"
-ufw allow OpenSSH >/dev/null
-# Keep the port of the current SSH session open too (a non-standard sshd port).
-SSH_PORT="$(echo "${SSH_CONNECTION:-}" | awk '{print $4}')"
-[ -z "$SSH_PORT" ] || ufw allow "$SSH_PORT/tcp" >/dev/null
-ufw allow "$PORT/tcp" >/dev/null
-ufw allow "$PORT/udp" >/dev/null
-ufw --force enable >/dev/null
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+    echo "== firewall (ufw is active)"
+    ufw allow "$PORT/tcp" >/dev/null
+    ufw allow "$PORT/udp" >/dev/null
+fi
 
 systemctl daemon-reload
 systemctl enable turbo-pancake >/dev/null

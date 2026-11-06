@@ -70,7 +70,8 @@ cargo build --release --locked -p turbo-pancake-launcher -p turbo-pancake-update
 client (`turbo-pancake-update pack`) and build the installer with
 `TURBO_PANCAKE_SETUP_PAYLOAD` (ADR 0017).
 
-Server on Debian/Ubuntu: copy `server.pem` and `server.key` to `/root/turbo-pancake-tls/`
+Server on Debian/Ubuntu: put `server.pem` and `server.key` into `tls/` next to the script
 and run `deploy/linux/install-server.sh <public IP> [branch]` as root. It installs
 PostgreSQL and Rust, builds the server, creates the `turbo-pancake` systemd service
-(TCP and UDP 7878, firewall rules) and can be re-run to update.
+(TCP and UDP 7878; rules only if ufw is already active; forward both behind NAT) and can be
+re-run to update. `src.tar.gz` (`git archive`) next to the script is built instead of GitHub.
