@@ -57,6 +57,10 @@ fn run() -> Result<(), String> {
             wait_for_pid(pid, Duration::from_secs(30));
         }
     }
+    if args.first().map(String::as_str) == Some("--uninstall") {
+        args.remove(0);
+        return uninstall(&exe, args);
+    }
     let plan = install.launch_plan().map_err(|e| e.to_string())?;
     match plan {
         LaunchPlan::Run { version } => {
@@ -69,6 +73,116 @@ fn run() -> Result<(), String> {
             trial(&install, &version, &fallback, &args)
         }
     }
+}
+
+/// `--uninstall` (ADR 0017): the launcher copies itself to the temporary directory and
+/// runs the copy (`--uninstall-copy`), which can then delete the install directory.
+fn uninstall(exe: &std::path::Path, mut args: Vec<String>) -> Result<(), String> {
+    let copy_mode = args.first().map(String::as_str) == Some("--uninstall-copy");
+    if copy_mode {
+        args.remove(0);
+    }
+    let opts = turbo_pancake_setup::Options::take(&mut args);
+    if !copy_mode {
+        let copy = std::env::temp_dir().join(format!(
+            "turbo-pancake-uninstall-{}.exe",
+            std::process::id()
+        ));
+        std::fs::copy(exe, &copy).map_err(|e| format!("copy: {e}"))?;
+        // Without an explicit directory the copy must still know where we are.
+        let mut opts = opts;
+        if opts.install_dir.is_none() {
+            opts.install_dir = exe.parent().map(Into::into);
+        }
+        Command::new(&copy)
+            .arg("--wait-pid")
+            .arg(std::process::id().to_string())
+            .arg("--uninstall")
+            .arg("--uninstall-copy")
+            .args(opts.to_args())
+            .current_dir(std::env::temp_dir())
+            .spawn()
+            .map_err(|e| format!("start uninstaller: {e}"))?;
+        return Ok(());
+    }
+    let result = remove_everything(&opts);
+    match &result {
+        Ok(purged) => {
+            println!("TURBO_PANCAKE_UNINSTALL done=true purge={purged}");
+            #[cfg(windows)]
+            if !opts.quiet {
+                turbo_pancake_setup::win::info("turbo-pancake удалён.");
+            }
+        }
+        Err(e) => {
+            println!("TURBO_PANCAKE_UNINSTALL done=false error=\"{e}\"");
+            #[cfg(windows)]
+            if !opts.quiet && e != "cancelled" {
+                turbo_pancake_setup::win::error(&format!("Не удалось удалить turbo-pancake: {e}"));
+            }
+        }
+    }
+    delete_self_later(exe);
+    result.map(|_| ())
+}
+
+/// Returns whether profile data was removed too.
+fn remove_everything(opts: &turbo_pancake_setup::Options) -> Result<bool, String> {
+    let target = opts.target()?;
+    let mut purge = opts.purge;
+    #[cfg(windows)]
+    if !opts.quiet {
+        use turbo_pancake_setup::win::{Ask, ask};
+        if !ask("Удалить turbo-pancake с этого компьютера?", Ask::OkCancel) {
+            return Err("cancelled".into());
+        }
+        purge = ask(
+            "Удалить также локальную копию переписки, настройки и сохранённый вход?              Переписка на сервере не затрагивается.",
+            Ask::YesNo,
+        );
+    }
+    // Files first: a running client keeps them, and then nothing else is touched.
+    turbo_pancake_setup::remove_install(&target.root).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&target.shortcut);
+    #[cfg(windows)]
+    turbo_pancake_setup::win::unregister_uninstall(&target.registry_key)?;
+    if purge {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            turbo_pancake_setup::remove_profile_data(std::path::Path::new(&local))
+                .map_err(|e| e.to_string())?;
+        }
+        #[cfg(windows)]
+        turbo_pancake_setup::win::delete_credentials(&target.credential_prefix);
+    }
+    Ok(purge)
+}
+
+/// The temporary uninstaller copy cannot delete itself while it runs.
+fn delete_self_later(exe: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = Command::new("cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                "ping",
+                "-n",
+                "3",
+                "127.0.0.1",
+                ">nul",
+                "&",
+                "del",
+                "/f",
+                "/q",
+            ])
+            .arg(exe)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+    #[cfg(not(windows))]
+    let _ = exe;
 }
 
 fn trial(install: &Install, version: &str, fallback: &str, args: &[String]) -> Result<(), String> {

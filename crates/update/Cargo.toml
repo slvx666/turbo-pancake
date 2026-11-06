@@ -13,6 +13,8 @@ base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Installer packages (ADR 0017); already in the graph through image decoding.
+miniz_oxide = "0.8"
 reqwest = { workspace = true, optional = true }
 
 [features]

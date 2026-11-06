@@ -7034,9 +7034,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbo-pancake-installer"
+version = "0.1.0"
+dependencies = [
+ "turbo-pancake-setup",
+ "turbo-pancake-update",
+]
+
+[[package]]
 name = "turbo-pancake-launcher"
 version = "0.1.0"
 dependencies = [
+ "turbo-pancake-setup",
  "turbo-pancake-update",
  "windows",
 ]
@@ -7143,6 +7152,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbo-pancake-setup"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "turbo-pancake-update",
+ "windows",
+]
+
+[[package]]
 name = "turbo-pancake-tls"
 version = "0.1.0"
 dependencies = [
@@ -7161,6 +7179,7 @@ dependencies = [
  "aws-lc-rs",
  "axum",
  "base64 0.22.1",
+ "miniz_oxide 0.8.9",
  "reqwest",
  "serde",
  "serde_json",

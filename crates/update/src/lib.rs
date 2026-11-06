@@ -5,6 +5,7 @@
 
 pub mod install;
 pub mod manifest;
+pub mod package;
 
 pub use install::{Install, LaunchPlan, State};
 pub use manifest::{

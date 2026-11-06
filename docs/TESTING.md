@@ -238,6 +238,21 @@ interrupted state write, staged download against a local HTTP server with trunca
 oversized and tampered bodies) and `apps/app-server/tests/update.rs` (served release
 verified and staged; traversal and missing releases → 404).
 
+Installer (step 6, ADR 0017):
+
+```powershell
+# packs launcher + client as 0.1.0 and 0.1.1, builds one installer per package and runs
+# fresh install (client started), shortcut start, upgrade, repair, older installer,
+# repair while running (refused), uninstall (data kept) and uninstall --purge with
+# LOCALAPPDATA/APPDATA/TEMP inside the work directory and a trial-suffixed HKCU key
+powershell -NoProfile -File benchmarks/scripts/s7-install-trial.ps1 -Out <local-log>
+powershell -NoProfile -File benchmarks/scripts/s7-install-trial.ps1 -Backend winit-femtovg -SkipBuild -Out <local-log>
+```
+
+Release installer by hand: `turbo-pancake-update pack --version <v> --input <dir with
+turbo-pancake.exe and turbo-pancake-desktop.exe> --out <pkg>`, then build
+`turbo-pancake-installer` with `TURBO_PANCAKE_SETUP_PAYLOAD=<pkg>`.
+
 Smoke/trial runs (`--smoke-exit-after-ms`) are not guarded unless `--single-instance`
 is given, so the older multi-client trials keep working; `--multi-instance` disables
 the guard for any run.

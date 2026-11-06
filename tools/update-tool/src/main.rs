@@ -7,6 +7,10 @@
 //!   `<update-dir>/files/<version>/` and writes the signed `<update-dir>/manifest.json`
 //!   (the directory the server's `--update-dir` serves).
 //! * `verify --manifest <file> --pubkeys <list> [--current <x.y.z>]`.
+//! * `pack --version <x.y.z> --input <dir> --out <package>` — the installer package
+//!   (ADR 0017) of a directory holding `turbo-pancake.exe` and
+//!   `turbo-pancake-desktop.exe`; build the installer with
+//!   `TURBO_PANCAKE_SETUP_PAYLOAD=<package>`.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,6 +54,14 @@ enum Cmd {
         expires_days: i64,
         #[arg(long, default_value = "")]
         notes: String,
+    },
+    Pack {
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
     },
     Verify {
         #[arg(long)]
@@ -180,6 +192,40 @@ fn run(cli: Cli) -> Result<(), String> {
                 "signed {version}: {} files, manifest {}",
                 manifest.files.len(),
                 out.join("manifest.json").display()
+            );
+        }
+        Cmd::Pack {
+            version,
+            input,
+            out,
+        } => {
+            let mut paths = Vec::new();
+            files_of(&input, "", &mut paths)?;
+            let mut files = Vec::new();
+            for p in paths {
+                let data = std::fs::read(input.join(&p)).map_err(|e| format!("{p}: {e}"))?;
+                files.push((p, data));
+            }
+            let raw: usize = files.iter().map(|f| f.1.len()).sum();
+            let pkg =
+                turbo_pancake_update::package::pack(&version, &files).map_err(|e| e.to_string())?;
+            // The installer's own checks, before anything is shipped.
+            let (h, _) =
+                turbo_pancake_update::package::read_header(&pkg).map_err(|e| e.to_string())?;
+            for need in [
+                turbo_pancake_update::LAUNCHER_EXE,
+                turbo_pancake_update::CLIENT_EXE,
+            ] {
+                if !h.files.iter().any(|f| f.path == need) {
+                    return Err(format!("{need} missing in {}", input.display()));
+                }
+            }
+            std::fs::write(&out, &pkg).map_err(|e| e.to_string())?;
+            println!(
+                "packed {version}: {} files, {raw} bytes -> {} bytes ({:.1} %)",
+                h.files.len(),
+                pkg.len(),
+                pkg.len() as f64 * 100.0 / raw.max(1) as f64
             );
         }
         Cmd::Verify {

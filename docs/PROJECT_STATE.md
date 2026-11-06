@@ -1,11 +1,37 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, steps 1–5 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, steps 1–6 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = IN_PROGRESS**; S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-06 (S7 steps 4–5: reconnect banner; signed updates with staged install and rollback); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-06 — S7 step 6: per-user installer (ADR 0017)
+
+* ADR 0017: own Rust installer `turbo-pancake-setup.exe` (`apps/installer`) with the
+  `TPPK` package embedded at compile time (`TURBO_PANCAKE_SETUP_PAYLOAD`, covered by a
+  later Authenticode signature); `crates/setup` (layout rules, HKCU uninstall entry,
+  Start-menu shortcut via `IShellLinkW`, message boxes, Credential Manager purge);
+  `turbo-pancake-update pack`; launcher `--uninstall` from a temporary copy. Deflate via
+  `miniz_oxide` 0.8 (already in the graph); lockfile only gains workspace crates.
+* Upgrade rules: fresh / upgrade (previous kept, bad flag cleared) / repair / older
+  package keeps the newer version; refuses while the version's files are in use; deletes
+  only own entries, never a directory without `state.json` + launcher; profile data and
+  stored sessions only on "yes"/`--purge`.
+* **PASS:** `s7-install-trial.ps1` software + OpenGL with isolated user folders and a
+  trial-suffixed HKCU key: fresh install (client started), shortcut start, upgrade,
+  repair, older installer, in-use refusal, uninstall keeping data, reinstall + purge; no
+  leftovers on the real profile; 0 foreground samples. **Installer 13.3 MiB** (≤ 30 MB
+  PASS), installed 25.1 MB. Report: `benchmarks/results/s7-step6-windows-2026-11-06.md`.
+* Found: building the installer alone needed NASM for `aws-lc-sys`; the workspace
+  `aws-lc-rs` dependency now enables `prebuilt-nasm` (as rustls does).
+* **Owner-assisted:** clicking the real message boxes / "Apps & features" uninstall;
+  Authenticode and SmartScreen.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper:
+  **196 passed, 0 failed, 4 ignored, 1 filtered** (real system-audio test), 51 binaries,
+  real PostgreSQL (log `.local/logs/s7-step6-tests.log`). Local branch only; no push or
+  CI claimed.
 
 ## Session log 2026-11-06 — S7 step 5: signed updates (ADR 0016)
 
@@ -142,7 +168,7 @@ Last session: 2026-11-06 (S7 steps 4–5: reconnect banner; signed updates with 
 | Keyboard tab/focus order of basic controls | UNVERIFIED (owner-assisted) | no input injection allowed here; Slint has no public focus query |
 | Reconnect UX, unsaved input kept | PASS (step 4; real network loss and native media-only call recovery owner-assisted) | `s7-reconnect-trial.ps1` both renderers (server killed/restarted), `banner::tests`, `view::tests` |
 | Signed atomic updates with rollback | PASS (step 5; release key and Authenticode are owner tasks) | `s7-update-trial.ps1` both renderers, `crates/update` tests, server `tests/update.rs` |
-| Installer, size ≤ 30 MB, signing | NOT_STARTED | step 6; Authenticode and Slint license are owner decisions |
+| Installer, size ≤ 30 MB, signing | PASS (step 6: installer 13.3 MiB; Authenticode and Slint license are owner decisions) | `s7-install-trial.ps1` both renderers, `crates/setup` and `package` tests |
 | Windows E2E, RAM/startup/size profiles | NOT_STARTED | step 7 |
 
 ## Session log 2026-11-05 — S6 step 6: acceptance complete
@@ -1002,22 +1028,22 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S7 step 6: installer
+## Exact next task — S7 step 7: profiles and Windows E2E acceptance
 
-S7 is authorized (owner, 2026-11-05) and in progress; steps 1–5 are done (tray and
-lifecycle, one client per profile, layout and scale, reconnect banner, signed updates).
-Next is step 6 in `docs/STAGES.md`: a per-user installer without admin rights that
-creates the ADR 0016 layout under `%LOCALAPPDATA%/Programs/turbo-pancake`
-(`turbo-pancake.exe` launcher, `versions/<v>/`, `state.json`), a Start-menu shortcut to
-the launcher, an uninstall entry (HKCU) and an uninstaller that removes the install and,
-on request, profile data; reinstall/upgrade over an existing install keeps `state.json`
-consistent; measure the installer and installed size against ≤ 30 MB (record the
-compression used). Decide the packaging approach first (self-extracting Rust installer
-vs. an external tool) and record it; check licences of any new dependency. Authenticode
-signing stays owner-assisted. Then step 7 (profiles and the Windows E2E: install → sign
-in → chat → call → update → rollback → uninstall). The release update key is an owner
-task (ADR 0016). GitHub publishing remains unavailable; do not open authentication
-windows or claim a remote push/CI run. Owner-assisted items stay pending under ADR 0012.
+S7 is authorized (owner, 2026-11-05) and in progress; steps 1–6 are done (tray and
+lifecycle, one client per profile, layout and scale, reconnect banner, signed updates,
+per-user installer). Next is step 7 in `docs/STAGES.md`: (1) profiles on this machine —
+idle RAM after sign-in with the chats window open (working set + private bytes, software
+and OpenGL renderers; the ADR 0002 renderer decision), cold/warm startup to an
+interactive window, installer/installed sizes (already measured: 13.3 MiB / 25.1 MB),
+compared with spec §13 targets and recorded honestly in `benchmarks/results/`; (2) one
+Windows E2E trial on the invisible desktop chaining the existing pieces: install →
+sign in (PostgreSQL + TLS server) → chat → call (simulated audio) → signed update →
+rollback of a broken release → uninstall. Then decide S7 DONE only if every Windows
+criterion is PASS with evidence; owner-assisted items (real icon/menu clicks, message
+boxes, Authenticode, release key, keyboard focus order, real network loss) stay listed
+under ADR 0012. GitHub publishing remains unavailable; do not open authentication
+windows or claim a remote push/CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

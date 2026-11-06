@@ -51,9 +51,10 @@ recorded, and do not block the technical steps.
    start; negative tests (bad signature, downgrade, truncated file, interrupted switch).
    Evidence: `benchmarks/results/s7-step5-windows-2026-11-06.md`; the release key is an
    owner task (ADR 0016).
-6. **Installer.** Per-user installer without admin rights (Start menu entry, uninstall
+6. **Installer (ADR 0017) — DONE (2026-11-06).** Per-user installer without admin rights (Start menu entry, uninstall
    entry, update-compatible layout), size measured against ≤ 30 MB; Authenticode
    signing owner-assisted.
+   Evidence: `benchmarks/results/s7-step6-windows-2026-11-06.md` (installer 13.3 MiB).
 7. **Profiles and acceptance.** RAM (software/GPU renderer, ADR 0002 decision),
    startup and size profiles; Windows E2E: install → sign in → chat → call → update →
    rollback → uninstall on the invisible desktop; results in `benchmarks/results/`.
