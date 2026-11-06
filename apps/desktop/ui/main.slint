@@ -794,6 +794,11 @@ export component MainWindow inherits Window {
     // 0..4 = 100/125/150/175/200 % (applied at the next start).
     in-out property <int> ui-scale-index;
     callback ui-scale-changed(int);
+    // Updates (S7 step 5): status line, the action button ("" hides it).
+    in property <string> update-text: "Обновления не настроены в этой сборке";
+    in property <string> update-button;
+    in property <bool> update-available;
+    callback update-action();
     // Narrow window (S7 step 3): the sidebar collapses behind a rail button.
     // Set from `changed width`, not bound: a binding would feed the layout's own width
     // back into the layout (binding loop).
@@ -846,6 +851,7 @@ export component MainWindow inherits Window {
             current: root.current-conversation;
             voice-selected: root.voice-selected;
             find-error: root.find-error;
+            update-available: root.update-available;
             toggle-theme => {
                 root.apply-theme(!Theme.dark);
                 root.theme-changed(Theme.dark);
@@ -1072,6 +1078,22 @@ export component MainWindow inherits Window {
                 color: Theme.text-muted;
                 font-size: 11px;
                 wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.update-text;
+                    color: root.update-available ? Theme.text-normal : Theme.text-muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                if root.update-button != "": Button {
+                    text: root.update-button;
+                    primary: root.update-available;
+                    clicked => { root.update-action(); }
+                }
             }
             HorizontalLayout {
                 spacing: 8px;

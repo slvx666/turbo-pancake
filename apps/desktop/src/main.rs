@@ -68,6 +68,10 @@
 //!   `--trial-input <text>` — once the scripted conversation is open, type this text
 //!   into the message field and the room field (unsent input); banner lines then add
 //!   `input_kept=<bool>`.
+//!   Updates (S7, ADR 0016): the client checks `/v1/update/manifest` against the keys
+//!   pinned at build time and installs through the launcher from the settings panel.
+//!   `--trial-update` — install an available update and restart without input; prints
+//!   `TURBO_PANCAKE_UPDATE status=… version=…` lines (also with `--chat-log`).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -101,6 +105,7 @@ slint::include_modules!();
 
 mod connection_ui;
 mod messenger_ui;
+mod update_ui;
 
 #[derive(Default)]
 struct Args {
@@ -144,6 +149,7 @@ struct Args {
     sidebar_open: bool,
     call_tab: i32,
     snapshot_banner_dir: Option<String>,
+    trial_update: bool,
 }
 
 fn parse_args() -> Args {
@@ -159,6 +165,7 @@ fn parse_args() -> Args {
             "--trial-chat-switch" => out.chat.trial_switch = true,
             "--trial-input" => out.chat.trial_input = args.next(),
             "--snapshot-banner-dir" => out.snapshot_banner_dir = args.next(),
+            "--trial-update" => out.trial_update = true,
             "--snapshot" => out.snapshot = args.next(),
             "--snapshot-after-ms" => {
                 out.snapshot_after_ms = args.next().and_then(|v| v.parse().ok())
@@ -1090,7 +1097,7 @@ fn main() -> Result<(), slint::PlatformError> {
     window.set_build_info(
         format!(
             "turbo-pancake-desktop {} · {}",
-            env!("CARGO_PKG_VERSION"),
+            turbo_pancake_desktop::updater::build_version(),
             std::env::consts::OS
         )
         .into(),
@@ -1113,6 +1120,15 @@ fn main() -> Result<(), slint::PlatformError> {
         .server
         .clone()
         .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
+    if let Some(t) = tls.clone() {
+        update_ui::start(
+            &window,
+            turbo_pancake_desktop::chat::http_base(&server),
+            t,
+            args.trial_update,
+            args.chat.chat_log,
+        );
+    }
     connection_ui::configure(
         args.chat.chat_log,
         args.snapshot_banner_dir.clone().map(Into::into),

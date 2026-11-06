@@ -54,6 +54,10 @@ struct Args {
     /// passwords and tokens cross the network unencrypted).
     #[arg(long, env = "TURBO_PANCAKE_INSECURE_ALLOW_PLAINTEXT")]
     insecure_allow_plaintext: bool,
+    /// Directory with a signed release from `turbo-pancake-update sign`
+    /// (`manifest.json`, `files/<version>/…`), served at `/v1/update/…` (ADR 0016).
+    #[arg(long, env = "TURBO_PANCAKE_UPDATE_DIR")]
+    update_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -176,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
         database_url: args.database_url,
         anonymous_calls,
         tls,
+        update_dir: args.update_dir,
         ..Default::default()
     };
     turbo_pancake_app_server::serve(listener, config, async {

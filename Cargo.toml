@@ -11,6 +11,9 @@ members = [
     "crates/pg-test",
     "crates/messenger-client",
     "crates/tls",
+    "crates/update",
+    "tools/update-tool",
+    "apps/launcher",
     "benchmarks/harness",
     "tools/media-probe",
     "tools/screen-probe",
@@ -51,6 +54,7 @@ base64 = "0.22"
 aws-lc-rs = "1"
 turbo-pancake-pg-test = { path = "crates/pg-test" }
 turbo-pancake-tls = { path = "crates/tls" }
+turbo-pancake-update = { path = "crates/update" }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 

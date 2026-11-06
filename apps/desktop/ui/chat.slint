@@ -134,6 +134,8 @@ export component Sidebar inherits Rectangle {
     in property <string> current;
     in property <bool> voice-selected;
     in property <string> find-error;
+    // A verified update is ready to install (badge on the settings button).
+    in property <bool> update-available;
     callback toggle-theme;
     callback open-app-settings;
     callback find-user(string);
@@ -260,8 +262,16 @@ export component Sidebar inherits Rectangle {
                     alignment: center;
                     IconButton {
                         label: "⚙";
-                        tooltip: "Настройки приложения";
+                        tooltip: root.update-available ? "Настройки приложения · доступно обновление" : "Настройки приложения";
                         clicked => { root.open-app-settings(); }
+                        if root.update-available: Rectangle {
+                            x: parent.width - 10px;
+                            y: 2px;
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: #23a55a;
+                        }
                     }
                 }
                 if root.signed-in: VerticalLayout {

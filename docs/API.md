@@ -34,7 +34,19 @@ Status legend: **implemented** (code + tests exist), **planned** (stage in brack
 | POST | `/v1/conversations/{id}/read` | implemented (S5) | `MarkReadRequest` → `Receipt` (only goes up, clamped to the newest message) |
 | POST | `/v1/conversations/{id}/members` | planned (S6) | groups |
 | POST | `/v1/calls`, `/v1/calls/{id}/join`, `/v1/calls/{id}/leave` | planned (S1/S2/S6) | |
-| GET | `/v1/updates/check` | planned (S7) | signed manifest |
+| GET | `/v1/update/manifest` | implemented (S7) | signed envelope `{"key_id","manifest":base64,"signature":base64}` (JSON, ≤ 64 KiB, `no-cache`); `404` none published; no authentication (ADR 0016) |
+| GET | `/v1/update/files/{version}/{*path}` | implemented (S7) | release file, `application/octet-stream` with `Content-Length`; `404` for paths outside the rules (`x.y.z`, `[A-Za-z0-9._-]` segments); `503` + `Retry-After` above 8 concurrent downloads |
+
+### Updates (S7, ADR 0016)
+
+The manifest (format 1) is JSON: `format`, `product` (`turbo-pancake-desktop`),
+`platform` (`windows-x86_64`), `version`, `published_at_ms`, `expires_at_ms`, optional
+`notes`, `files[{path,size,sha256}]` (must include `turbo-pancake-desktop.exe`); unknown
+fields are rejected. The Ed25519 signature covers the exact manifest bytes; clients pin
+the public keys at build time, accept only newer, unexpired, not-rolled-back versions and
+download files only from this server with size and SHA-256 checks. The server never
+holds the signing key (`turbo-pancake-update sign` runs offline; `--update-dir` serves
+its output).
 
 ### Transport security (ADR 0014)
 

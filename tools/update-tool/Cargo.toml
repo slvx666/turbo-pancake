@@ -1,0 +1,21 @@
+[package]
+name = "turbo-pancake-update-tool"
+description = "Release signing for updates: Ed25519 key generation, manifest signing, verification (ADR 0016)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "turbo-pancake-update"
+path = "src/main.rs"
+
+[dependencies]
+turbo-pancake-update.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

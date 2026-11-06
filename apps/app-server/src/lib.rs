@@ -16,6 +16,7 @@ pub mod groups;
 pub mod ratelimit;
 pub mod signaling;
 pub mod tls;
+pub mod update;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -65,6 +66,8 @@ pub struct Config {
     pub limits: ratelimit::Limits,
     /// HTTPS + WSS on the listening port (ADR 0014); `None` = plain HTTP.
     pub tls: Option<Arc<turbo_pancake_tls::rustls::ServerConfig>>,
+    /// Signed releases to serve (ADR 0016): `manifest.json` and `files/`.
+    pub update_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for Config {
@@ -84,6 +87,7 @@ impl Default for Config {
             anonymous_calls: true,
             limits: ratelimit::Limits::default(),
             tls: None,
+            update_dir: None,
         }
     }
 }
@@ -102,6 +106,7 @@ pub struct AppState {
     pub registry: Arc<events::Registry>,
     pub limiters: Arc<ratelimit::Limiters>,
     pub calls: Arc<tokio::sync::Mutex<calls::Book>>,
+    pub updates: Option<Arc<update::Updates>>,
     /// Becomes `true` when the server shuts down: WebSocket connections end.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
@@ -112,7 +117,12 @@ impl AppState {
         let connections = Arc::new(Semaphore::new(config.max_connections));
         let limiters = Arc::new(ratelimit::Limiters::new(&config.limits));
         let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+        let updates = config
+            .update_dir
+            .clone()
+            .map(|d| Arc::new(update::Updates::new(d)));
         Self {
+            updates,
             shutdown,
             shutdown_tx: Arc::new(shutdown_tx),
             config: Arc::new(config),
@@ -182,6 +192,8 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
         .route("/v1/version", get(version))
+        .route("/v1/update/manifest", get(update::manifest))
+        .route("/v1/update/files/{version}/{*path}", get(update::file))
         .route("/v1/media-stats", get(media_stats))
         .route("/v1/signal", get(signaling::ws_handler))
         // Messenger API (ADR 0013, docs/API.md).

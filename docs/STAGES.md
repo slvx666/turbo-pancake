@@ -45,10 +45,12 @@ recorded, and do not block the technical steps.
 4. **Reconnect UX — DONE (2026-11-06).** Persistent connection banner for messenger and call states
    (offline, reconnecting, restored), unsent input kept; tests on server restarts.
    Evidence: `benchmarks/results/s7-step4-windows-2026-11-06.md`.
-5. **Signed updates (ADR).** Update manifest signed with an Ed25519 key pinned in the
+5. **Signed updates (ADR 0016) — DONE (2026-11-06).** Update manifest signed with an Ed25519 key pinned in the
    client, `/v1/update` check, HTTPS download with size/SHA-256 limits, staged install
    next to the current version, atomic switch and rollback when the new version does not
    start; negative tests (bad signature, downgrade, truncated file, interrupted switch).
+   Evidence: `benchmarks/results/s7-step5-windows-2026-11-06.md`; the release key is an
+   owner task (ADR 0016).
 6. **Installer.** Per-user installer without admin rights (Start menu entry, uninstall
    entry, update-compatible layout), size measured against ≤ 30 MB; Authenticode
    signing owner-assisted.

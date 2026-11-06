@@ -1,0 +1,29 @@
+[package]
+name = "turbo-pancake-update"
+description = "Signed update manifests, verified download, staged install, atomic switch and rollback (S7, ADR 0016)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aws-lc-rs.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+reqwest = { workspace = true, optional = true }
+
+[features]
+# Staged HTTPS downloads (clients). The server only validates paths and versions.
+default = ["download"]
+download = ["dep:reqwest"]
+
+[dev-dependencies]
+tokio.workspace = true
+axum.workspace = true
+turbo-pancake-tls.workspace = true
+
+[lints]
+workspace = true

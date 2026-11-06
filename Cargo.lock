@@ -6988,6 +6988,7 @@ dependencies = [
  "turbo-pancake-pg-test",
  "turbo-pancake-protocol",
  "turbo-pancake-tls",
+ "turbo-pancake-update",
  "uuid",
 ]
 
@@ -7014,6 +7015,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "prost",
+ "reqwest",
  "slint",
  "slint-build",
  "time",
@@ -7027,6 +7029,15 @@ dependencies = [
  "turbo-pancake-pg-test",
  "turbo-pancake-protocol",
  "turbo-pancake-tls",
+ "turbo-pancake-update",
+ "windows",
+]
+
+[[package]]
+name = "turbo-pancake-launcher"
+version = "0.1.0"
+dependencies = [
+ "turbo-pancake-update",
  "windows",
 ]
 
@@ -7141,6 +7152,31 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "webpki-roots",
+]
+
+[[package]]
+name = "turbo-pancake-update"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "axum",
+ "base64 0.22.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "turbo-pancake-tls",
+]
+
+[[package]]
+name = "turbo-pancake-update-tool"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "clap",
+ "turbo-pancake-update",
 ]
 
 [[package]]

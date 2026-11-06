@@ -33,11 +33,13 @@ aws-lc-rs.workspace = true
 prost.workspace = true
 turbo-pancake-tls.workspace = true
 tokio-rustls.workspace = true
+turbo-pancake-update = { workspace = true, default-features = false }
 
 [dev-dependencies]
 turbo-pancake-pg-test.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
+turbo-pancake-update.workspace = true
 
 [lints]
 workspace = true

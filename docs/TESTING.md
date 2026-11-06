@@ -219,6 +219,25 @@ A server restart ends live calls (ADR 0015), so the call's "Звонок вос�
 covered by `banner::tests` and the same-lease reconnect in `apps/desktop/tests/session.rs`,
 not by this trial.
 
+Signed updates (step 5, ADR 0016):
+
+```powershell
+# generates a trial key, builds the client as 0.1.0 and 0.1.1 with that key pinned (own
+# target dir t/u, short for MAX_PATH), lays out an install (launcher + versions/ +
+# state.json) and runs on an invisible desktop against a TLS server with --update-dir:
+# A update + restart + confirmation, B broken 0.1.2 rolled back and not re-offered,
+# C available-but-unconfirmed / truncated file / tampered file / tampered manifest /
+# signed downgrade change nothing. -CargoWrapper: the script that runs cargo with the
+# APM environment (default benchmarks/scripts/apm-env.ps1)
+powershell -NoProfile -File benchmarks/scripts/s7-update-trial.ps1 -Out <local-log>
+powershell -NoProfile -File benchmarks/scripts/s7-update-trial.ps1 -Backend winit-femtovg -SkipBuild -Out <local-log>
+```
+
+Headless coverage: `crates/update` (signature, policy, file rules, install state machine,
+interrupted state write, staged download against a local HTTP server with truncated,
+oversized and tampered bodies) and `apps/app-server/tests/update.rs` (served release
+verified and staged; traversal and missing releases → 404).
+
 Smoke/trial runs (`--smoke-exit-after-ms`) are not guarded unless `--single-instance`
 is given, so the older multi-client trials keep working; `--multi-instance` disables
 the guard for any run.

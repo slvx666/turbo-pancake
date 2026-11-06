@@ -10,4 +10,5 @@ pub mod screen;
 pub mod session;
 pub mod tray;
 pub mod ui_scale;
+pub mod updater;
 pub mod view;
