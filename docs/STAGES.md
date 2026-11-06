@@ -18,8 +18,53 @@ presence are recorded as owner-assisted and do not block the next stage.
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | DONE (Windows) 2026-11-04 (ADR 0013, 0014); owner-assisted: two machines |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | DONE (Windows, 2026-11-05; headless + native software/OpenGL, simulated audio; real audio/two machines owner-assisted) |
 | S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | DONE (Windows) 2026-11-06 (owner-assisted items in PROJECT_STATE) |
-| S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | NOT_STARTED |
+| S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | IN_PROGRESS (plan 2026-11-06; target-server runs owner-assisted) |
 | S9 | macOS + Linux port (ADR 0012) | ScreenCaptureKit/VideoToolbox/`excludesCurrentProcessAudio`; portal/PipeWire/VA-API + audio exclusion validation; devices, tray, installers, signing, updates; the macOS/Linux parts of S1–S8 criteria; CI jobs back | NOT_STARTED (after S8) |
+
+## S8 plan (2026-11-06, Windows only)
+
+Scope (spec §12, §13, §17 S8, §18): load, hardening, backup/restore, regression suite,
+release and administration guide. Every load tool runs first on loopback on the dev
+machine (evidence in `benchmarks/results/`); the same tools are then run on the owner's
+target server (owner-assisted: the owner's host and network, described generically,
+addresses never committed). A loopback number measures the server's own cost, not the
+network; the reports say so. Each step is a separate commit with evidence in
+PROJECT_STATE.
+
+1. **Messenger load tooling.** `turbo-pancake-bench messenger`: real server process with
+   real PostgreSQL (throw-away cluster from `crates/pg-test`, or `--database-url`), N
+   accounts (default 500) created through the real register API (server flag for
+   load-test limits, refused on a non-loopback bind), groups of up to 100 so every user
+   has contacts, N authenticated WebSocket sessions kept alive with heartbeats. Measures:
+   register and connect latency, presence fan-out latency on connect/disconnect churn
+   (every contact must see the change; no stale "online" at the end), message fan-out to
+   a group of 100, server working set / private bytes / CPU at hold and under churn.
+2. **Group of 100 under load.** Concurrent senders in 100-member groups while members are
+   added/removed, then a reconnect storm (all sessions drop and resync): checks ordering,
+   no duplicates/gaps against the server history, permissions after removal; latency and
+   DB pool use reported.
+3. **Media load with accounts.** The `sfu` / `sfu-screen` scenarios on authenticated
+   account calls: 50 publishers, 50 previews (grid), and a separate 1 → 50 high-viewer
+   run; with the high-egress budget the run must show safe degradation (audio first,
+   then the watched high stream, then previews; viewers over the budget get the preview
+   layer and the reason) and the measured limit of this machine.
+4. **Hardening.** Bounded concurrent password hashing (Argon2id memory × concurrency),
+   request body/time limits, behaviour at DB pool exhaustion and DB outage (readiness
+   reports it, clients get errors, no crash), graceful shutdown with in-flight requests,
+   connection/fd limits, disk full on the database (clear errors, recovery after space
+   returns), systemd unit limits; negative tests for each.
+5. **Backup, restore and recovery.** Backup script (`pg_dump` custom format, retention,
+   documented retention cycle for deleted messages, spec §7/§12), a verified restore into
+   a fresh cluster with a consistency check, and recovery after a server reboot (service
+   restart, clients reconnect and resync) on loopback; the target-server run is
+   owner-assisted.
+6. **Regression suite.** One script running fmt / Clippy / tests (headless baseline
+   without the real system-audio test), the load scenarios in a short form and the
+   background native trials, with one summary report.
+7. **Release and administration.** Release build with checksums, `docs/ADMIN.md`
+   (install, configuration, TLS rotation, publishing signed updates, backups, monitoring,
+   limits, upgrade), and the target-server procedure for steps 1–5. S8 acceptance on the
+   target server is owner-assisted and recorded separately.
 
 ## S7 plan (2026-11-05, Windows only)
 
