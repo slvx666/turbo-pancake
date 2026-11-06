@@ -54,3 +54,23 @@ turbo-pancake-app-server renew-cert --dir tls/ --name <IP> [--name ...]
 (`ca.key` must be in `tls/` for this step; put it back offline afterwards.) Restart the
 server. Clients keep their `ca.pem`. If `ca.key` leaks: run `gen-cert` into a new
 directory and give clients the new `ca.pem`.
+
+## 5. A release for one server
+
+Build the client with the server address and CA baked in, so users need no flags
+(nothing of it is committed; set the variables only for the build):
+
+```powershell
+$env:TURBO_PANCAKE_DEFAULT_SERVER = 'wss://<IP>:7878/v1/signal'
+$env:TURBO_PANCAKE_DEFAULT_SERVER_CA = '<path>\ca.pem'
+cargo build --release --locked -p turbo-pancake-launcher -p turbo-pancake-update-tool -p turbo-pancake-desktop
+```
+
+`--server` / `--server-ca` on the command line still win. Then pack the launcher and
+client (`turbo-pancake-update pack`) and build the installer with
+`TURBO_PANCAKE_SETUP_PAYLOAD` (ADR 0017).
+
+Server on Debian/Ubuntu: copy `server.pem` and `server.key` to `/root/turbo-pancake-tls/`
+and run `deploy/linux/install-server.sh <public IP> [branch]` as root. It installs
+PostgreSQL and Rust, builds the server, creates the `turbo-pancake` systemd service
+(TCP and UDP 7878, firewall rules) and can be re-run to update.

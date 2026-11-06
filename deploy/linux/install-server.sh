@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Installs or updates the turbo-pancake server on a Debian/Ubuntu host (run as root).
+#
+#   bash install-server.sh <public IP> [branch]
+#
+# Before the first run, copy server.pem and server.key (from `gen-cert`, docs/DEPLOY-TLS.md)
+# to /root/turbo-pancake-tls/. Re-running the script updates the source, rebuilds and
+# restarts the service; the database and certificates are kept.
+set -euo pipefail
+
+PUBLIC_IP="${1:?usage: install-server.sh <public IP> [branch]}"
+BRANCH="${2:-main}"
+REPO="${TURBO_PANCAKE_REPO:-https://github.com/slvx666/turbo-pancake.git}"
+PORT=7878
+SRC=/opt/turbo-pancake/src
+ETC=/etc/turbo-pancake
+TLS_IN=/root/turbo-pancake-tls
+
+[ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
+
+echo "== packages"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q
+apt-get install -y -q git curl ca-certificates build-essential pkg-config cmake clang \
+    postgresql ufw
+
+# A release build of the server needs ~2 GB of memory; add swap on small hosts.
+if [ "$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)" -lt 3000 ] && ! swapon --show | grep -q .; then
+    echo "== swap (2 GB)"
+    fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+echo "== rust"
+if ! command -v cargo >/dev/null && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
+
+echo "== source ($BRANCH)"
+if [ -d "$SRC/.git" ]; then
+    git -C "$SRC" fetch --depth 1 origin "$BRANCH"
+    git -C "$SRC" checkout -q -B "$BRANCH" FETCH_HEAD
+else
+    mkdir -p "$(dirname "$SRC")"
+    git clone --depth 1 --branch "$BRANCH" "$REPO" "$SRC"
+fi
+
+echo "== build"
+(cd "$SRC" && cargo build --release --locked -p turbo-pancake-app-server)
+install -m 755 "$SRC/target/release/turbo-pancake-app-server" /usr/local/bin/turbo-pancake-app-server
+
+echo "== service account"
+id turbo-pancake >/dev/null 2>&1 || useradd --system --home /var/lib/turbo-pancake --shell /usr/sbin/nologin turbo-pancake
+mkdir -p "$ETC/tls" /var/lib/turbo-pancake
+chown turbo-pancake: /var/lib/turbo-pancake
+
+echo "== certificates"
+if [ -f "$TLS_IN/server.pem" ]; then
+    install -m 644 -o root -g turbo-pancake "$TLS_IN/server.pem" "$ETC/tls/server.pem"
+    install -m 640 -o root -g turbo-pancake "$TLS_IN/server.key" "$ETC/tls/server.key"
+fi
+[ -f "$ETC/tls/server.pem" ] || { echo "missing $TLS_IN/server.pem and server.key"; exit 1; }
+[ ! -f "$TLS_IN/ca.key" ] || echo "WARNING: ca.key does not belong on the server; delete $TLS_IN/ca.key"
+
+echo "== database"
+systemctl enable --now postgresql
+if [ ! -f "$ETC/db-password" ]; then
+    (umask 077; head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$ETC/db-password")
+fi
+DB_PASS="$(cat "$ETC/db-password")"
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='turbo_pancake'" | grep -q 1; then
+    sudo -u postgres psql -q -c "CREATE ROLE turbo_pancake LOGIN PASSWORD '$DB_PASS'"
+fi
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='turbo_pancake'" | grep -q 1; then
+    sudo -u postgres createdb -O turbo_pancake turbo_pancake
+fi
+
+echo "== configuration"
+(umask 027; cat > "$ETC/server.env" <<EOF
+TURBO_PANCAKE_BIND=0.0.0.0:$PORT
+TURBO_PANCAKE_PUBLIC_IP=$PUBLIC_IP
+TURBO_PANCAKE_TLS_CERT=$ETC/tls/server.pem
+TURBO_PANCAKE_TLS_KEY=$ETC/tls/server.key
+TURBO_PANCAKE_DATABASE_URL=postgres://turbo_pancake:$DB_PASS@127.0.0.1/turbo_pancake
+TURBO_PANCAKE_LOG_JSON=true
+EOF
+)
+chgrp turbo-pancake "$ETC/server.env"
+
+cat > /etc/systemd/system/turbo-pancake.service <<EOF
+[Unit]
+Description=turbo-pancake messenger server
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=turbo-pancake
+Group=turbo-pancake
+EnvironmentFile=$ETC/server.env
+ExecStart=/usr/local/bin/turbo-pancake-app-server
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/turbo-pancake
+WorkingDirectory=/var/lib/turbo-pancake
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "== firewall"
+ufw allow OpenSSH >/dev/null
+# Keep the port of the current SSH session open too (a non-standard sshd port).
+SSH_PORT="$(echo "${SSH_CONNECTION:-}" | awk '{print $4}')"
+[ -z "$SSH_PORT" ] || ufw allow "$SSH_PORT/tcp" >/dev/null
+ufw allow "$PORT/tcp" >/dev/null
+ufw allow "$PORT/udp" >/dev/null
+ufw --force enable >/dev/null
+
+systemctl daemon-reload
+systemctl enable turbo-pancake >/dev/null
+systemctl restart turbo-pancake
+sleep 2
+systemctl --no-pager --lines 15 status turbo-pancake

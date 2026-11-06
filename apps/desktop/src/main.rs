@@ -1,7 +1,8 @@
 //! turbo-pancake desktop client (native window + group voice room).
 //!
 //! Command line (all optional):
-//!   `--server <url>` — signaling endpoint (default `ws://127.0.0.1:7878/v1/signal`).
+//!   `--server <url>` — signaling endpoint (default: `TURBO_PANCAKE_DEFAULT_SERVER` set at
+//!       build time, else `ws://127.0.0.1:7878/v1/signal`).
 //!   `--name <display name>` — shown to the other member (default: OS user name).
 //!   `--room <id>` — join this room right after start (scripted trials without input).
 //!   `--mute` — start with the microphone muted.
@@ -41,7 +42,8 @@
 //!       shown, call controls (0) or screen shares (1).
 //!   `--server-ca <pem>` — trust only this CA for `wss://` / `https://` (a server with a
 //!       private certificate, e.g. reached by IP address; `gen-cert` of the server makes
-//!       it). Without it the public web PKI is used. Certificates are always verified.
+//!       it). Without it the CA file named by `TURBO_PANCAKE_DEFAULT_SERVER_CA` at build
+//!       time is used, else the public web PKI. Certificates are always verified.
 //!   Messenger (S5), the server's HTTP API is derived from `--server`:
 //!   `--profile <name>` — local profile: its own stored session and cache (several
 //!       clients on one machine, default `default`).
@@ -727,8 +729,25 @@ fn client_tls(args: &Args) -> Result<turbo_pancake_messenger_client::api::TlsCon
             let pem = std::fs::read(path).map_err(|e| format!("--server-ca: {e}"))?;
             turbo_pancake_tls::client_config(Some(&pem)).map_err(|e| format!("--server-ca: {e}"))
         }
+        None if !DEFAULT_SERVER_CA.is_empty() => {
+            turbo_pancake_tls::client_config(Some(DEFAULT_SERVER_CA))
+                .map_err(|e| format!("built-in server CA: {e}"))
+        }
         None => Ok(turbo_pancake_messenger_client::api::web_pki()),
     }
+}
+
+/// Server address and private CA baked in by a release for one server (none if unset).
+const DEFAULT_SERVER: Option<&str> = option_env!("TURBO_PANCAKE_DEFAULT_SERVER");
+static DEFAULT_SERVER_CA: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/default-server-ca.pem"));
+
+/// `--server`, else the built-in server, else a local server.
+fn server_url(args: &Args) -> String {
+    args.server
+        .clone()
+        .or_else(|| DEFAULT_SERVER.filter(|s| !s.is_empty()).map(str::to_string))
+        .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string())
 }
 
 /// The window's own rendering as a binary PPM (no screen capture).
@@ -756,10 +775,7 @@ fn start_session(
 ) -> Option<Session> {
     let name = args.name.clone().unwrap_or_else(default_name);
     window.set_user_name(name.as_str().into());
-    let server = args
-        .server
-        .clone()
-        .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
+    let server = server_url(args);
     let mut cfg = SessionConfig::new(server, name);
     cfg.tls = tls;
     cfg.engine.muted = args.mute;
@@ -1116,10 +1132,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .and_then(|t| start_session(&window, &args, started, Some(t)));
     // A scripted call opens on the voice room; otherwise sign-in / conversations first.
     window.set_voice_selected(args.room.is_some() || args.share.is_some());
-    let server = args
-        .server
-        .clone()
-        .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
+    let server = server_url(&args);
     if let Some(t) = tls.clone() {
         update_ui::start(
             &window,
