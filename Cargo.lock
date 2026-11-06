@@ -6999,13 +6999,17 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "sysinfo",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "turbo-pancake-media-transport",
+ "turbo-pancake-pg-test",
  "turbo-pancake-protocol",
+ "turbo-pancake-tls",
  "windows-sys 0.61.2",
 ]
 

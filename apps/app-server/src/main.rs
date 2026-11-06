@@ -58,6 +58,10 @@ struct Args {
     /// (`manifest.json`, `files/<version>/…`), served at `/v1/update/…` (ADR 0016).
     #[arg(long, env = "TURBO_PANCAKE_UPDATE_DIR")]
     update_dir: Option<PathBuf>,
+    /// Rate limits for load tests (`turbo-pancake-bench messenger`: hundreds of accounts
+    /// from one address). Refused unless the server listens on a loopback address.
+    #[arg(long, env = "TURBO_PANCAKE_LOAD_TEST_LIMITS")]
+    load_test_limits: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -157,6 +161,18 @@ async fn main() -> anyhow::Result<()> {
             args.bind
         );
     }
+    if args.load_test_limits && !loopback {
+        anyhow::bail!(
+            "--load-test-limits turns rate limits off: only allowed on a loopback address, not {}",
+            args.bind
+        );
+    }
+    let limits = if args.load_test_limits {
+        tracing::warn!("load-test limits: rate limits are off (loopback only)");
+        turbo_pancake_app_server::ratelimit::Limits::relaxed()
+    } else {
+        turbo_pancake_app_server::ratelimit::Limits::default()
+    };
     let anonymous_calls = args.anonymous_calls.unwrap_or(loopback);
     if !loopback && anonymous_calls {
         tracing::warn!(bind = %args.bind, "anonymous calls are open to the network");
@@ -181,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
         anonymous_calls,
         tls,
         update_dir: args.update_dir,
+        limits,
         ..Default::default()
     };
     turbo_pancake_app_server::serve(listener, config, async {

@@ -3,11 +3,38 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Session 2026-11-06 (owner request, after S7): owner-server release 0.1.1 built locally (not committed): client with the server address + private CA baked in (DEPLOY-TLS §5), software renderer default, launcher, package and per-user installer 13.3 MiB. Probe of the built client without flags against the deployed server: TLS trusted, login with a non-existent user answered "wrong username or password". Server not redeployed: no server-side code changed since the deployment (`git diff e5e9d21 -- apps/app-server apps/media-sfu crates proto migrations Cargo.lock deploy` empty); `/v1/version` answers. Updates in this build: not configured (release key is an owner task, ADR 0016).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S8 — load, hardening and release (Windows): NOT_STARTED** (plan to be written first, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06; next: step 2, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (step 1 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-06 — S8 plan and step 1: messenger sessions and presence load
+
+* S8 plan (7 steps) committed in `docs/STAGES.md` as `86fbb7a`.
+* Step 1: `turbo-pancake-bench messenger` (`benchmarks/harness/src/messenger.rs`): release
+  server + real PostgreSQL (pg-test cluster or `--database-url`), accounts through the
+  register API, groups of 100, one signed-in WebSocket per account with heartbeats;
+  presence churn, group fan-out, hold, silent clients (heartbeat timeout) and an HTTP
+  snapshot check for stale presence. Server flag `--load-test-limits`
+  (`TURBO_PANCAKE_LOAD_TEST_LIMITS`): rate limits off, refused on a non-loopback bind
+  (checked: exit 1 with `0.0.0.0:0`). Bench gains workspace deps only (`reqwest`,
+  `prost`, `turbo-pancake-tls`, `turbo-pancake-pg-test`); `Cargo.lock` +4 lines, no new
+  third-party crate.
+* **PASS (loopback, dev machine):** 500 users / 5 groups of 100: connect p50 5.5 ms;
+  presence to the last of 99 contacts p95 1.5 ms offline / 2.1 ms online, 0 of 3960
+  missed; group message to 99 members p99 6.2 ms, 0 of 1980 missed; 30 s hold 0.8 % of a
+  core, WS 30.3 MiB (≈ 33 KiB per session), 0 drops; 10 silent clients offline at all 978
+  contacts after ≈ 27 s; 0 wrong of 49 000 snapshot presences. 1000 users: PASS, 2.8 %
+  CPU, WS 45.3 MiB, 0 wrong of 99 000. Report `benchmarks/results/s8-step1-windows-2026-11-06.md`.
+* Found: Argon2id hashing is unbounded in parallel (issue 45, step 4).
+* **UNVERIFIED / owner-assisted:** the run on the target server with its real database;
+  a mode against an already running remote server is not built.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper
+  with `-- --skip own_sound_is_excluded`: **196 passed, 0 failed, 4 ignored, 1 filtered**,
+  51 binaries, real PostgreSQL (log `.local/logs/s8-step1-tests.log`). (The S7 step 7 log
+  counted 198 because it ran `system_audio` twice; same binaries otherwise.) Local
+  branch only; no push or CI claimed.
 
 ## Session log 2026-11-06 — S7 step 7: profiles, renderer decision, Windows E2E (S7 DONE (Windows))
 
@@ -191,6 +218,19 @@ Last session: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S
   app windows.
 * **UNVERIFIED / owner-assisted:** clicking the real icon and its real menu. Local
   branch only; no push or CI claimed.
+
+## Acceptance checks — S8 (IN_PROGRESS, plan in `docs/STAGES.md`)
+
+| Criterion / slice | Status | Evidence / remaining work |
+|---|---|---|
+| 500 WebSocket sessions with presence (loopback, dev machine) | PASS (step 1) | `messenger-500u-…1793986102.json`, 1000-user run as headroom; `s8-step1-windows-2026-11-06.md` |
+| 500 sessions on the target server, real PostgreSQL | UNVERIFIED (owner-assisted) | same tool with `--database-url` on the server host |
+| Group of 100 under concurrent writes, membership changes, reconnect storm | NOT_STARTED (step 2) | fan-out to 99 members already measured in step 1 |
+| 50 publishers / 50 previews, 1 → 50 high viewers with accounts; safe degradation | NOT_STARTED (step 3) | S4 anonymous benches exist |
+| Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | NOT_STARTED (step 4) | issue 45 |
+| Backup / verified restore / recovery after reboot | NOT_STARTED (step 5) | |
+| Regression suite | NOT_STARTED (step 6) | |
+| Release package + administration guide | NOT_STARTED (step 7) | |
 
 ## Acceptance checks — S7 (DONE (Windows) 2026-11-06; owner-assisted rows below)
 
@@ -707,6 +747,10 @@ performance results for the target hardware (RTX 4070 Super / M4).
     code; the executable has no icon resource yet (installer step). One client per
     profile since step 2; the foreground hand-over to the restored window on the
     user's own desktop (a double-click on the shortcut) is owner-assisted.
+45. **Argon2id hashing is not bounded (found in S8 step 1):** register, login and
+    password checks each run one 19 MiB hash on Tokio's blocking pool (up to 512
+    threads), so a burst of parallel logins could take ≈ 9.5 GiB. S8 step 4 adds a
+    semaphore (and a measured limit); the load bench uses 8 parallel registrations.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -1067,20 +1111,20 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S8: plan, then step 1
+## Exact next task — S8 step 2: group of 100 under load
 
-S7 is DONE (Windows) on 2026-11-06. Next is S8 (spec §17 S8, Windows scope per ADR 0012):
-first write the S8 plan into `docs/STAGES.md` as its own commit, covering: 500
-WebSocket sessions with presence on the server (extend the `signaling` bench to
-authenticated sessions + PostgreSQL), group of 100 under load, 50 publishers / 50
-previews and a separate 1 → 50 high-viewer test (existing `sfu`/`sfu_screen` benches as
-the base), hardening (limits, graceful shutdown, readiness, disk exhaustion), PostgreSQL
-backup/restore with a verified restore and recovery after a reboot, a regression suite
-script, release build and administration guide. Runs on the target server are
-owner-assisted (the owner's host; describe generically, never commit addresses). Then
-start step 1 (load tooling on loopback). Keep the real system-audio test out of the
-headless baseline (`-- --skip own_sound_is_excluded`). GitHub publishing remains
-unavailable; do not claim a push or CI run.
+S8 plan is in `docs/STAGES.md` (86fbb7a); step 1 (messenger sessions/presence load tool)
+is done on loopback. Next, step 2: extend `turbo-pancake-bench messenger` (or a sibling
+scenario in `benchmarks/harness/src/messenger.rs`) with concurrent senders in 100-member
+groups while the creator adds/removes members, then a reconnect storm (all sessions drop
+and come back, clients resync with `/changes` from their last `change_seq`): check
+server ordering (monotonic `server_sequence`, no duplicates/gaps against
+`GET …/messages`), that removed members receive nothing new and get 403 on writes, and
+report latency plus DB pool use. Keep the bench's own registrations bounded (issue 45 is
+step 4). Target-server runs stay owner-assisted (describe generically, never commit
+addresses). Keep the real system-audio test out of the headless baseline
+(`-- --skip own_sound_is_excluded`). GitHub publishing remains unavailable; do not claim
+a push or CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

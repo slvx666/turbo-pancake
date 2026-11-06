@@ -1,6 +1,6 @@
 [package]
 name = "turbo-pancake-bench"
-description = "Reproducible benchmark harness (startup, memory, signaling latency, idle connections, SFU forwarding)."
+description = "Reproducible benchmark harness (startup, memory, signaling latency, idle connections, messenger sessions and presence, SFU forwarding)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,10 @@ serde_json.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+prost.workspace = true
+reqwest.workspace = true
+turbo-pancake-tls.workspace = true
+turbo-pancake-pg-test.workspace = true
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]

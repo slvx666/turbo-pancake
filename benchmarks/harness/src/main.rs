@@ -4,6 +4,7 @@
 //! samples, summary) into `benchmarks/results/`. See `benchmarks/README.md`.
 
 mod mem;
+mod messenger;
 mod sfu;
 mod sfu_screen;
 
@@ -62,6 +63,35 @@ enum Cmd {
         messages: u32,
         #[arg(long, default_value_t = 500)]
         idle_connections: u32,
+    },
+    /// S8: N signed-in WebSocket sessions with presence, groups and real PostgreSQL.
+    Messenger {
+        #[arg(long)]
+        server_exe: PathBuf,
+        #[arg(long, default_value_t = 500)]
+        users: usize,
+        /// Members per group (≤ 100); every user is in one group.
+        #[arg(long, default_value_t = 100)]
+        group_size: usize,
+        /// Users that disconnect and reconnect once each (presence fan-out).
+        #[arg(long, default_value_t = 20)]
+        churn: usize,
+        /// Messages posted to the largest group (fan-out to every other member).
+        #[arg(long, default_value_t = 20)]
+        messages: usize,
+        /// Idle hold with heartbeats; server memory/CPU sampled every second.
+        #[arg(long, default_value_t = 30)]
+        hold_seconds: u64,
+        /// Connections that stop sending (heartbeat timeout must mark them offline).
+        #[arg(long, default_value_t = 10)]
+        silent: usize,
+        /// Parallel registrations (each costs one Argon2id hash on the server).
+        #[arg(long, default_value_t = 8)]
+        concurrency: usize,
+        /// PostgreSQL of the server; default: a throw-away cluster (`crates/pg-test`,
+        /// `TURBO_PANCAKE_PG_BIN`). Use a dedicated empty database.
+        #[arg(long, env = "TURBO_PANCAKE_BENCH_DATABASE_URL", hide_env_values = true)]
+        database_url: Option<String>,
     },
     /// SFU forwarding: N media members, server CPU and throughput per number of talkers.
     Sfu {
@@ -125,6 +155,29 @@ fn main() -> anyhow::Result<()> {
             &server_exe,
             messages,
             idle_connections,
+        ))?,
+        Cmd::Messenger {
+            server_exe,
+            users,
+            group_size,
+            churn,
+            messages,
+            hold_seconds,
+            silent,
+            concurrency,
+            database_url,
+        } => tokio::runtime::Runtime::new()?.block_on(messenger::messenger(
+            &server_exe,
+            messenger::Params {
+                users,
+                group_size,
+                churn,
+                messages,
+                hold_seconds,
+                silent,
+                concurrency,
+                database_url,
+            },
         ))?,
         Cmd::Sfu {
             server_exe,

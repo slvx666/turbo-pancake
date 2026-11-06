@@ -76,7 +76,7 @@ pub async fn sfu(
 }
 
 /// Accumulated CPU time of a process in milliseconds.
-fn cpu_ms(sys: &mut sysinfo::System, pid: u32) -> anyhow::Result<u64> {
+pub(crate) fn cpu_ms(sys: &mut sysinfo::System, pid: u32) -> anyhow::Result<u64> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
     let pid = Pid::from_u32(pid);
     sys.refresh_processes_specifics(
