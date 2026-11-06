@@ -58,6 +58,27 @@ footprint than OpenGL. Video frames (S3+) will need a GPU path regardless.
    CI smoke only (2026-11-02, shared VMs without GPU): Linux X11/Xvfb software renderer
    first frame 44 ms, RSS 19.8 MiB; macOS arm64 runner OpenGL first frame ~1 s, RSS 105.5 MiB.
 
+## Renderer decision (S7, 2026-11-06)
+
+**Default renderer: software.** `apps/desktop` selects `winit` + `software` unless
+`SLINT_BACKEND` is set (`winit-femtovg` keeps OpenGL available). Data
+(`benchmarks/results/s7-step7-windows-2026-11-06.md`, Windows 11, the spec's Windows test
+GPU, signed-in client with the chat open):
+
+| | Software | OpenGL |
+|---|---|---|
+| Idle working set / private (p50) | 33.8 / 11.5 MiB | 72.3 / 98.3 MiB |
+| Idle GPU memory dedicated / shared | 0 / 0 MiB | 30.1 / 10.7 MiB |
+| First frame warm p50 | 115 ms | 266 ms |
+| Watching a 1440p120 share: shown fps / viewer CPU / WS | 59.7 / 130 % / 132 MiB | 60.1 / 183 % / 220 MiB |
+| Watching a 1080p60 share | 59.9 / 70 % / 113 MiB | 59.9 / 120 % / 175 MiB |
+
+Decoded video reaches the UI as CPU images in both renderers, so OpenGL brings no
+advantage today and costs the driver context. Revisit when GPU texture import (item 2)
+is implemented. Still open: item 1 (license, owner), item 2, item 3 (frame-time
+percentiles; shown fps above 60 needs a ≥ 120 Hz monitor), item 4 at other scales, item 5
+(S9).
+
 ## Alternatives (if Slint fails an item)
 
 `iced` (wgpu-based, MIT) or `egui` (immediate mode, MIT) — require a comparison benchmark

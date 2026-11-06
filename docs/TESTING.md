@@ -253,6 +253,22 @@ Release installer by hand: `turbo-pancake-update pack --version <v> --input <dir
 turbo-pancake.exe and turbo-pancake-desktop.exe> --out <pkg>`, then build
 `turbo-pancake-installer` with `TURBO_PANCAKE_SETUP_PAYLOAD=<pkg>`.
 
+Profiles and Windows E2E (step 7):
+
+```powershell
+# idle RAM (working set, private, GPU dedicated/shared), idle CPU and startup
+# (first frame, chat shown) of the signed-in client with the chat open, per renderer
+powershell -NoProfile -File benchmarks/scripts/s7-profile-trial.ps1 -PgBin <postgres-bin> -Out <local-log> -Json <report.json>
+# viewer cost per renderer while watching a generated 1440p120 / 1080p60 share
+powershell -NoProfile -File benchmarks/scripts/s7-renderer-video-trial.ps1 -Out <local-log>
+# install -> register/sign in -> chat -> call -> signed update -> rollback -> uninstall --purge
+# (cargo needs the tool paths: pass the local launcher as -CargoWrapper on the dev machine)
+powershell -NoProfile -File benchmarks/scripts/s7-e2e-trial.ps1 -PgBin <postgres-bin> -Out <local-log>
+powershell -NoProfile -File benchmarks/scripts/s7-e2e-trial.ps1 -PgBin <postgres-bin> -Backend winit-femtovg -SkipBuild -Out <local-log>
+```
+
+The client uses the software renderer unless `SLINT_BACKEND` is set (ADR 0002).
+
 Smoke/trial runs (`--smoke-exit-after-ms`) are not guarded unless `--single-instance`
 is given, so the older multi-client trials keep working; `--multi-instance` disables
 the guard for any run.

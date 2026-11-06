@@ -1069,8 +1069,15 @@ fn main() -> Result<(), slint::PlatformError> {
     };
     let renderer = Rc::new(Cell::new("software"));
 
-    // SLINT_BACKEND (e.g. `winit-software`) still selects the renderer.
+    // Software renderer by default (ADR 0002, S7 profiles: idle RAM within the target,
+    // lower CPU/RAM than OpenGL while watching a share). SLINT_BACKEND (e.g.
+    // `winit-femtovg`) still selects another renderer.
     let mut selector = slint::BackendSelector::new();
+    if std::env::var_os("SLINT_BACKEND").is_none_or(|v| v.is_empty()) {
+        selector = selector
+            .backend_name("winit".into())
+            .renderer_name("software".into());
+    }
     if args.window_pos.is_some() || args.no_activate {
         let pos = args.window_pos;
         let active = !args.no_activate;

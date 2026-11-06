@@ -1,0 +1,272 @@
+﻿{
+    "scenario":  "s7-profile",
+    "commit":  "52e0356",
+    "os":  "Windows 10.0.26200",
+    "client_exe_bytes":  24898560,
+    "params":  {
+                   "cpu_ms":  5000,
+                   "runs":  6,
+                   "settle_ms":  10000,
+                   "history_messages":  2
+               },
+    "summary":  {
+                    "winit-software":  {
+                                           "first_run_first_frame_ms":  128,
+                                           "first_run_chat_shown_ms":  130,
+                                           "warm_first_frame_ms":  {
+                                                                       "p50":  115,
+                                                                       "min":  111,
+                                                                       "max":  490
+                                                                   },
+                                           "warm_chat_shown_ms":  {
+                                                                      "p50":  116,
+                                                                      "min":  112,
+                                                                      "max":  491
+                                                                  },
+                                           "working_set_mib":  {
+                                                                   "p50":  33.8,
+                                                                   "min":  33.7,
+                                                                   "max":  44.1
+                                                               },
+                                           "private_mib":  {
+                                                               "p50":  11.5,
+                                                               "min":  11.2,
+                                                               "max":  11.7
+                                                           },
+                                           "peak_working_set_mib":  {
+                                                                        "p50":  33.8,
+                                                                        "min":  33.7,
+                                                                        "max":  44.1
+                                                                    },
+                                           "gpu_dedicated_mib":  {
+                                                                     "p50":  0,
+                                                                     "min":  0,
+                                                                     "max":  0
+                                                                 },
+                                           "gpu_shared_mib":  {
+                                                                  "p50":  0,
+                                                                  "min":  0,
+                                                                  "max":  0
+                                                              },
+                                           "cpu_percent":  {
+                                                               "p50":  0,
+                                                               "min":  0,
+                                                               "max":  0.62
+                                                           }
+                                       },
+                    "winit-femtovg":  {
+                                          "first_run_first_frame_ms":  275,
+                                          "first_run_chat_shown_ms":  275,
+                                          "warm_first_frame_ms":  {
+                                                                      "p50":  266,
+                                                                      "min":  240,
+                                                                      "max":  283
+                                                                  },
+                                          "warm_chat_shown_ms":  {
+                                                                     "p50":  267,
+                                                                     "min":  241,
+                                                                     "max":  284
+                                                                 },
+                                          "working_set_mib":  {
+                                                                  "p50":  72.3,
+                                                                  "min":  72.2,
+                                                                  "max":  72.5
+                                                              },
+                                          "private_mib":  {
+                                                              "p50":  98.3,
+                                                              "min":  97.7,
+                                                              "max":  99
+                                                          },
+                                          "peak_working_set_mib":  {
+                                                                       "p50":  72.3,
+                                                                       "min":  72.2,
+                                                                       "max":  72.5
+                                                                   },
+                                          "gpu_dedicated_mib":  {
+                                                                    "p50":  30.1,
+                                                                    "min":  30.1,
+                                                                    "max":  30.1
+                                                                },
+                                          "gpu_shared_mib":  {
+                                                                 "p50":  10.7,
+                                                                 "min":  10.7,
+                                                                 "max":  10.7
+                                                             },
+                                          "cpu_percent":  {
+                                                              "p50":  0,
+                                                              "min":  0,
+                                                              "max":  0.62
+                                                          }
+                                      }
+                },
+    "samples":  [
+                    {
+                        "backend":  "winit-software",
+                        "renderer":  "software",
+                        "run":  1,
+                        "first_frame_ms":  128,
+                        "first_frame_self_ms":  32,
+                        "chat_shown_ms":  130,
+                        "working_set":  35311616,
+                        "peak_working_set":  35311616,
+                        "private_bytes":  11771904,
+                        "gpu_dedicated":  0,
+                        "gpu_shared":  0,
+                        "cpu_percent_one_core":  0.61
+                    },
+                    {
+                        "backend":  "winit-software",
+                        "renderer":  "software",
+                        "run":  2,
+                        "first_frame_ms":  111,
+                        "first_frame_self_ms":  21,
+                        "chat_shown_ms":  112,
+                        "working_set":  35307520,
+                        "peak_working_set":  35307520,
+                        "private_bytes":  12152832,
+                        "gpu_dedicated":  0,
+                        "gpu_shared":  0,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-software",
+                        "renderer":  "software",
+                        "run":  3,
+                        "first_frame_ms":  490,
+                        "first_frame_self_ms":  109,
+                        "chat_shown_ms":  491,
+                        "working_set":  46202880,
+                        "peak_working_set":  46202880,
+                        "private_bytes":  12042240,
+                        "gpu_dedicated":  0,
+                        "gpu_shared":  0,
+                        "cpu_percent_one_core":  0.62
+                    },
+                    {
+                        "backend":  "winit-software",
+                        "renderer":  "software",
+                        "run":  4,
+                        "first_frame_ms":  118,
+                        "first_frame_self_ms":  31,
+                        "chat_shown_ms":  120,
+                        "working_set":  46211072,
+                        "peak_working_set":  46211072,
+                        "private_bytes":  12234752,
+                        "gpu_dedicated":  0,
+                        "gpu_shared":  0,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-software",
+                        "renderer":  "software",
+                        "run":  5,
+                        "first_frame_ms":  115,
+                        "first_frame_self_ms":  34,
+                        "chat_shown_ms":  116,
+                        "working_set":  35414016,
+                        "peak_working_set":  35414016,
+                        "private_bytes":  12079104,
+                        "gpu_dedicated":  0,
+                        "gpu_shared":  0,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-software",
+                        "renderer":  "software",
+                        "run":  6,
+                        "first_frame_ms":  112,
+                        "first_frame_self_ms":  31,
+                        "chat_shown_ms":  113,
+                        "working_set":  35467264,
+                        "peak_working_set":  35467264,
+                        "private_bytes":  12165120,
+                        "gpu_dedicated":  0,
+                        "gpu_shared":  0,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-femtovg",
+                        "renderer":  "opengl",
+                        "run":  1,
+                        "first_frame_ms":  275,
+                        "first_frame_self_ms":  196,
+                        "chat_shown_ms":  275,
+                        "working_set":  75862016,
+                        "peak_working_set":  75862016,
+                        "private_bytes":  103034880,
+                        "gpu_dedicated":  31592448,
+                        "gpu_shared":  11190272,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-femtovg",
+                        "renderer":  "opengl",
+                        "run":  2,
+                        "first_frame_ms":  266,
+                        "first_frame_self_ms":  178,
+                        "chat_shown_ms":  267,
+                        "working_set":  75776000,
+                        "peak_working_set":  75776000,
+                        "private_bytes":  103817216,
+                        "gpu_dedicated":  31592448,
+                        "gpu_shared":  11190272,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-femtovg",
+                        "renderer":  "opengl",
+                        "run":  3,
+                        "first_frame_ms":  240,
+                        "first_frame_self_ms":  178,
+                        "chat_shown_ms":  241,
+                        "working_set":  75694080,
+                        "peak_working_set":  75694080,
+                        "private_bytes":  102445056,
+                        "gpu_dedicated":  31592448,
+                        "gpu_shared":  11190272,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-femtovg",
+                        "renderer":  "opengl",
+                        "run":  4,
+                        "first_frame_ms":  240,
+                        "first_frame_self_ms":  165,
+                        "chat_shown_ms":  241,
+                        "working_set":  75776000,
+                        "peak_working_set":  75776000,
+                        "private_bytes":  103149568,
+                        "gpu_dedicated":  31592448,
+                        "gpu_shared":  11190272,
+                        "cpu_percent_one_core":  0
+                    },
+                    {
+                        "backend":  "winit-femtovg",
+                        "renderer":  "opengl",
+                        "run":  5,
+                        "first_frame_ms":  283,
+                        "first_frame_self_ms":  178,
+                        "chat_shown_ms":  284,
+                        "working_set":  75718656,
+                        "peak_working_set":  75718656,
+                        "private_bytes":  102936576,
+                        "gpu_dedicated":  31592448,
+                        "gpu_shared":  11190272,
+                        "cpu_percent_one_core":  0.62
+                    },
+                    {
+                        "backend":  "winit-femtovg",
+                        "renderer":  "opengl",
+                        "run":  6,
+                        "first_frame_ms":  267,
+                        "first_frame_self_ms":  179,
+                        "chat_shown_ms":  268,
+                        "working_set":  76009472,
+                        "peak_working_set":  76009472,
+                        "private_bytes":  103534592,
+                        "gpu_dedicated":  31592448,
+                        "gpu_shared":  11190272,
+                        "cpu_percent_one_core":  0
+                    }
+                ]
+}

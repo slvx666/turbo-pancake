@@ -2,11 +2,44 @@
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, steps 1–6 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = IN_PROGRESS**; S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S8 — load, hardening and release (Windows): NOT_STARTED** (plan to be written first, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-06 — S7 step 7: profiles, renderer decision, Windows E2E (S7 DONE (Windows))
+
+* New trials: `s7-profile-trial.ps1` (signed-in client with the chat open, TLS server +
+  PostgreSQL, 6 runs per renderer: working set, private bytes, WDDM GPU dedicated/shared
+  memory, idle CPU, spawn → first frame, spawn → chat shown), `s7-renderer-video-trial.ps1`
+  (viewer cost per renderer while watching a generated 1440p120 / 1080p60 share) and
+  `s7-e2e-trial.ps1` (install → register/sign in → chat → call → signed update → rollback →
+  uninstall --purge in one chain, isolated user folders, trial-prefixed profiles).
+* **PASS (profiles):** software renderer WS p50 **33.8 MiB** (max 44.1), private 11.5 MiB,
+  GPU 0; OpenGL WS 72.3 MiB, private 98.3 MiB, GPU 30.1 + 10.7 MiB (fails ≤ 50 MiB, driver
+  context). First frame warm p50 115 / 266 ms, first run after build 128 / 275 ms; chat
+  shown ≈ 1 ms after the first frame (< 2 s PASS). Installer 13.3 MiB, installed 25.1 MB
+  (≤ 30 MB PASS). Idle CPU 0 %. Report `benchmarks/results/s7-step7-windows-2026-11-06.md`,
+  raw `s7-profile-windows-2026-11-06.json`.
+* **Renderer decision (ADR 0002):** watching a share, software shows the same ≈ 60 fps
+  with less CPU (1440p120: 130 % vs 183 % of a core; 1080p60: 70 % vs 120 %) and RAM
+  (132 vs 220 MiB WS) — decoded frames are CPU images in both. The client now defaults to
+  `winit` + `software` unless `SLINT_BACKEND` is set; background smoke confirms
+  `software` by default and `opengl` with `winit-femtovg`.
+* **PASS (E2E):** both renderers, every phase (table in the report); 0 foreground
+  samples; no trial credentials, uninstall entries or shortcuts left on the real profile.
+* Found while writing the E2E: PowerShell's comma binds tighter than `+` (login argument)
+  and the sent state is localized ("отправлено"); both fixed in the script, check made strict.
+* **UNVERIFIED / owner-assisted:** true cold start; shown fps above 60 (invisible desktop
+  ≈ 60 Hz) and UI frame-time p95/p99; items listed in the S7 table.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper:
+  **198 passed, 0 failed, 4 ignored**, 52 binaries, real PostgreSQL (log
+  `.local/logs/s7-step7-tests.log`). Note: this run did **not** skip the real system-audio
+  test (`own_sound_is_excluded_other_processes_are_captured`); it ran and passed, playing
+  short test tones on the default output device. Earlier sessions filtered it; future
+  baseline runs should add `-- --skip own_sound_is_excluded` to keep the headless
+  baseline separate. Local branch only; no push or CI claimed.
 
 ## Session log 2026-11-06 — S7 step 6: per-user installer (ADR 0017)
 
@@ -158,7 +191,7 @@ Last session: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-
 * **UNVERIFIED / owner-assisted:** clicking the real icon and its real menu. Local
   branch only; no push or CI claimed.
 
-## Acceptance checks — S7 (IN_PROGRESS, Windows)
+## Acceptance checks — S7 (DONE (Windows) 2026-11-06; owner-assisted rows below)
 
 | Criterion / slice | Status | Evidence / remaining work |
 |---|---|---|
@@ -170,7 +203,11 @@ Last session: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-
 | Reconnect UX, unsaved input kept | PASS (step 4; real network loss and native media-only call recovery owner-assisted) | `s7-reconnect-trial.ps1` both renderers (server killed/restarted), `banner::tests`, `view::tests` |
 | Signed atomic updates with rollback | PASS (step 5; release key and Authenticode are owner tasks) | `s7-update-trial.ps1` both renderers, `crates/update` tests, server `tests/update.rs` |
 | Installer, size ≤ 30 MB, signing | PASS (step 6: installer 13.3 MiB; Authenticode and Slint license are owner decisions) | `s7-install-trial.ps1` both renderers, `crates/setup` and `package` tests |
-| Windows E2E, RAM/startup/size profiles | NOT_STARTED | step 7 |
+| Windows E2E: install → sign in → chat → call → update → rollback → uninstall | PASS (step 7, both renderers) | `s7-e2e-trial.ps1`, `benchmarks/results/s7-step7-windows-2026-11-06.md` |
+| Idle RAM ≤ 50 MiB (signed in, chat open) | PASS with the default software renderer (WS p50 33.8 MiB, private 11.5 MiB); OpenGL 72.3 MiB FAIL, therefore not the default (ADR 0002) | `s7-profile-trial.ps1`, `s7-profile-windows-2026-11-06.json` |
+| Startup < 2 s | PASS (warm 115 ms software / 266 ms OpenGL; first run after build 128 / 275 ms); true cold start UNVERIFIED (manual) | same |
+| Installer ≤ 30 MB | PASS (13.3 MiB) | steps 6–7 |
+| Renderer decision, video viewing cost | PASS (software default; 1440p120/1080p60 shown ≈ 60 fps; > 60 fps display and frame-time percentiles UNVERIFIED, owner-assisted ≥ 120 Hz monitor) | `s7-renderer-video-trial.ps1`, ADR 0002 |
 
 ## Session log 2026-11-05 — S6 step 6: acceptance complete
 
@@ -1029,22 +1066,20 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S7 step 7: profiles and Windows E2E acceptance
+## Exact next task — S8: plan, then step 1
 
-S7 is authorized (owner, 2026-11-05) and in progress; steps 1–6 are done (tray and
-lifecycle, one client per profile, layout and scale, reconnect banner, signed updates,
-per-user installer). Next is step 7 in `docs/STAGES.md`: (1) profiles on this machine —
-idle RAM after sign-in with the chats window open (working set + private bytes, software
-and OpenGL renderers; the ADR 0002 renderer decision), cold/warm startup to an
-interactive window, installer/installed sizes (already measured: 13.3 MiB / 25.1 MB),
-compared with spec §13 targets and recorded honestly in `benchmarks/results/`; (2) one
-Windows E2E trial on the invisible desktop chaining the existing pieces: install →
-sign in (PostgreSQL + TLS server) → chat → call (simulated audio) → signed update →
-rollback of a broken release → uninstall. Then decide S7 DONE only if every Windows
-criterion is PASS with evidence; owner-assisted items (real icon/menu clicks, message
-boxes, Authenticode, release key, keyboard focus order, real network loss) stay listed
-under ADR 0012. GitHub publishing remains unavailable; do not open authentication
-windows or claim a remote push/CI run.
+S7 is DONE (Windows) on 2026-11-06. Next is S8 (spec §17 S8, Windows scope per ADR 0012):
+first write the S8 plan into `docs/STAGES.md` as its own commit, covering: 500
+WebSocket sessions with presence on the server (extend the `signaling` bench to
+authenticated sessions + PostgreSQL), group of 100 under load, 50 publishers / 50
+previews and a separate 1 → 50 high-viewer test (existing `sfu`/`sfu_screen` benches as
+the base), hardening (limits, graceful shutdown, readiness, disk exhaustion), PostgreSQL
+backup/restore with a verified restore and recovery after a reboot, a regression suite
+script, release build and administration guide. Runs on the target server are
+owner-assisted (the owner's host; describe generically, never commit addresses). Then
+start step 1 (load tooling on loopback). Keep the real system-audio test out of the
+headless baseline (`-- --skip own_sound_is_excluded`). GitHub publishing remains
+unavailable; do not claim a push or CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

@@ -15,7 +15,8 @@ frame (client prints `TURBO_PANCAKE_FIRST_FRAME` from a winit `about_to_wait` ho
 
 * Memory: Windows working set / peak / private bytes (`GetProcessMemoryInfo`); Linux
   VmRSS / VmHWM / Private_* from `smaps_rollup`; macOS RSS only (private: TODO).
-* GPU memory is **not** sampled yet (spec §13 requires it separately) — TODO S7.
+* GPU memory is not sampled by this scenario; `benchmarks/scripts/s7-profile-trial.ps1`
+  samples it (WDDM GPU process memory counters) for the signed-in client.
 * Run 0 after a build is the closest automated approximation of a cold start; a true cold
   start (flushed file cache / after reboot) is a manual procedure.
 * `--env SLINT_BACKEND=winit-software` selects the software renderer.
@@ -67,3 +68,4 @@ Reports dated before the 2026-11-02 rename reference the old `dsmini-*` executab
 | `sfu-20m-windows-1793711275.json` | 20 members; talkers 1 / 3 / 10 / 20 → out 951 / 2853 / 9425 / 18991 pps, server CPU 6.9 / 6.2 / 14.4 / 25.4 % of one core, delivered 99–100 %, egress ≈ 1.3 / 3.8 / 12.5 / 25.2 Mbit/s |
 | `sfu-50m-windows-1793711325.json` | 50 members; talkers 3 / 10 / 25 / 50 → out 7.3k / 24.5k / 61.3k / 71.8k pps, CPU 16 / 31 / 81 / **97 %** of one core, delivered 100 / 100 / 100 / **59 %** (SFU thread saturated, degrades by dropping); ≈ 13 µs per forwarded packet under load |
 | `group-trial-windows-20261103.log` | three release clients on real devices (one machine), 60 s: all connected, 0 concealed / 0 late / 0 decode errors, voice-activated client sent 0 frames in a quiet room |
+| `s7-profile-windows-2026-11-06.json` | signed-in client, chat open, 6 runs per renderer: software WS p50 33.8 MiB / private 11.5 MiB / GPU 0, first frame warm 115 ms; OpenGL WS 72.3 / private 98.3 / GPU 30.1 + 10.7 MiB, 266 ms (summary in `s7-step7-windows-2026-11-06.md`) |
