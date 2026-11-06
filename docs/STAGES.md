@@ -42,8 +42,9 @@ recorded, and do not block the technical steps.
 3. **Responsive layout and scaling.** Narrow-window layout (collapsible sidebar, call
    panels stacking), UI scale setting (100–200 %) and HiDPI checks with own-window
    snapshots at several scale factors; keyboard focus order of the basic controls.
-4. **Reconnect UX.** Persistent connection banner for messenger and call states
+4. **Reconnect UX — DONE (2026-11-06).** Persistent connection banner for messenger and call states
    (offline, reconnecting, restored), unsent input kept; tests on server restarts.
+   Evidence: `benchmarks/results/s7-step4-windows-2026-11-06.md`.
 5. **Signed updates (ADR).** Update manifest signed with an Ed25519 key pinned in the
    client, `/v1/update` check, HTTPS download with size/SHA-256 limits, staged install
    next to the current version, atomic switch and rollback when the new version does not

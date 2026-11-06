@@ -35,6 +35,8 @@ pub struct Script {
     pub auto_decline: bool,
     pub leave_after_ms: Option<u64>,
     pub trial_switch: bool,
+    /// `--trial-input`: unsent text typed once the scripted conversation is open.
+    pub trial_input: Option<String>,
 }
 
 #[derive(Default)]
@@ -54,6 +56,9 @@ struct UiState {
     queued_sends: Vec<String>,
     queued_block: bool,
     chat_log: bool,
+    /// The server link is up: peers' presence is current only then (offline, the
+    /// cached "в сети" would be a stale claim, spec §8).
+    server_online: bool,
 }
 
 thread_local! {
@@ -567,6 +572,28 @@ fn send(w: &MainWindow, service: &Service, text: &str) {
     set_compose(w, Compose::New);
 }
 
+/// Peers' presence dots and the header follow the server link (stale while offline).
+fn show_presence(w: &MainWindow, server_online: bool) {
+    let online: Vec<bool> = STATE.with_borrow(|s| {
+        chat::conversation_rows(&s.conversations)
+            .into_iter()
+            .map(|r| r.online && server_online)
+            .collect()
+    });
+    let model = w.get_conversations();
+    if model.row_count() == online.len() {
+        for (i, on) in online.into_iter().enumerate() {
+            if let Some(mut row) = model.row_data(i)
+                && row.online != on
+            {
+                row.online = on;
+                model.set_row_data(i, row);
+            }
+        }
+    }
+    show_header(w);
+}
+
 fn show_header(w: &MainWindow) {
     let row = STATE.with_borrow(|s| {
         let cur = s.current.clone()?;
@@ -587,7 +614,7 @@ fn show_header(w: &MainWindow) {
         )));
         w.set_chat_title(c.title.as_str().into());
         w.set_chat_username(c.peer_username.as_str().into());
-        w.set_chat_online(c.online);
+        w.set_chat_online(c.online && STATE.with_borrow(|s| s.server_online));
         w.set_chat_can_send(c.can_send);
         w.set_chat_blocked_by_me(c.blocked_by_me);
     }
@@ -807,6 +834,13 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
         Update::Status(s) => {
             if STATE.with_borrow(|st| st.signed_in) {
                 w.set_connection_status(status_text(&s).into());
+                crate::connection_ui::messenger(w, &s);
+                let online = matches!(s, Status::Online);
+                if STATE.with_borrow_mut(|st| std::mem::replace(&mut st.server_online, online))
+                    != online
+                {
+                    show_presence(w, online);
+                }
             }
             if log {
                 println!(
@@ -858,13 +892,17 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
             w.set_conversations(ModelRc::new(VecModel::<ConversationRow>::default()));
             w.set_messages(ModelRc::new(VecModel::<MessageRow>::default()));
             w.set_connection_status("Не в сети".into());
+            crate::connection_ui::messenger(w, &Status::SignedOut);
             if log {
                 println!("TURBO_PANCAKE_CHAT signed_out reason=\"{reason}\"");
             }
         }
         Update::Conversations(list) => {
             let rows = chat::conversation_rows(&list);
-            STATE.with_borrow_mut(|s| s.conversations = list);
+            let presence = STATE.with_borrow_mut(|s| {
+                s.conversations = list;
+                s.server_online
+            });
             let model: Vec<ConversationRow> = rows
                 .into_iter()
                 .map(|r| ConversationRow {
@@ -872,7 +910,7 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
                     title: r.title.into(),
                     username: r.username.into(),
                     peer_id: r.peer_id.into(),
-                    online: r.online,
+                    online: r.online && presence,
                     unread: r.unread,
                     last_text: r.last_text.into(),
                     can_send: r.can_send,
@@ -992,6 +1030,18 @@ fn open_from_service(w: &MainWindow, id: &str) {
         slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
             if let Some(w) = weak.upgrade() {
                 w.invoke_conversation_call();
+            }
+        });
+    }
+    if let Some(text) = STATE.with_borrow_mut(|s| s.script.trial_input.take()) {
+        let weak = w.as_weak();
+        // After the scripted sends: typed like a user, saved as the draft.
+        slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_compose_text(text.as_str().into());
+                w.invoke_draft_changed(text.as_str().into());
+                w.set_room_text(text.as_str().into());
+                println!("TURBO_PANCAKE_TRIAL_INPUT set");
             }
         });
     }

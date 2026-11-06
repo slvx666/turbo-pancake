@@ -62,6 +62,12 @@
 //!   unless `--single-instance`; `--multi-instance` always skips it.
 //!   `--trial-close-after-ms <N>` — close the window to the tray after N ms (trials;
 //!   hiding is allowed even where the shell shows no icon).
+//!   Connection banner (S7): with `--chat-log` every change prints
+//!   `TURBO_PANCAKE_BANNER kind=<none|restored|reconnecting|offline> text="…"`.
+//!   `--snapshot-banner-dir <dir>` — own-window snapshot of each new banner kind.
+//!   `--trial-input <text>` — once the scripted conversation is open, type this text
+//!   into the message field and the room field (unsent input); banner lines then add
+//!   `input_kept=<bool>`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -93,6 +99,7 @@ use turbo_pancake_protocol::validate_display_name;
 
 slint::include_modules!();
 
+mod connection_ui;
 mod messenger_ui;
 
 #[derive(Default)]
@@ -136,6 +143,7 @@ struct Args {
     open_settings: bool,
     sidebar_open: bool,
     call_tab: i32,
+    snapshot_banner_dir: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -149,6 +157,8 @@ fn parse_args() -> Args {
         match a.as_str() {
             "--simulate-audio" => out.simulate_audio = true,
             "--trial-chat-switch" => out.chat.trial_switch = true,
+            "--trial-input" => out.chat.trial_input = args.next(),
+            "--snapshot-banner-dir" => out.snapshot_banner_dir = args.next(),
             "--snapshot" => out.snapshot = args.next(),
             "--snapshot-after-ms" => {
                 out.snapshot_after_ms = args.next().and_then(|v| v.parse().ok())
@@ -714,6 +724,23 @@ fn client_tls(args: &Args) -> Result<turbo_pancake_messenger_client::api::TlsCon
     }
 }
 
+/// The window's own rendering as a binary PPM (no screen capture).
+fn write_snapshot(w: &MainWindow, path: &std::path::Path) -> bool {
+    let Ok(pixels) = w.window().take_snapshot() else {
+        return false;
+    };
+    use std::io::Write;
+    (|| -> std::io::Result<()> {
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        write!(file, "P6\n{} {}\n255\n", pixels.width(), pixels.height())?;
+        for p in pixels.as_slice() {
+            file.write_all(&[p.r, p.g, p.b])?;
+        }
+        file.flush()
+    })()
+    .is_ok()
+}
+
 fn start_session(
     window: &MainWindow,
     args: &Args,
@@ -780,10 +807,12 @@ fn start_session(
             tx.send(Command::Watch(Some(first.peer_id.clone())));
         }
         let v = view::render(s);
+        let link = view::call_link(s);
         let (room, error) = (s.room.clone(), s.last_error.clone());
         let has_room = room.is_some();
         let _ = weak.upgrade_in_event_loop(move |w| {
             messenger_ui::media_state(&w, room, error);
+            connection_ui::call(&w, link);
             // Signed in, the sidebar shows the messenger connection instead.
             if !w.get_signed_in() {
                 w.set_connection_status(v.connection.into());
@@ -1084,6 +1113,11 @@ fn main() -> Result<(), slint::PlatformError> {
         .server
         .clone()
         .unwrap_or_else(|| "ws://127.0.0.1:7878/v1/signal".to_string());
+    connection_ui::configure(
+        args.chat.chat_log,
+        args.snapshot_banner_dir.clone().map(Into::into),
+        args.chat.trial_input.clone(),
+    );
     let messenger = tls.map(|t| {
         messenger_ui::start(
             &window,
@@ -1185,23 +1219,8 @@ fn main() -> Result<(), slint::PlatformError> {
             Duration::from_millis(args.snapshot_after_ms.unwrap_or(8000)),
             move || {
                 if let Some(w) = weak.upgrade() {
-                    match w.window().take_snapshot() {
-                        Ok(pixels) => {
-                            use std::io::Write;
-                            let result = (|| -> std::io::Result<()> {
-                                let mut file =
-                                    std::io::BufWriter::new(std::fs::File::create(&path)?);
-                                write!(file, "P6\n{} {}\n255\n", pixels.width(), pixels.height())?;
-                                for p in pixels.as_slice() {
-                                    file.write_all(&[p.r, p.g, p.b])?;
-                                }
-                                file.flush()?;
-                                Ok(())
-                            })();
-                            println!("TURBO_PANCAKE_SNAPSHOT success={}", result.is_ok());
-                        }
-                        Err(_) => println!("TURBO_PANCAKE_SNAPSHOT success=false"),
-                    }
+                    let ok = write_snapshot(&w, std::path::Path::new(&path));
+                    println!("TURBO_PANCAKE_SNAPSHOT success={ok}");
                 }
             },
         );

@@ -2,6 +2,7 @@
 //! headless: [`session`] (signaling + audio engine + 1:1 call) and [`view`] (status text).
 
 pub mod app_settings;
+pub mod banner;
 pub mod chat;
 pub mod credentials;
 pub mod instance;

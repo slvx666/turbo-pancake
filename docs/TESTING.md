@@ -200,6 +200,25 @@ Review the PNGs in the printed work directory by eye (clipping, overlap); they s
 the local account name and stay in the ignored build directory. Snapshot-only flags:
 `--window-size WxH`, `--open-settings`, `--sidebar-open`, `--call-tab 0|1`.
 
+Connection banner and unsent input across a server outage (step 4):
+
+```powershell
+# real TLS server + PostgreSQL, three release clients on an invisible desktop: one with a
+# chat open and unsent text, two in a direct call; the server is killed for -OutageMs
+# (default 8000) and restarted on the same port and data. Checks the offline/restored
+# banner of every client, the call link shown as reconnecting, input_kept=true, no
+# history duplicates, no banner before the outage; own-window PNG per banner state
+powershell -NoProfile -File benchmarks/scripts/s7-reconnect-trial.ps1 -PgBin <postgres-bin> -Out <local-log>
+powershell -NoProfile -File benchmarks/scripts/s7-reconnect-trial.ps1 -PgBin <postgres-bin> -Backend winit-femtovg -Out <local-log>
+```
+
+Flags: `--snapshot-banner-dir <dir>` (one snapshot per banner kind), `--trial-input
+<text>` (typed into the message and room fields once the scripted chat is open); with
+`--chat-log` each banner change prints `TURBO_PANCAKE_BANNER kind=… messenger=… call=…`.
+A server restart ends live calls (ADR 0015), so the call's "Звонок восстановлен" path is
+covered by `banner::tests` and the same-lease reconnect in `apps/desktop/tests/session.rs`,
+not by this trial.
+
 Smoke/trial runs (`--smoke-exit-after-ms`) are not guarded unless `--single-instance`
 is given, so the older multi-client trials keep working; `--multi-instance` disables
 the guard for any run.

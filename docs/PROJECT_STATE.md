@@ -1,11 +1,39 @@
 # Project State
 Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo)
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, steps 1–3 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Current stage: **S7 — desktop polish and delivery (Windows): IN_PROGRESS** (started 2026-11-05 on the owner's request; plan in `docs/STAGES.md`, steps 1–4 of 7 done). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = IN_PROGRESS**; S8 = NOT_STARTED; S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-05 (S7 steps 1–3: tray/lifecycle, one client per profile, responsive layout and scale)
+Last session: 2026-11-06 (S7 step 4: connection banner and unsent input across outages); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-06 — S7 step 4: reconnect UX
+
+* One connection banner over the content for both links (`banner.rs` state machine,
+  `connection_ui.rs` UI glue, `ConnectionBanner` in `main.slint`): offline with a live
+  countdown to the next attempt, reconnecting, call link lost/reconnecting, and a 4 s
+  "восстановлена" notice; both links in one line, the worse state colours it. The timer
+  runs only while the banner changes with time. The small sidebar status line stays.
+* Peers' presence (dots, chat header) is offline while our server link is down: the
+  cached "в сети" was a stale claim (found in the snapshot review).
+* Unsent input: message and room fields are not touched by status changes; verified
+  natively (`--trial-input`, `input_kept=true` on every banner state).
+* **PASS:** `s7-reconnect-trial.ps1` software + OpenGL: TLS/WSS server + PostgreSQL killed
+  for 8 s and restarted on the same port/data; three release clients on an invisible
+  desktop (chat with unsent text; a direct call) show offline → restored (123 / 240 ms
+  after the restart), call link reconnecting, no banner before the outage, history
+  unchanged (no duplicates), clean exits, 0 foreground samples. Report:
+  `benchmarks/results/s7-step4-windows-2026-11-06.md`.
+* Defect found by the first native run and fixed: every call start showed "Звонок: связь
+  потеряна" (joining reuses the media session whose earlier link was down). A drop is a
+  loss only after that call's media connected once; regression in `banner::tests`.
+* **UNVERIFIED / owner-assisted:** "Звонок восстановлен" after a media-only drop with the
+  server up in a native run (unit + existing same-lease session test only; a server
+  restart ends live calls by ADR 0015); real network loss, sleep/wake.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper:
+  **168 passed, 0 failed, 4 ignored, 1 filtered** (real system-audio test, as before),
+  42 binaries, real PostgreSQL (log `.local/logs/s7-step4-tests.log`). No dependency or
+  `Cargo.lock` change. Local branch only; no push or CI claimed.
 
 ## Session log 2026-11-05 — S7 step 3: responsive layout and scaling
 
@@ -84,7 +112,7 @@ Last session: 2026-11-05 (S7 steps 1–3: tray/lifecycle, one client per profile
 | Light/dark theme persisted | PASS (unit) | `app_settings::tests`; visual check of the panel not done |
 | Responsive layout, HiDPI, interface scale | PASS (step 3; own-window snapshots, both renderers) | `s7-layout-trial.ps1` (10 cases: sizes 700×480–1920×1080, factors 1–2, setting path), visual review, `ui_scale`/`app_settings` tests |
 | Keyboard tab/focus order of basic controls | UNVERIFIED (owner-assisted) | no input injection allowed here; Slint has no public focus query |
-| Reconnect UX, unsaved input kept | UNVERIFIED (drafts exist since S5/S6) | step 4 |
+| Reconnect UX, unsaved input kept | PASS (step 4; real network loss and native media-only call recovery owner-assisted) | `s7-reconnect-trial.ps1` both renderers (server killed/restarted), `banner::tests`, `view::tests` |
 | Signed atomic updates with rollback | NOT_STARTED | step 5 |
 | Installer, size ≤ 30 MB, signing | NOT_STARTED | step 6; Authenticode and Slint license are owner decisions |
 | Windows E2E, RAM/startup/size profiles | NOT_STARTED | step 7 |
@@ -946,19 +974,19 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S7 step 4: reconnect UX
+## Exact next task — S7 step 5: signed updates
 
-S7 is authorized (owner, 2026-11-05) and in progress; steps 1–3 are done (tray and
-lifecycle, one client per profile, responsive layout and scale). Next is step 4 in
-`docs/STAGES.md`: one persistent, visible connection banner over the content for the
-messenger (offline / reconnecting with the next attempt / restored) and for the call
-(media reconnecting, `Reconnecting` state from the call driver), instead of the small
-status line in the user panel only; unsent input (drafts, compose text, the room field)
-must survive the outage. Verify with server restarts (existing pattern in the S5 trial
-phase 4 and the S6 desktop session tests) on the invisible desktop with own-window
-snapshots during the outage and after recovery. Then steps 5–7. GitHub publishing
-remains unavailable; do not open authentication windows or claim a remote push/CI run.
-Owner-assisted items stay pending under ADR 0012.
+S7 is authorized (owner, 2026-11-05) and in progress; steps 1–4 are done (tray and
+lifecycle, one client per profile, responsive layout and scale, reconnect banner). Next
+is step 5 in `docs/STAGES.md`: write the ADR first (manifest format, Ed25519 key pinned
+in the client, how the private key is kept outside the repo, version/downgrade rules,
+the staged layout next to the current version and the rollback trigger), then the
+server `/v1/update` check, HTTPS download with size and SHA-256 limits, staged install,
+atomic switch and rollback when the new version does not start; negative tests (bad
+signature, downgrade, truncated file, interrupted switch). Choose the Ed25519 crate with
+a license/advisory check and record it (new dependency). Then steps 6–7. GitHub
+publishing remains unavailable; do not open authentication windows or claim a remote
+push/CI run. Owner-assisted items stay pending under ADR 0012.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

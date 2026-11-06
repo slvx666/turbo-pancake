@@ -569,6 +569,38 @@ component ScreenPanel inherits Rectangle {
     }
 }
 
+// One line over the content while a link is down or just came back (S7 step 4).
+// Kind: 1 restored (green), 2 reconnecting (amber), 3 offline (red).
+component ConnectionBanner inherits Rectangle {
+    in property <int> kind;
+    in property <string> text;
+    min-height: 32px;
+    background: root.kind == 3 ? #da373c : (root.kind == 2 ? #b07612 : #248046);
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 8px;
+        Text {
+            text: root.kind == 1 ? "✓" : "!";
+            color: #ffffff;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            color: #ffffff;
+            font-weight: 600;
+            wrap: word-wrap;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
 // The watched share in its own ordinary window (spec §5.1), optionally full screen.
 export component ShareWindow inherits Window {
     title: "turbo-pancake — " + root.share-name;
@@ -657,6 +689,9 @@ export component MainWindow inherits Window {
     in property <string> user-name: "turbo-pancake";
     in property <string> connection-status: "Не подключено";
     in property <string> build-info;
+    // Connection banner: 0 none, 1 restored, 2 reconnecting, 3 offline.
+    in property <int> banner-kind;
+    in property <string> banner-text;
 
     // Messenger (S5).
     in property <bool> signed-in;
@@ -821,6 +856,13 @@ export component MainWindow inherits Window {
             open-voice => { root.sidebar-open = false; root.open-voice(); }
             logout => { root.logout(); }
         }
+        // Content column: the connection banner (S7 step 4) over the current view.
+        VerticalLayout {
+        if root.banner-kind != 0: ConnectionBanner {
+            kind: root.banner-kind;
+            text: root.banner-text;
+        }
+        HorizontalLayout {
         if !root.voice-selected && !root.signed-in: AuthPanel {
             server: root.server-label;
             error: root.auth-error;
@@ -975,6 +1017,8 @@ export component MainWindow inherits Window {
                 font-size: 11px;
                 horizontal-alignment: center;
             }
+        }
+        }
         }
     }
 

@@ -3,6 +3,7 @@
 
 use turbo_pancake_media_transport::call::CallState;
 
+use crate::banner::CallLink;
 use crate::session::{MediaTransport, Member, ServerStatus, Snapshot, WatchLayer};
 use turbo_pancake_protocol::v1::LayerReason;
 
@@ -318,6 +319,26 @@ pub fn render(s: &Snapshot) -> CallView {
     }
 }
 
+/// The call's link for the connection banner: lost signaling or a recovering media
+/// session while in a room is `Reconnecting`; an ended/failed call is the call view's.
+pub fn call_link(s: &Snapshot) -> CallLink {
+    if s.room.is_none() {
+        return CallLink::None;
+    }
+    if matches!(s.server, ServerStatus::Disconnected(_)) {
+        return CallLink::Reconnecting;
+    }
+    if !s.joined {
+        return CallLink::Connecting;
+    }
+    match s.media.as_ref().map(|m| &m.state) {
+        Some(CallState::Connected) => CallLink::Connected,
+        Some(CallState::Reconnecting) => CallLink::Reconnecting,
+        Some(CallState::Closed | CallState::Failed(_)) => CallLink::None,
+        None | Some(CallState::Negotiating | CallState::Connecting) => CallLink::Connecting,
+    }
+}
+
 /// One `TURBO_PANCAKE_CALL key=value …` line for logs and scripted trials.
 pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
     let server = match &s.server {
@@ -543,12 +564,14 @@ mod tests {
     #[test]
     fn titles_follow_the_call_lifecycle() {
         let mut s = Snapshot::default();
+        assert_eq!(call_link(&s), CallLink::None);
         assert_eq!(render(&s).title, "Не в звонке");
         assert!(!render(&s).in_room);
         s.room = Some("r1".into());
         assert_eq!(render(&s).detail, "Вход в комнату…");
         s.joined = true;
         assert_eq!(render(&s).detail, "Подключение к медиасерверу…");
+        assert_eq!(call_link(&s), CallLink::Connecting);
         s.media = Some(MediaStatus {
             transport: MediaTransport::Tunnel,
             state: CallState::Connected,
@@ -569,8 +592,10 @@ mod tests {
         assert_eq!(v.members[0].volume_pct, 50.0);
         assert_eq!(v.members[0].info, "нет звука");
         assert!(!v.members[0].speaking);
+        assert_eq!(call_link(&s), CallLink::Connected);
         s.server = ServerStatus::Disconnected("x".into());
         assert_eq!(render(&s).connection, "Нет связи: x");
+        assert_eq!(call_link(&s), CallLink::Reconnecting);
         let line = log_line(&s, 5);
         assert!(line.starts_with("TURBO_PANCAKE_CALL t_ms=5 server=disconnected room=r1"));
         assert!(line.contains("media=connected transport=websocket"));
