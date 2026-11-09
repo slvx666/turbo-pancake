@@ -18,7 +18,7 @@ presence are recorded as owner-assisted and do not block the next stage.
 | S5 | Accounts + direct messages | real message exchange; server-side block; correct after restart/reconnect; no duplicates; security tests | DONE (Windows) 2026-11-04 (ADR 0013, 0014); owner-assisted: two machines |
 | S6 | Groups + calls in messenger | 100-member group integration test; start/join/leave call without breaking history/permissions | DONE (Windows, 2026-11-05; headless + native software/OpenGL, simulated audio; real audio/two machines owner-assisted) |
 | S7 | Desktop polish + delivery | E2E on Windows (macOS/Linux → S9), signed updates, RAM/startup/size profiles | DONE (Windows) 2026-11-06 (owner-assisted items in PROJECT_STATE) |
-| S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | IN_PROGRESS (plan 2026-11-06; target-server runs owner-assisted) |
+| S8 | Load, hardening, release | reports on target server: 500 WS, group 100, 50 publishers/previews, 1→50 viewers; backup/restore; release package | DONE (Windows) 2026-11-09 (target-server runs owner-assisted) |
 | S9 | macOS + Linux port (ADR 0012) | ScreenCaptureKit/VideoToolbox/`excludesCurrentProcessAudio`; portal/PipeWire/VA-API + audio exclusion validation; devices, tray, installers, signing, updates; the macOS/Linux parts of S1–S8 criteria; CI jobs back | NOT_STARTED (after S8) |
 
 ## S8 plan (2026-11-06, Windows only)

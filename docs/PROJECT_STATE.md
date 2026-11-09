@@ -3,11 +3,46 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Session 2026-11-06 (owner request, after S7): owner-server release 0.1.1 built locally (not committed): client with the server address + private CA baked in (DEPLOY-TLS §5), software renderer default, launcher, package and per-user installer 13.3 MiB. Probe of the built client without flags against the deployed server: TLS trusted, login with a non-existent user answered "wrong username or password". Server not redeployed: no server-side code changed since the deployment (`git diff e5e9d21 -- apps/app-server apps/media-sfu crates proto migrations Cargo.lock deploy` empty); `/v1/version` answers. Updates in this build: not configured (release key is an owner task, ADR 0016).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–6 done 2026-11-09; next: step 7, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–6 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the owner's go-ahead and hardware, see "Exact next task"). **S8 DONE (Windows) 2026-11-09** (all 7 steps on the dev machine/loopback; target-server runs owner-assisted, procedure `deploy/linux/target-bench.sh`, ADMIN.md §9). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; owner-assisted pending: every target-server run of steps 1–5 incl. real uplink and reboot, Linux SIGTERM/unit limits, backup timer, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-09 — S8 step 7: release and administration (S8 DONE (Windows))
+
+* `deploy/release.ps1`: one command for a release — client + launcher with the version
+  baked in, package, per-user installer (≤ 30 MB checked), signing tool, server bundle
+  (`install-server.sh` + `git archive` of the commit), optional signed client update
+  (client only; manifest verified with the pinned keys), `release.json` (no addresses) and
+  `SHA256SUMS` (sha256sum format), self-checked; `-Verify` for a copied release; dirty
+  tracked tree refused unless `-AllowDirty`; build inputs only from parameters; own target
+  dir `t/r`; `-Report` without paths.
+* Server: `publish-update.sh` (files first, manifest by atomic rename, keeps new +
+  previous), `target-bench.sh` (S8 steps 1–5 + post-reboot check on the host: own loopback
+  server, scratch database `turbo_pancake_bench`, restart only with `ALLOW_RESTART=1`,
+  backup + restore drill + live `check-db`, verified-TLS readiness probe via the public
+  `ca.pem`). `install-server.sh`: `server.local.env` (administrator settings, never
+  rewritten — before, every re-run would have dropped manual settings), default
+  `TURBO_PANCAKE_UPDATE_DIR`, installs the new scripts and `ca.pem`, records the archive commit.
+* Found and fixed: the client reported the crate version (0.1.0) to the server even in a
+  0.1.1 release build; it now reports `TURBO_PANCAKE_BUILD_VERSION`.
+* `docs/ADMIN.md`: release, install/upgrade/rollback, configuration table and fixed limits,
+  TLS rotation, publishing signed updates and key rotation, backups, monitoring and alerts,
+  measured capacity (steps 1–4), target-server procedure. DEPLOY-TLS §5, TESTING.md updated.
+* **PASS:** release 0.1.2 from the clean tree `476a9f8` (trial key): installer 13.3 MiB,
+  9 files, `-Verify` and `sha256sum -c` PASS, tampering detected (exit 1), replayed
+  manifest refused, archive commit matches, client binary identical to the trial build
+  (`benchmarks/results/s8-step7-windows-2026-11-09.md`,
+  `s8-step7-release-windows-2026-11-09.md`). `publish-update.sh` exercised in Git's bash.
+* **PASS:** regression suite 16 / 16 in 11.1 min (`s8-step7-regression-windows-2026-11-09.md`);
+  separately fmt, Clippy `-D warnings`, tests **209 passed, 0 failed, 4 ignored, 1
+  filtered**, 54 binaries (log `.local/logs/s8-step7-tests.log`).
+* Mistake during the session: `turbo-pancake-desktop.exe --version` (no such flag) opened
+  the client window on the user's desktop for ≈ 2 min before it was stopped. Do not start
+  the GUI client to read its version; read the string from the binary.
+* **UNVERIFIED / owner-assisted:** execution of the Linux scripts (only `bash -n`), the
+  target-server runs, Authenticode, a real update key. Local branch only; no push or CI claimed.
 
 ## Session log 2026-11-09 — S8 step 6: regression suite
 
@@ -382,7 +417,7 @@ Last session: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load w
 * **UNVERIFIED / owner-assisted:** clicking the real icon and its real menu. Local
   branch only; no push or CI claimed.
 
-## Acceptance checks — S8 (IN_PROGRESS, plan in `docs/STAGES.md`)
+## Acceptance checks — S8 (DONE (Windows) 2026-11-09; target-server rows owner-assisted)
 
 | Criterion / slice | Status | Evidence / remaining work |
 |---|---|---|
@@ -395,7 +430,11 @@ Last session: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load w
 | Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | PASS (step 4; Linux SIGTERM/unit limits and a real full disk owner-assisted) | `tests/{hardening,db_outage}.rs`, `login-burst-*` reports; `s8-step4-windows-2026-11-09.md` |
 | Backup / verified restore / recovery after reboot | PASS (step 5, dev machine; timer, real reboot and drill on the server owner-assisted) | `tests/backup_restore.rs`, `tests/db_outage.rs`; `docs/BACKUP.md` |
 | Regression suite | PASS (step 6: 16 / 16 items; `-Full` chains not re-run) | `benchmarks/scripts/regression.ps1`, `s8-step6-regression-windows-2026-11-09.md` |
-| Release package + administration guide | NOT_STARTED (step 7) | |
+| Regression suite before the release commit | PASS (16 / 16, 11.1 min) | `s8-step7-regression-windows-2026-11-09.md` |
+| Release package with checksums | PASS (step 7: installer 13.3 MiB, SHA256SUMS verified, tampering detected) | `deploy/release.ps1`, `s8-step7-windows-2026-11-09.md`, `s8-step7-release-windows-2026-11-09.md` |
+| Administration guide (install, config, TLS, updates, backups, monitoring, limits, upgrade) | PASS (step 7) | `docs/ADMIN.md` |
+| Target-server procedure for steps 1–5 | PASS as a script (syntax checked); execution UNVERIFIED (owner-assisted) | `deploy/linux/target-bench.sh`, ADMIN.md §9 |
+| No blocking auth / data-loss / AV-loop defects | PASS on Windows (security negatives, backup/restore, own-sound exclusion tests from S3–S8; no open blocking issue) | test suite, known issues list |
 
 ## Acceptance checks — S7 (DONE (Windows) 2026-11-06; owner-assisted rows below)
 
@@ -1280,20 +1319,24 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S8 step 7: release and administration
+## Exact next task — after S8 (Windows done)
 
-S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–6 are done (dev machine). Next, step 7:
-a release build script (server for Linux built on the server by `install-server.sh`;
-Windows client package + installer from `turbo-pancake-update pack` / `apps/installer`)
-with SHA-256 checksums of every artifact, `docs/ADMIN.md` (install, configuration and
-flags incl. the S8 limits, TLS rotation (DEPLOY-TLS), publishing signed updates (ADR
-0016), backups (BACKUP.md), monitoring (`/healthz`, `/readyz`, `/v1/server-stats`,
-journald), limits and capacity numbers from steps 1–4, upgrade and rollback), and the
-target-server procedure that runs steps 1–5 on the owner's host (commands only, results
-owner-assisted). Then S8 acceptance: every criterion PASS on Windows/loopback, target-server
-rows owner-assisted. Run `benchmarks/scripts/regression.ps1` before the final commit. Keep
-the real system-audio test out. GitHub publishing remains unavailable; do not claim a
-push or CI run.
+S0–S8 are DONE on Windows. Next by ADR 0012 is **S9 (macOS + Linux port)**; it needs the
+owner's decision to start and their Mac / Linux machines — ask before planning it. Until
+then, the owner-assisted items are the useful work (none blocks S9):
+
+1. Target server: copy a release's `server/` (from `deploy/release.ps1`, with the public
+   `ca.pem` in `server/tls/`), run `install-server.sh`, then `target-bench.sh` steps
+   1,2,3 / 4 (`ALLOW_RESTART=1`) / 5, a reboot and step `r` (ADMIN.md §9); record the
+   summary generically in `benchmarks/results/` and fill the target-server rows of the
+   S8 table. Measure the real uplink and set `TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS`.
+2. Release key (`turbo-pancake-update keygen`) and a release with updates; Authenticode;
+   Slint license (ADR 0002).
+3. Bump `[workspace.package] version` with the next server release so the server and
+   client versions match (release.ps1 prints a note otherwise).
+4. Older owner-assisted items: see the S1–S7 rows.
+
+GitHub publishing remains unavailable from this machine; do not claim a push or CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 
