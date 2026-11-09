@@ -76,7 +76,23 @@ pub async fn sfu(
 }
 
 /// Accumulated CPU time of a process in milliseconds.
+/// Process CPU time (user + kernel) in ms. Windows reads `GetProcessTimes`: sysinfo's
+/// accumulated time there is derived from sampled usage and was off by orders of
+/// magnitude between refreshes (found in S8 step 2).
 pub(crate) fn cpu_ms(sys: &mut sysinfo::System, pid: u32) -> anyhow::Result<u64> {
+    #[cfg(windows)]
+    {
+        let _ = sys;
+        crate::mem::process_cpu_ms(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        sysinfo_cpu_ms(sys, pid)
+    }
+}
+
+#[cfg(not(windows))]
+fn sysinfo_cpu_ms(sys: &mut sysinfo::System, pid: u32) -> anyhow::Result<u64> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
     let pid = Pid::from_u32(pid);
     sys.refresh_processes_specifics(

@@ -52,6 +52,43 @@ pub fn sample(pid: u32) -> anyhow::Result<MemSample> {
     }
 }
 
+/// User + kernel CPU time of a process in ms (`GetProcessTimes`, 100 ns units).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn process_cpu_ms(pid: u32) -> anyhow::Result<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: plain Win32 calls with zero-initialised out structs; the handle is
+    // closed on every path.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            anyhow::bail!("OpenProcess({pid}) failed");
+        }
+        let (mut created, mut exited, mut kernel, mut user): (
+            FILETIME,
+            FILETIME,
+            FILETIME,
+            FILETIME,
+        ) = (
+            std::mem::zeroed(),
+            std::mem::zeroed(),
+            std::mem::zeroed(),
+            std::mem::zeroed(),
+        );
+        let ok = GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(h);
+        if ok == 0 {
+            anyhow::bail!("GetProcessTimes({pid}) failed");
+        }
+        let t = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+        Ok((t(kernel) + t(user)) / 10_000)
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub fn sample(pid: u32) -> anyhow::Result<MemSample> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;

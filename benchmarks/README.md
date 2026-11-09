@@ -51,6 +51,22 @@ cargo build --release -p turbo-pancake-app-server -p turbo-pancake-bench
 turbo-pancake-bench messenger --server-exe <target>/release/turbo-pancake-app-server --users 500
 ```
 
+### `group-load` (S8)
+
+Same server setup as `messenger`. `--groups` (default 2) groups of `--group-size` (100);
+in every group `--senders` (20) members post `--messages-per-sender` (50) messages each
+over HTTP (`--send-interval-ms` 20; every tenth send twice at once with the same nonce)
+while the creator removes and re-adds `--churn` (10) members for `--churn-rounds` (5);
+removed members' send/history must be refused. Checks every connection's live
+`MessageCreated` events against the membership windows (bracketed by observed sequences),
+then a reconnect storm (all WebSockets close, `--storm-messages` posted offline, all
+reconnect and resync with `/changes`), then the full history (no gaps, duplicates or
+mismatches, per-sender order). Samples the DB pool via `/v1/server-stats` every 25 ms.
+
+```bash
+turbo-pancake-bench group-load --server-exe <target>/release/turbo-pancake-app-server --groups 5
+```
+
 ### `sfu`
 
 Starts the release server on loopback and connects `--members` (default 20, ≤ 64) media
@@ -90,4 +106,7 @@ Reports dated before the 2026-11-02 rename reference the old `dsmini-*` executab
 | `group-trial-windows-20261103.log` | three release clients on real devices (one machine), 60 s: all connected, 0 concealed / 0 late / 0 decode errors, voice-activated client sent 0 frames in a quiet room |
 | `messenger-500u-windows-1793986102.json` | 500 signed-in sessions, 5 groups of 100, pg-test: PASS; connect p50 5.5 ms; presence to the last of 99 contacts p95 1.5 / 2.1 ms (offline / online); group message to 99 p99 6.2 ms; hold CPU 0.8 % of a core, WS 30.3 MiB (≈ 33 KiB per session); silent clients offline after ≈ 27 s; 0 stale presence in 49 000 checks (summary in `s8-step1-windows-2026-11-06.md`) |
 | `messenger-1000u-windows-1793986170.json` | 1000 sessions, 10 groups of 100: PASS; hold CPU 2.8 %, WS 45.3 MiB; group message to 99 p99 8.2 ms; 0 stale in 99 000 |
+| `group-load-2x100-windows-1794228692.json` | 2 groups of 100 under 890 sends/s with 100 removals/re-adds and a reconnect storm: PASS; 0 missed, 0 delivered while removed, 0 history gaps/duplicates; send p99 50.5 ms; pool 16 full in 40 of 90 samples (summary in `s8-step2-windows-2026-11-09.md`) |
+| `group-load-5x100-windows-1794228706.json` | 5 groups of 100, 1139 sends/s, 250 removals/re-adds, 500-account storm (reconnect 0.22 s, resync 0.06 s): PASS; send p99 70.2 ms, pool saturated |
+| `messenger-500u-windows-1794228777.json` | step 1 re-run with the `GetProcessTimes` CPU probe: PASS; hold 0.72 % of a core |
 | `s7-profile-windows-2026-11-06.json` | signed-in client, chat open, 6 runs per renderer: software WS p50 33.8 MiB / private 11.5 MiB / GPU 0, first frame warm 115 ms; OpenGL WS 72.3 / private 98.3 / GPU 30.1 + 10.7 MiB, 266 ms (summary in `s7-step7-windows-2026-11-06.md`) |

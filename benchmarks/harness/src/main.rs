@@ -3,6 +3,7 @@
 //! Every scenario writes a self-describing JSON report (host, parameters, raw
 //! samples, summary) into `benchmarks/results/`. See `benchmarks/README.md`.
 
+mod group_load;
 mod mem;
 mod messenger;
 mod sfu;
@@ -93,6 +94,38 @@ enum Cmd {
         #[arg(long, env = "TURBO_PANCAKE_BENCH_DATABASE_URL", hide_env_values = true)]
         database_url: Option<String>,
     },
+    /// S8: 100-member groups under concurrent writes, membership changes and a
+    /// reconnect storm; ordering, permissions and resync checked against the history.
+    GroupLoad {
+        #[arg(long)]
+        server_exe: PathBuf,
+        #[arg(long, default_value_t = 2)]
+        groups: usize,
+        #[arg(long, default_value_t = 100)]
+        group_size: usize,
+        /// Members per group posting at the same time.
+        #[arg(long, default_value_t = 20)]
+        senders: usize,
+        #[arg(long, default_value_t = 50)]
+        messages_per_sender: usize,
+        /// Pause of each sender between its messages.
+        #[arg(long, default_value_t = 20)]
+        send_interval_ms: u64,
+        /// Members per group the creator removes and re-adds each round.
+        #[arg(long, default_value_t = 10)]
+        churn: usize,
+        #[arg(long, default_value_t = 5)]
+        churn_rounds: usize,
+        /// Messages per group posted while every WebSocket is down.
+        #[arg(long, default_value_t = 50)]
+        storm_messages: usize,
+        /// Parallel registrations (each costs one Argon2id hash on the server).
+        #[arg(long, default_value_t = 8)]
+        concurrency: usize,
+        /// PostgreSQL of the server; default: a throw-away cluster (`crates/pg-test`).
+        #[arg(long, env = "TURBO_PANCAKE_BENCH_DATABASE_URL", hide_env_values = true)]
+        database_url: Option<String>,
+    },
     /// SFU forwarding: N media members, server CPU and throughput per number of talkers.
     Sfu {
         #[arg(long)]
@@ -175,6 +208,33 @@ fn main() -> anyhow::Result<()> {
                 messages,
                 hold_seconds,
                 silent,
+                concurrency,
+                database_url,
+            },
+        ))?,
+        Cmd::GroupLoad {
+            server_exe,
+            groups,
+            group_size,
+            senders,
+            messages_per_sender,
+            send_interval_ms,
+            churn,
+            churn_rounds,
+            storm_messages,
+            concurrency,
+            database_url,
+        } => tokio::runtime::Runtime::new()?.block_on(group_load::group_load(
+            &server_exe,
+            group_load::Params {
+                groups,
+                group_size,
+                senders,
+                messages_per_sender,
+                send_interval_ms,
+                churn,
+                churn_rounds,
+                storm_messages,
                 concurrency,
                 database_url,
             },

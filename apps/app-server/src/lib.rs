@@ -195,6 +195,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/update/manifest", get(update::manifest))
         .route("/v1/update/files/{version}/{*path}", get(update::file))
         .route("/v1/media-stats", get(media_stats))
+        .route("/v1/server-stats", get(server_stats))
         .route("/v1/signal", get(signaling::ws_handler))
         // Messenger API (ADR 0013, docs/API.md).
         .route("/v1/auth/register", post(auth::register))
@@ -266,6 +267,24 @@ async fn media_stats(State(state): State<AppState>) -> impl IntoResponse {
         "dropped_commands": s.dropped_commands,
     }))
     .into_response()
+}
+
+/// Operator metrics (spec §12): aggregate counts only, no account data or secrets.
+async fn server_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let db = state.db.as_ref().map(|pool| {
+        let (size, idle) = (pool.size(), pool.num_idle());
+        serde_json::json!({
+            "max": state.config.database_pool,
+            "size": size,
+            "idle": idle,
+            "in_use": (size as usize).saturating_sub(idle),
+        })
+    });
+    axum::Json(serde_json::json!({
+        "connections": state.config.max_connections - state.connections.available_permits(),
+        "max_connections": state.config.max_connections,
+        "db_pool": db,
+    }))
 }
 
 async fn version(State(state): State<AppState>) -> impl IntoResponse {

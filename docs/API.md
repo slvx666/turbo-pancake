@@ -13,6 +13,7 @@ Status legend: **implemented** (code + tests exist), **planned** (stage in brack
 | GET | `/healthz` | implemented | `200 ok` while the process serves requests |
 | GET | `/readyz` | implemented | `200 ready`; `503` when the WebSocket connection limit is reached |
 | GET | `/v1/version` | implemented | `{"server_version":"x.y.z","protocol_version":1,"messenger":true}` |
+| GET | `/v1/server-stats` | implemented (S8) | operator metrics, aggregate counts only: `{"connections","max_connections","db_pool":{"max","size","idle","in_use"}}` (`db_pool` is `null` without the messenger) |
 | GET | `/v1/signal` | implemented | WebSocket upgrade (below); `503` when connection limit reached |
 | POST | `/v1/auth/register` | implemented (S5) | `RegisterRequest` → `201 AuthResponse`; `409` username taken |
 | POST | `/v1/auth/login` | implemented (S5) | `LoginRequest` → `AuthResponse`; `401` for unknown user *and* wrong password (same body, same cost) |

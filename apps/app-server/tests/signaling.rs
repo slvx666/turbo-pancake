@@ -566,6 +566,9 @@ async fn health_ready_version_endpoints() {
         m.contains("\"rtp_in\":0") && m.contains("\"udp_send_errors\":0"),
         "{m}"
     );
+    let st = http_get(addr, "/v1/server-stats").await;
+    assert!(st.starts_with("HTTP/1.1 200"), "{st}");
+    assert!(st.contains("\"db_pool\":null"), "{st}");
 }
 
 #[tokio::test]

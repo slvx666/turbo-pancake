@@ -51,7 +51,7 @@ pub struct Params {
 
 /// Generous bound for one fan-out to complete; a miss is a failure of the run.
 const FANOUT_TIMEOUT: Duration = Duration::from_secs(20);
-const PASSWORD: &str = "load test password";
+pub(crate) const PASSWORD: &str = "load test password";
 
 struct Account {
     username: String,
@@ -61,29 +61,39 @@ struct Account {
 }
 
 /// What a connection task reports to the scenario.
-enum EvKind {
-    Presence { user: String, online: bool },
-    Message { body: String },
-    Pong { sent_us: u64 },
+pub(crate) enum EvKind {
+    Presence {
+        user: String,
+        online: bool,
+    },
+    Message {
+        body: String,
+        conversation: String,
+        seq: i64,
+        change_seq: i64,
+    },
+    Pong {
+        sent_us: u64,
+    },
     Closed,
 }
 
-struct Ev {
-    at: Instant,
-    conn: usize,
-    kind: EvKind,
+pub(crate) struct Ev {
+    pub at: Instant,
+    pub conn: usize,
+    pub kind: EvKind,
 }
 
-enum Cmd {
+pub(crate) enum Cmd {
     Close,
     /// Stop sending anything (heartbeats included) but keep the socket open.
     Silence,
     Ping(u64),
 }
 
-struct Conn {
-    cmd: mpsc::UnboundedSender<Cmd>,
-    task: tokio::task::JoinHandle<()>,
+pub(crate) struct Conn {
+    pub cmd: mpsc::UnboundedSender<Cmd>,
+    pub task: tokio::task::JoinHandle<()>,
 }
 
 type Ws = crate::Ws;
@@ -95,24 +105,7 @@ pub async fn messenger(server_exe: &Path, p: Params) -> anyhow::Result<serde_jso
         "--group-size must be 2..=100 (spec §7: groups of up to 100)"
     );
     ensure!(p.concurrency >= 1, "--concurrency must be at least 1");
-    let (db_url, db_kind) = match &p.database_url {
-        Some(u) => (u.clone(), "external"),
-        None => (
-            turbo_pancake_pg_test::database_url()
-                .context("PostgreSQL binaries not found (TURBO_PANCAKE_PG_BIN)")?,
-            "pg-test (fsync=off)",
-        ),
-    };
-    let mut cmd = Command::new(server_exe);
-    cmd.args([
-        "--bind",
-        "127.0.0.1:0",
-        "--no-media-udp",
-        "--load-test-limits",
-    ])
-    .env("TURBO_PANCAKE_DATABASE_URL", &db_url)
-    .env("RUST_LOG", "warn");
-    let (mut child, rx, tail) = spawn_lines(cmd)?;
+    let (mut child, rx, tail, db_kind) = start_server(server_exe, p.database_url.as_deref())?;
     let result = run(&child, &rx, &p).await;
     let result = result.map_err(|e| with_child_diag(e, &mut child, &tail));
     let _ = child.kill();
@@ -132,19 +125,35 @@ pub async fn messenger(server_exe: &Path, p: Params) -> anyhow::Result<serde_jso
     }))
 }
 
-struct Http {
-    client: reqwest::Client,
-    base: String,
+pub(crate) struct Http {
+    pub client: reqwest::Client,
+    pub base: String,
 }
 
 impl Http {
-    async fn call<R: prost::Message + Default>(
+    pub async fn call<R: prost::Message + Default>(
         &self,
         method: reqwest::Method,
         path: &str,
         token: Option<&str>,
         body: Option<Vec<u8>>,
     ) -> anyhow::Result<R> {
+        let (status, bytes) = self.raw(method, path, token, body).await?;
+        if !status.is_success() {
+            let err = v1::ApiError::decode(bytes.as_ref()).unwrap_or_default();
+            bail!("{path}: HTTP {status}: {}", err.message);
+        }
+        Ok(R::decode(bytes.as_ref())?)
+    }
+
+    /// One request; returns the status and the body without judging the status.
+    pub async fn raw(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        token: Option<&str>,
+        body: Option<Vec<u8>>,
+    ) -> anyhow::Result<(reqwest::StatusCode, Vec<u8>)> {
         let mut req = self.client.request(method, format!("{}{path}", self.base));
         if let Some(t) = token {
             req = req.header("authorization", format!("Bearer {t}"));
@@ -156,39 +165,65 @@ impl Http {
         }
         let resp = req.send().await?;
         let status = resp.status();
-        let bytes = resp.bytes().await?;
-        if !status.is_success() {
-            let err = v1::ApiError::decode(bytes.as_ref()).unwrap_or_default();
-            bail!("{path}: HTTP {status}: {}", err.message);
-        }
-        Ok(R::decode(bytes.as_ref())?)
+        Ok((status, resp.bytes().await?.to_vec()))
     }
 }
 
-fn ms(d: Duration) -> f64 {
+pub(crate) fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-async fn run(
-    child: &Child,
+/// Starts the release server on loopback with load-test limits and the given (or a
+/// throw-away) PostgreSQL. Returns the child, its stdout lines, the stderr tail and the
+/// database kind for the report.
+pub(crate) fn start_server(
+    server_exe: &Path,
+    database_url: Option<&str>,
+) -> anyhow::Result<(
+    Child,
+    std_mpsc::Receiver<String>,
+    crate::StderrTail,
+    &'static str,
+)> {
+    let (db_url, db_kind) = match database_url {
+        Some(u) => (u.to_owned(), "external"),
+        None => (
+            turbo_pancake_pg_test::database_url()
+                .context("PostgreSQL binaries not found (TURBO_PANCAKE_PG_BIN)")?,
+            "pg-test (fsync=off)",
+        ),
+    };
+    let mut cmd = Command::new(server_exe);
+    cmd.args([
+        "--bind",
+        "127.0.0.1:0",
+        "--no-media-udp",
+        "--load-test-limits",
+    ])
+    .env("TURBO_PANCAKE_DATABASE_URL", &db_url)
+    .env("RUST_LOG", "warn");
+    let (child, rx, tail) = spawn_lines(cmd)?;
+    Ok((child, rx, tail, db_kind))
+}
+
+/// Waits for the listening line and for the messenger routes (migrations run first).
+pub(crate) async fn ready(
     rx: &std_mpsc::Receiver<String>,
-    p: &Params,
-) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
+    pool_idle: usize,
+) -> anyhow::Result<(String, Http)> {
     let line = wait_line(rx, "TURBO_PANCAKE_LISTENING", Duration::from_secs(30))?;
     let addr = line
         .split_whitespace()
         .nth(1)
         .context("no addr")?
         .to_owned();
-    let pid = child.id();
     let http = Http {
         client: reqwest::Client::builder()
             .use_preconfigured_tls((*turbo_pancake_tls::client_config(None)?).clone())
-            .pool_max_idle_per_host(p.concurrency)
+            .pool_max_idle_per_host(pool_idle)
             .build()?,
         base: format!("http://{addr}"),
     };
-    // Migrations run before the HTTP routes answer.
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let ok = http
@@ -206,6 +241,16 @@ async fn run(
         ensure!(Instant::now() < deadline, "server did not become ready");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    Ok((addr, http))
+}
+
+async fn run(
+    child: &Child,
+    rx: &std_mpsc::Receiver<String>,
+    p: &Params,
+) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
+    let pid = child.id();
+    let (addr, http) = ready(rx, p.concurrency).await?;
     let mem_start = mem::sample(pid)?;
     let mut sys = sysinfo::System::new().ok().context("sysinfo unavailable")?;
     let cpu_start = crate::sfu::cpu_ms(&mut sys, pid)?;
@@ -413,7 +458,7 @@ async fn run(
             let Some(ev) = recv_until(&mut ev_rx, deadline).await else {
                 break;
             };
-            if let EvKind::Message { body: b } = &ev.kind
+            if let EvKind::Message { body: b, .. } = &ev.kind
                 && *b == body
                 && watchers.contains(&ev.conn)
                 && seen.insert(ev.conn)
@@ -662,7 +707,10 @@ async fn await_presence(
     (last, each, watchers.len() - seen.len())
 }
 
-async fn recv_until(rx: &mut mpsc::UnboundedReceiver<Ev>, deadline: Instant) -> Option<Ev> {
+pub(crate) async fn recv_until(
+    rx: &mut mpsc::UnboundedReceiver<Ev>,
+    deadline: Instant,
+) -> Option<Ev> {
     tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), rx.recv())
         .await
         .ok()
@@ -670,7 +718,7 @@ async fn recv_until(rx: &mut mpsc::UnboundedReceiver<Ev>, deadline: Instant) -> 
 }
 
 /// Collects events until none arrived for `quiet`.
-async fn settle(rx: &mut mpsc::UnboundedReceiver<Ev>, quiet: Duration) -> Vec<Ev> {
+pub(crate) async fn settle(rx: &mut mpsc::UnboundedReceiver<Ev>, quiet: Duration) -> Vec<Ev> {
     let mut out = Vec::new();
     while let Ok(Some(ev)) = tokio::time::timeout(quiet, rx.recv()).await {
         out.push(ev);
@@ -679,7 +727,7 @@ async fn settle(rx: &mut mpsc::UnboundedReceiver<Ev>, quiet: Duration) -> Vec<Ev
 }
 
 /// Opens a signed-in WebSocket (Hello with the token → Welcome) and starts its task.
-async fn connect(
+pub(crate) async fn connect(
     addr: &str,
     idx: usize,
     token: &str,
@@ -745,7 +793,12 @@ async fn conn_task(
                     }),
                     Some(S::MessageCreated(m)) => {
                         if let Some(msg) = m.message {
-                            report(EvKind::Message { body: msg.body });
+                            report(EvKind::Message {
+                                body: msg.body,
+                                conversation: msg.conversation_id,
+                                seq: msg.server_sequence,
+                                change_seq: msg.change_seq,
+                            });
                         }
                     }
                     Some(S::Pong(p)) => report(EvKind::Pong { sent_us: p.client_time_us }),

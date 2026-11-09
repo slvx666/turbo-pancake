@@ -1156,6 +1156,25 @@ async fn group_validation_authentication_and_atomic_creation() {
     let db = database().expect("S6 requires PostgreSQL");
     let srv = Server::start(&db, |_| {}).await;
     let api = srv.api();
+    // Operator metrics (S8): the pool is reported, no account data.
+    let body = api
+        .http
+        .get(api.url("/v1/server-stats"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let stats: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let pool = &stats["db_pool"];
+    let (max, size) = (
+        pool["max"].as_u64().unwrap(),
+        pool["size"].as_u64().unwrap(),
+    );
+    assert!(max >= 1 && (1..=max).contains(&size), "{stats}");
+    assert!(pool["in_use"].as_u64().unwrap() <= size, "{stats}");
+    assert_eq!(stats["connections"], 0, "{stats}");
     let alice = api.register("alice").await;
     let bob = api.register("bob").await;
     for req in [
