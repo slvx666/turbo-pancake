@@ -6,7 +6,8 @@
 # Before the first run, put server.pem and server.key (from `gen-cert`, docs/DEPLOY-TLS.md)
 # into `tls/` next to this script. With `src.tar.gz` next to it (`git archive`) that source
 # is built; otherwise the branch is fetched from GitHub. Re-running updates, rebuilds and
-# restarts the service; the database and certificates are kept. Firewall rules are added
+# restarts the service; the database, certificates and the administrator's own settings in
+# /etc/turbo-pancake/server.local.env are kept (docs/ADMIN.md). Firewall rules are added
 # only when ufw is already active (the script never turns a firewall on).
 # Behind NAT, forward TCP and UDP 7878 to this host.
 set -euo pipefail
@@ -46,6 +47,8 @@ if [ -f "$HERE/src.tar.gz" ]; then
     mkdir -p "$SRC"
     find "$SRC" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
     tar -xzf "$HERE/src.tar.gz" -C "$SRC"
+    # The commit of the archive (git archive records it), for target-bench.sh reports.
+    gzip -dc "$HERE/src.tar.gz" | git get-tar-commit-id > "$SRC/.git-commit" || true
 elif [ -d "$SRC/.git" ]; then
     echo "== source ($BRANCH)"
     git -C "$SRC" fetch --depth 1 origin "$BRANCH"
@@ -71,6 +74,8 @@ if [ -f "$TLS_IN/server.pem" ]; then
     install -m 640 -o root -g turbo-pancake "$TLS_IN/server.key" "$ETC/tls/server.key"
 fi
 [ -f "$ETC/tls/server.pem" ] || { echo "missing $TLS_IN/server.pem and server.key"; exit 1; }
+# ca.pem is public (the clients' trust anchor); kept for local health probes.
+[ ! -f "$TLS_IN/ca.pem" ] || install -m 644 "$TLS_IN/ca.pem" "$ETC/tls/ca.pem"
 [ ! -f "$TLS_IN/ca.key" ] || echo "WARNING: ca.key does not belong on the server; delete $TLS_IN/ca.key"
 rm -f "$TLS_IN/server.key"
 
@@ -95,9 +100,23 @@ TURBO_PANCAKE_TLS_CERT=$ETC/tls/server.pem
 TURBO_PANCAKE_TLS_KEY=$ETC/tls/server.key
 TURBO_PANCAKE_DATABASE_URL=postgres://turbo_pancake:$DB_PASS@127.0.0.1/turbo_pancake
 TURBO_PANCAKE_LOG_JSON=true
+TURBO_PANCAKE_UPDATE_DIR=/var/lib/turbo-pancake/update
 EOF
 )
 chgrp turbo-pancake "$ETC/server.env"
+install -d -m 755 /var/lib/turbo-pancake/update
+# The administrator's settings (limits, budgets): read after server.env, never rewritten.
+if [ ! -f "$ETC/server.local.env" ]; then
+    (umask 027; cat > "$ETC/server.local.env" <<'EOF'
+# Own settings of this server (docs/ADMIN.md, "Configuration"); install-server.sh never
+# rewrites this file. Values here override server.env. Examples:
+# TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS=600
+# TURBO_PANCAKE_DATABASE_POOL=16
+# TURBO_PANCAKE_HASH_CONCURRENCY=2
+EOF
+)
+    chgrp turbo-pancake "$ETC/server.local.env"
+fi
 
 cat > /etc/systemd/system/turbo-pancake.service <<EOF
 [Unit]
@@ -111,6 +130,7 @@ StartLimitIntervalSec=0
 User=turbo-pancake
 Group=turbo-pancake
 EnvironmentFile=$ETC/server.env
+EnvironmentFile=-$ETC/server.local.env
 ExecStart=/usr/local/bin/turbo-pancake-app-server
 Restart=always
 RestartSec=2
@@ -145,6 +165,8 @@ echo "== backups (docs/BACKUP.md)"
 install -d -m 755 /usr/local/lib/turbo-pancake
 install -m 755 "$SRC/deploy/linux/backup.sh" /usr/local/lib/turbo-pancake/backup.sh
 install -m 755 "$SRC/deploy/linux/restore.sh" /usr/local/lib/turbo-pancake/restore.sh
+install -m 755 "$SRC/deploy/linux/publish-update.sh" /usr/local/lib/turbo-pancake/publish-update.sh
+install -m 755 "$SRC/deploy/linux/target-bench.sh" /usr/local/lib/turbo-pancake/target-bench.sh
 install -d -m 700 -o postgres -g postgres /var/backups/turbo-pancake
 cat > /etc/systemd/system/turbo-pancake-backup.service <<EOF
 [Unit]

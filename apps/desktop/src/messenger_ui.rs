@@ -118,7 +118,7 @@ pub fn start(
             device_name: device_name(),
             client_version: format!(
                 "turbo-pancake-desktop/{} ({})",
-                env!("CARGO_PKG_VERSION"),
+                turbo_pancake_desktop::updater::build_version(),
                 std::env::consts::OS
             ),
             cache_dir: cache_dir(&script.profile),

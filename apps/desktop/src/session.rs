@@ -137,7 +137,7 @@ impl SessionConfig {
             display_name: display_name.into(),
             client_version: format!(
                 "turbo-pancake-desktop/{} ({})",
-                env!("CARGO_PKG_VERSION"),
+                crate::updater::build_version(),
                 std::env::consts::OS
             ),
             engine: EngineConfig::default(),
