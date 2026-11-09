@@ -34,6 +34,35 @@ with a message instead of failing.
 | voice DSP (`--features apm`) | `crates/media-audio/src/dsp.rs`, `tests/engine.rs` | pass-through when off/unavailable; AEC3 removes a 30 ms −6 dB echo by > 25 dB; NS lowers the noise floor in pauses by > 6 dB keeping speech within 3 dB; engine audio loop: remote voice through a simulated speaker→mic room comes back > 25 dB down with AEC (≈ −7 dB without; that baseline test runs in every build). Windows: `powershell -File benchmarks/scripts/apm-env.ps1 cargo test -p turbo-pancake-media-audio --features apm` |
 | audio impairment | `crates/media-audio/tests/impairment.rs` | 192 kHz mic → Opus → simulated network (loss 0/1/3/5/10 % × jitter 0/20/50 ms, 2 s outage) → 44.1 kHz output: no decode errors, bounded late/underruns, concealment ≤ loss, loudness kept, bounded delay. `TURBO_PANCAKE_REPORT_DIR=<dir>` writes the table as JSON |
 
+## Regression suite S8 (Windows, one command)
+
+`benchmarks/scripts/regression.ps1` runs everything that is safe to run unattended on a
+Windows machine while its user keeps working, and writes one summary:
+
+```powershell
+powershell -NoProfile -File benchmarks/scripts/regression.ps1 -PgBin <PostgreSQL bin> `
+    [-CargoWrapper <ps1 that sets the toolchain environment, default apm-env.ps1>] `
+    [-Backend winit-software|winit-femtovg] [-Only checks,build,load,native] [-Full] `
+    [-Report benchmarks/results/<name>.md]
+```
+
+* **checks**: `cargo fmt --check`, Clippy `-D warnings`, `cargo test --workspace` with
+  real PostgreSQL and `--skip own_sound_is_excluded` (that test plays sound on the
+  default output device; run it separately when sound is acceptable).
+* **build**: release server, client and bench.
+* **load** (short forms, each report's verdict checked): `messenger` 100 users,
+  `group-load` 1 × 100, `sfu` 10 members with accounts, `sfu-screen` publishers / grid /
+  fanout with a high budget (accounts, voice), `login-burst` 100.
+* **native** (isolated invisible desktop, no focus or input, simulated audio): tray,
+  one instance per profile, layout snapshots, S6 chat ↔ call, reconnect across a server
+  outage; `-Full` adds the signed update, installer and end-to-end chains (they build
+  the client twice).
+* Not included: anything with a real microphone, speakers, screen capture, a second
+  monitor or keyboard/mouse input (owner-assisted, listed in PROJECT_STATE.md).
+* Output: `.local/logs/regression-<UTC time>/` (one log per item, `summary.json`,
+  `summary.md`); `-Report` writes a copy of the Markdown without paths or host names.
+  Exit code 1 if any item failed; a failure does not stop the remaining items.
+
 ## Benchmarks (`benchmarks/README.md`)
 
 ```bash

@@ -3,11 +3,35 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Session 2026-11-06 (owner request, after S7): owner-server release 0.1.1 built locally (not committed): client with the server address + private CA baked in (DEPLOY-TLS §5), software renderer default, launcher, package and per-user installer 13.3 MiB. Probe of the built client without flags against the deployed server: TLS trusted, login with a non-existent user answered "wrong username or password". Server not redeployed: no server-side code changed since the deployment (`git diff e5e9d21 -- apps/app-server apps/media-sfu crates proto migrations Cargo.lock deploy` empty); `/v1/version` answers. Updates in this build: not configured (release key is an owner task, ADR 0016).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–5 done 2026-11-09; next: step 6, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–5 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–6 done 2026-11-09; next: step 7, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–6 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-09 (S8 steps 2–5: groups of 100 under load; media load with accounts; hardening; backup/restore); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-09 — S8 step 6: regression suite
+
+* `benchmarks/scripts/regression.ps1`: one command for fmt / Clippy / the headless test
+  baseline (real PostgreSQL, real system-audio test filtered), the release build, seven
+  short load scenarios with their report verdicts (messenger 100 users, group-load 1 ×
+  100, sfu 10 with accounts, sfu-screen publishers / grid / fanout-with-budget with
+  accounts and voice, login-burst 100), and the background native trials (tray, one
+  instance, layout, S6 chat ↔ call, reconnect; `-Full` adds update / installer / E2E).
+  Each item has a timeout and its own log; a failure does not stop the rest; summary
+  JSON + Markdown (`-Report` copy has no paths or host names); exit 1 on any failure.
+  Documented in `docs/TESTING.md`.
+* **PASS:** full run 16 / 16 items in 8.4 min (`benchmarks/results/s8-step6-regression-windows-2026-11-09.md`;
+  209 tests passed, every load verdict and native trial PASS).
+* Found while running it: `-Only a,b` through `powershell -File` arrives as one string,
+  so a run selected **no item** and still exited 0. Fixed: groups are split and
+  validated (unknown group → error, exit 1), and the suite exits 1 whenever its verdict
+  is not PASS (also with zero items). Cosmetic: summaries without BOM; trial details
+  from the trial's verdict line or its boolean checks (`icon=false` in the tray trial is
+  a marker, not a check).
+* Not in the suite (owner-assisted): real microphone/speakers, screen capture, second
+  monitor, keyboard/mouse input, the Linux server; the `-Full` chains were not run in
+  this step (last PASS in S7 step 7).
+* Checks: covered by the suite's own `checks` items (see report).
 
 ## Session log 2026-11-09 — S8 step 5: backup, restore and recovery
 
@@ -370,7 +394,7 @@ Last session: 2026-11-09 (S8 steps 2–5: groups of 100 under load; media load w
 | Media load on the target server (CPU, real uplink) | UNVERIFIED (owner-assisted) | same commands with `--database-url` on the server host; remote viewers for uplink |
 | Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | PASS (step 4; Linux SIGTERM/unit limits and a real full disk owner-assisted) | `tests/{hardening,db_outage}.rs`, `login-burst-*` reports; `s8-step4-windows-2026-11-09.md` |
 | Backup / verified restore / recovery after reboot | PASS (step 5, dev machine; timer, real reboot and drill on the server owner-assisted) | `tests/backup_restore.rs`, `tests/db_outage.rs`; `docs/BACKUP.md` |
-| Regression suite | NOT_STARTED (step 6) | |
+| Regression suite | PASS (step 6: 16 / 16 items; `-Full` chains not re-run) | `benchmarks/scripts/regression.ps1`, `s8-step6-regression-windows-2026-11-09.md` |
 | Release package + administration guide | NOT_STARTED (step 7) | |
 
 ## Acceptance checks — S7 (DONE (Windows) 2026-11-06; owner-assisted rows below)
@@ -1256,19 +1280,20 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S8 step 6: regression suite
+## Exact next task — S8 step 7: release and administration
 
-S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–5 are done (dev machine). Next, step 6:
-one script (`benchmarks/scripts/regression.ps1`, Windows) that runs fmt / Clippy / the
-headless test baseline (`-- --skip own_sound_is_excluded`, real PostgreSQL via the dev/APM
-wrapper), the load scenarios in a short form (`messenger --users 100`, `group-load
---groups 1`, `sfu-screen --accounts` publishers/fanout/budget with small `--n`,
-`sfu --accounts`, `login-burst`) checking each report's `pass`, the release startup
-smoke and the background native trials that are safe under the local GUI rules
-(invisible desktop, no focus/input), and writes one summary report (per item PASS/FAIL,
-durations, log paths) under `.local/logs` plus a sanitized copy for `benchmarks/results`.
-Keep the real system-audio test out. GitHub publishing remains unavailable; do not claim
-a push or CI run.
+S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–6 are done (dev machine). Next, step 7:
+a release build script (server for Linux built on the server by `install-server.sh`;
+Windows client package + installer from `turbo-pancake-update pack` / `apps/installer`)
+with SHA-256 checksums of every artifact, `docs/ADMIN.md` (install, configuration and
+flags incl. the S8 limits, TLS rotation (DEPLOY-TLS), publishing signed updates (ADR
+0016), backups (BACKUP.md), monitoring (`/healthz`, `/readyz`, `/v1/server-stats`,
+journald), limits and capacity numbers from steps 1–4, upgrade and rollback), and the
+target-server procedure that runs steps 1–5 on the owner's host (commands only, results
+owner-assisted). Then S8 acceptance: every criterion PASS on Windows/loopback, target-server
+rows owner-assisted. Run `benchmarks/scripts/regression.ps1` before the final commit. Keep
+the real system-audio test out. GitHub publishing remains unavailable; do not claim a
+push or CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 
