@@ -35,11 +35,12 @@ mod imp {
     use windows::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW,
         DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW,
-        GetCursorPos, GetWindowThreadProcessId, HICON, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE,
-        PeekMessageW, PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-        TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
-        WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
-        WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+        GetCursorPos, GetSystemMetrics, GetWindowThreadProcessId, HICON, IMAGE_ICON,
+        LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE, PeekMessageW,
+        PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON,
+        SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+        WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+        WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
     use windows::core::{PCWSTR, w};
 
@@ -131,8 +132,28 @@ mod imp {
         unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
     }
 
-    /// A 32×32 round icon in the accent colour with a light ring (drawn here, so the
-    /// executable needs no icon resource yet).
+    /// The executable's own icon (resource id 1, `crates/win-icon`) at the small-icon
+    /// size of the current DPI, else a drawn fallback (test binaries have no resource).
+    fn app_icon() -> Option<HICON> {
+        unsafe {
+            let module = GetModuleHandleW(None).ok()?;
+            let loaded = LoadImageW(
+                Some(module.into()),
+                PCWSTR(1 as *const u16),
+                IMAGE_ICON,
+                GetSystemMetrics(SM_CXSMICON),
+                GetSystemMetrics(SM_CYSMICON),
+                LR_DEFAULTCOLOR,
+            );
+            match loaded {
+                Ok(h) if !h.is_invalid() => Some(HICON(h.0)),
+                _ => make_icon(),
+            }
+        }
+    }
+
+    /// A 32×32 round icon with a light ring, drawn here: the fallback when the
+    /// executable carries no icon resource.
     fn make_icon() -> Option<HICON> {
         const N: usize = 32;
         let mut bgra = vec![0u8; N * N * 4];
@@ -251,7 +272,7 @@ mod imp {
                 };
                 let mut data = None;
                 if show_icon {
-                    tray.icon = make_icon();
+                    tray.icon = app_icon();
                     let mut d = NOTIFYICONDATAW {
                         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
                         hWnd: hwnd,

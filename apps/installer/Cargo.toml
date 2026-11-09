@@ -17,3 +17,6 @@ turbo-pancake-update = { workspace = true, default-features = false }
 
 [lints]
 workspace = true
+
+[build-dependencies]
+turbo-pancake-win-icon.workspace = true

@@ -1,4 +1,6 @@
 fn main() {
+    // Executable icon; the tray icon and the window icon are loaded from it / the PNG.
+    turbo_pancake_win_icon::embed(std::path::Path::new("../../assets/icon/turbo-pancake.ico"));
     // Pinned update keys and the release version are baked in (ADR 0016).
     println!("cargo:rerun-if-env-changed=TURBO_PANCAKE_UPDATE_PUBKEYS");
     println!("cargo:rerun-if-env-changed=TURBO_PANCAKE_BUILD_VERSION");

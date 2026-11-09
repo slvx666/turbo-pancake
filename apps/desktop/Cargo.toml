@@ -65,6 +65,7 @@ turbo-pancake-app-server = { path = "../app-server" }
 turbo-pancake-pg-test.workspace = true
 
 [build-dependencies]
+turbo-pancake-win-icon.workspace = true
 slint-build = "1.18"
 
 [lints]

@@ -7037,6 +7037,7 @@ dependencies = [
  "turbo-pancake-protocol",
  "turbo-pancake-tls",
  "turbo-pancake-update",
+ "turbo-pancake-win-icon",
  "windows",
 ]
 
@@ -7046,6 +7047,7 @@ version = "0.1.0"
 dependencies = [
  "turbo-pancake-setup",
  "turbo-pancake-update",
+ "turbo-pancake-win-icon",
 ]
 
 [[package]]
@@ -7054,6 +7056,7 @@ version = "0.1.0"
 dependencies = [
  "turbo-pancake-setup",
  "turbo-pancake-update",
+ "turbo-pancake-win-icon",
  "windows",
 ]
 
@@ -7204,6 +7207,10 @@ dependencies = [
  "clap",
  "turbo-pancake-update",
 ]
+
+[[package]]
+name = "turbo-pancake-win-icon"
+version = "0.1.0"
 
 [[package]]
 name = "typed-index-collections"

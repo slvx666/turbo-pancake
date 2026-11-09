@@ -16,6 +16,7 @@ members = [
     "apps/installer",
     "tools/update-tool",
     "apps/launcher",
+    "crates/win-icon",
     "benchmarks/harness",
     "tools/media-probe",
     "tools/screen-probe",
@@ -59,6 +60,7 @@ turbo-pancake-pg-test = { path = "crates/pg-test" }
 turbo-pancake-tls = { path = "crates/tls" }
 turbo-pancake-update = { path = "crates/update" }
 turbo-pancake-setup = { path = "crates/setup" }
+turbo-pancake-win-icon = { path = "crates/win-icon" }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 
