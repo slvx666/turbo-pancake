@@ -63,6 +63,19 @@ powershell -NoProfile -File benchmarks/scripts/regression.ps1 -PgBin <PostgreSQL
   `summary.md`); `-Report` writes a copy of the Markdown without paths or host names.
   Exit code 1 if any item failed; a failure does not stop the remaining items.
 
+## Release build and server checks S8 (docs/ADMIN.md)
+
+```powershell
+# release with checksums (refuses uncommitted tracked changes); checks it at the end
+powershell -NoProfile -File deploy/release.ps1 [-Version x.y.z] [-UpdatePubkeys … -UpdateKey … -UpdateKeyId …] [-Report <md>]
+# verify a copied release
+powershell -NoProfile -File deploy/release.ps1 -Verify -Out <release dir>
+```
+
+On the target server (owner-assisted): `target-bench.sh <results dir> [1,2,3,4,5,r]`
+runs the S8 step 1–5 checks on the host (ADMIN.md §9); `publish-update.sh <update dir>`
+publishes a signed update.
+
 ## Benchmarks (`benchmarks/README.md`)
 
 ```bash

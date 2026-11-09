@@ -65,6 +65,8 @@ PROJECT_STATE.
    (install, configuration, TLS rotation, publishing signed updates, backups, monitoring,
    limits, upgrade), and the target-server procedure for steps 1–5. S8 acceptance on the
    target server is owner-assisted and recorded separately.
+   **DONE (2026-11-09):** `deploy/release.ps1`, `deploy/linux/{publish-update,target-bench}.sh`,
+   `docs/ADMIN.md`; evidence `benchmarks/results/s8-step7-windows-2026-11-09.md`.
 
 ## S7 plan (2026-11-05, Windows only)
 

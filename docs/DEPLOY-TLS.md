@@ -58,20 +58,22 @@ directory and give clients the new `ca.pem`.
 ## 5. A release for one server
 
 Build the client with the server address and CA baked in, so users need no flags
-(nothing of it is committed; set the variables only for the build):
+(nothing of it is committed; they are build inputs only). `deploy/release.ps1` does the
+whole build with checksums (docs/ADMIN.md §1):
 
 ```powershell
-$env:TURBO_PANCAKE_DEFAULT_SERVER = 'wss://<IP>:7878/v1/signal'
-$env:TURBO_PANCAKE_DEFAULT_SERVER_CA = '<path>\ca.pem'
-cargo build --release --locked -p turbo-pancake-launcher -p turbo-pancake-update-tool -p turbo-pancake-desktop
+powershell -NoProfile -File deploy/release.ps1 -DefaultServer wss://<IP>:7878/v1/signal -DefaultServerCa <path>\ca.pem
 ```
 
-`--server` / `--server-ca` on the command line still win. Then pack the launcher and
-client (`turbo-pancake-update pack`) and build the installer with
-`TURBO_PANCAKE_SETUP_PAYLOAD` (ADR 0017).
+It sets `TURBO_PANCAKE_DEFAULT_SERVER` / `TURBO_PANCAKE_DEFAULT_SERVER_CA` for the build,
+packs launcher and client (`turbo-pancake-update pack`) and builds the installer with
+`TURBO_PANCAKE_SETUP_PAYLOAD` (ADR 0017). `--server` / `--server-ca` on the command line
+still win.
 
-Server on Debian/Ubuntu: put `server.pem` and `server.key` into `tls/` next to the script
-and run `deploy/linux/install-server.sh <public IP> [branch]` as root. It installs
-PostgreSQL and Rust, builds the server, creates the `turbo-pancake` systemd service
-(TCP and UDP 7878; rules only if ufw is already active; forward both behind NAT) and can be
-re-run to update. `src.tar.gz` (`git archive`) next to the script is built instead of GitHub.
+Server on Debian/Ubuntu: put `server.pem`, `server.key` (and the public `ca.pem`, used
+for local health probes) into `tls/` next to the script and run
+`deploy/linux/install-server.sh <public IP> [branch]` as root. It installs PostgreSQL and
+Rust, builds the server, creates the `turbo-pancake` systemd service (TCP and UDP 7878;
+rules only if ufw is already active; forward both behind NAT) and can be re-run to
+update. `src.tar.gz` (`git archive`, in the release's `server/` directory) next to the
+script is built instead of GitHub. Details: docs/ADMIN.md §2.
