@@ -80,7 +80,7 @@ fn push_resource(out: &mut Vec<u8>, kind: u16, id: u16, flags: u16, data: &[u8])
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(data);
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
 }
@@ -155,7 +155,7 @@ mod tests {
         let res = res_bytes(&images);
         // marker entry: 32 zero-sized header
         assert_eq!(&res[0..8], &[0, 0, 0, 0, 32, 0, 0, 0]);
-        assert_eq!(res.len() % 4, 0);
+        assert!(res.len().is_multiple_of(4));
         // first icon: 3 bytes data, type RT_ICON, id 2, padded to 4
         assert_eq!(&res[32..36], &3u32.to_le_bytes());
         assert_eq!(&res[40..44], &[0xff, 0xff, 3, 0]);

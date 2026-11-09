@@ -9,6 +9,22 @@ Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
 Last session: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
 
+## Session log 2026-11-09 — application icon, release 0.1.3, publishing
+
+* Original application icon (`assets/icon/make_icon.py` → `.ico` 16–256 px BMP frames,
+  64 px window PNG). `crates/win-icon` writes the `.res` in the build script (no
+  `rc.exe`) for client, launcher and installer; both Slint windows use the PNG; the tray
+  loads the executable's icon at `SM_CXSMICON` (drawn fallback for test binaries).
+  Unit tests for the `.ico` parser and the `.res` layout.
+* Owner-server release 0.1.3 built locally (not committed; server address + private CA
+  built in): installer 13.7 MiB; icons extracted from all three executables (checked).
+  The window/tray icon on screen: not looked at (no interactive GUI here).
+* Checks: workspace tests 212 passed, 0 failed (cb997ff); two Clippy findings in the new
+  code fixed (`is_multiple_of`, `without_provenance` for the resource id), then fmt +
+  workspace Clippy `-D warnings` PASS and the tray / win-icon tests re-run green.
+* GitHub: push works again from this machine (Credential Manager); the branch was merged
+  into `main` (fast-forward) and both were pushed at the owner's request.
+
 ## Session log 2026-11-09 — S8 on the target server
 
 * With the owner's permission, over SSH (key login; temporary passwordless sudo set by
@@ -1361,7 +1377,7 @@ then, the owner-assisted items are the useful work (none blocks S9):
    client versions match (release.ps1 prints a note otherwise).
 4. Older owner-assisted items: see the S1–S7 rows.
 
-GitHub publishing remains unavailable from this machine; do not claim a push or CI run.
+Push to GitHub works from this machine (2026-11-09); check CI after a push.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

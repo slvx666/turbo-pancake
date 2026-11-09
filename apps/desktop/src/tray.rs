@@ -139,7 +139,8 @@ mod imp {
             let module = GetModuleHandleW(None).ok()?;
             let loaded = LoadImageW(
                 Some(module.into()),
-                PCWSTR(1 as *const u16),
+                // MAKEINTRESOURCE(1): an integer resource id, not a real pointer.
+                PCWSTR(std::ptr::without_provenance::<u16>(1)),
                 IMAGE_ICON,
                 GetSystemMetrics(SM_CXSMICON),
                 GetSystemMetrics(SM_CYSMICON),
