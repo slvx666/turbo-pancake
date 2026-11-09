@@ -195,6 +195,7 @@ enum Cmd {
 pub struct Sfu {
     tx: SyncSender<Cmd>,
     udp_port: Option<u16>,
+    udp_buffers: Option<(usize, usize)>,
     stats: Arc<Mutex<SfuStats>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -203,11 +204,12 @@ impl Sfu {
     /// Binds the UDP socket (if configured) and starts the thread.
     pub fn start(config: SfuConfig) -> std::io::Result<Sfu> {
         init_crypto();
+        let mut udp_buffers = None;
         let socket = match config.udp_bind {
             Some(addr) => {
                 let s = UdpSocket::bind(addr)?;
                 s.set_nonblocking(true)?;
-                turbo_pancake_media_transport::enlarge_buffers(&s);
+                udp_buffers = Some(turbo_pancake_media_transport::enlarge_buffers(&s));
                 Some(s)
             }
             None => None,
@@ -239,6 +241,7 @@ impl Sfu {
         Ok(Sfu {
             tx,
             udp_port,
+            udp_buffers,
             stats,
             thread: Mutex::new(Some(thread)),
         })
@@ -246,6 +249,11 @@ impl Sfu {
 
     pub fn udp_port(&self) -> Option<u16> {
         self.udp_port
+    }
+
+    /// Receive and send buffer sizes of the UDP socket as the OS granted them.
+    pub fn udp_buffers(&self) -> Option<(usize, usize)> {
+        self.udp_buffers
     }
 
     fn send(&self, cmd: Cmd) -> bool {

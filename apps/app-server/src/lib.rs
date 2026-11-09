@@ -228,6 +228,18 @@ impl AppState {
         match sfu {
             Ok(sfu) => {
                 tracing::info!(udp_port = ?sfu.udp_port(), "media SFU started");
+                if let Some((recv, send)) = sfu.udp_buffers()
+                    && recv.min(send) < turbo_pancake_media_transport::MEDIA_SOCKET_BUFFER
+                {
+                    // Linux caps at net.core.rmem_max / wmem_max: bursts are then dropped
+                    // by the kernel (docs/ADMIN.md, "UDP buffers").
+                    tracing::warn!(
+                        recv_buffer = recv,
+                        send_buffer = send,
+                        wanted = turbo_pancake_media_transport::MEDIA_SOCKET_BUFFER,
+                        "UDP media buffers capped by the OS"
+                    );
+                }
                 self.sfu = Some(Arc::new(sfu));
             }
             Err(e) => tracing::error!(error = %e, "media SFU failed to start"),

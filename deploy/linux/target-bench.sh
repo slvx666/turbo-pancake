@@ -32,6 +32,14 @@ LIB=/usr/local/lib/turbo-pancake
 export PATH="$HOME/.cargo/bin:$PATH"
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
+# A login shell allows 1024 descriptors; 1000 sessions need ~1000 on each side (the
+# bench and its server inherit this). The service itself has LimitNOFILE=65536.
+ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)"
+# Each run gets a deadline, so one stuck scenario cannot block the rest.
+RUN_TIMEOUT="${RUN_TIMEOUT:-20m}"
+# Same allocator setting as the service unit (install-server.sh), so the bench's server
+# measures what production runs.
+export MALLOC_MMAP_THRESHOLD_=1048576
 mkdir -p "$RESULTS"
 RESULTS="$(cd "$RESULTS" && pwd)"
 SUMMARY="$RESULTS/summary.txt"
@@ -42,6 +50,7 @@ want() { case "$STEPS" in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 note "== target-bench $(date -u +%Y-%m-%dT%H:%M:%SZ) steps=${STEPS#,}"
 note "host: $(nproc) CPUs, $(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo) MiB RAM, kernel $(uname -r)"
 note "postgres: $(sudo -u postgres psql -tAc 'SHOW server_version' 2>/dev/null || echo unknown)"
+note "udp buffers: rmem_max=$(sysctl -n net.core.rmem_max) wmem_max=$(sysctl -n net.core.wmem_max)"
 note "source: $(cat "$SRC/.git-commit" 2>/dev/null || git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo 'src.tar.gz (commit in the release.json of the release)')"
 
 # ---- probes of the production service ----
@@ -90,11 +99,23 @@ run() {
     local name="$1"; shift
     fresh_db
     local t0=$SECONDS
-    if "$BENCH" --out-dir "$RESULTS" "$@" --server-exe "$SERVER" > "$RESULTS/$name.log" 2>&1; then
+    timeout --kill-after=30s "$RUN_TIMEOUT" "$BENCH" --out-dir "$RESULTS" "$@" --server-exe "$SERVER" > "$RESULTS/$name.log" 2>&1
+    local code=$?
+    # A run can finish (exit 0) with a failed verdict in its report.
+    local report
+    report="$(sed -n 's/^report written to //p' "$RESULTS/$name.log" | tail -n 1)"
+    if [ "$code" -eq 0 ] && [ -n "$report" ] && grep -q '"pass": false' "$report"; then
+        code=3
+        note "  $name: report verdict pass=false"
+    fi
+    if [ "$code" -eq 0 ]; then
         note "PASS $name ($((SECONDS - t0)) s) $(grep -o 'report written to .*' "$RESULTS/$name.log" | tail -n 1)"
     else
         FAILED=$((FAILED + 1))
-        note "FAIL $name ($((SECONDS - t0)) s), see $name.log"
+        [ "$code" -eq 124 ] || [ "$code" -eq 137 ] && note "  $name hit the $RUN_TIMEOUT deadline"
+        note "FAIL $name ($((SECONDS - t0)) s, exit $code), see $name.log"
+        # The bench's server may outlive a killed bench.
+        pkill -f -- "$SERVER --bind 127.0.0.1:0" 2>/dev/null || true
     fi
 }
 

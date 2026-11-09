@@ -36,11 +36,17 @@ pub enum TransportError {
 /// hundred datagrams, far more than the 64 KiB Windows default holds.
 pub const MEDIA_SOCKET_BUFFER: usize = 4 << 20;
 
-/// Raises a media socket's send and receive buffers (best effort: the OS may cap them).
-pub fn enlarge_buffers(socket: &UdpSocket) {
+/// Raises a media socket's send and receive buffers (best effort: the OS may cap them,
+/// e.g. Linux at `net.core.rmem_max` / `wmem_max`). Returns the sizes the OS reports
+/// afterwards (receive, send); 0 if it cannot tell.
+pub fn enlarge_buffers(socket: &UdpSocket) -> (usize, usize) {
     let s = socket2::SockRef::from(socket);
     let _ = s.set_recv_buffer_size(MEDIA_SOCKET_BUFFER);
     let _ = s.set_send_buffer_size(MEDIA_SOCKET_BUFFER);
+    (
+        s.recv_buffer_size().unwrap_or(0),
+        s.send_buffer_size().unwrap_or(0),
+    )
 }
 
 static CRYPTO: Once = Once::new();

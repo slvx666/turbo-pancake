@@ -63,6 +63,17 @@ echo "== build"
 (cd "$SRC" && cargo build --release --locked -p turbo-pancake-app-server)
 install -m 755 "$SRC/target/release/turbo-pancake-app-server" /usr/local/bin/turbo-pancake-app-server
 
+echo "== kernel limits for UDP media"
+# The SFU asks for 4 MiB socket buffers; Linux caps them at rmem_max/wmem_max (often
+# 208 KiB), and the kernel then drops bursts (measured on a target server: 65 000
+# datagrams lost per 50 x 49 preview run, voice 72 %). Raising the maxima changes no
+# default of other programs.
+cat > /etc/sysctl.d/90-turbo-pancake.conf <<'SYSCTL'
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
+SYSCTL
+sysctl -q -p /etc/sysctl.d/90-turbo-pancake.conf
+
 echo "== service account"
 id turbo-pancake >/dev/null 2>&1 || useradd --system --home /var/lib/turbo-pancake --shell /usr/sbin/nologin turbo-pancake
 mkdir -p "$ETC/tls" /var/lib/turbo-pancake
@@ -131,6 +142,10 @@ User=turbo-pancake
 Group=turbo-pancake
 EnvironmentFile=$ETC/server.env
 EnvironmentFile=-$ETC/server.local.env
+# glibc raises its mmap threshold after the first freed Argon2 block (19 MiB), so later
+# blocks stay in per-thread heaps: +440 MiB after 70 logins instead of +80 MiB. A fixed
+# threshold returns them to the OS (measured on a target server, docs/ADMIN.md).
+Environment=MALLOC_MMAP_THRESHOLD_=1048576
 ExecStart=/usr/local/bin/turbo-pancake-app-server
 Restart=always
 RestartSec=2
