@@ -75,19 +75,60 @@ impl From<ValidationError> for ApiError {
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
         // sqlx errors carry no bind values; still, log only the kind of failure.
-        tracing::error!(error = %e, "database error");
-        Self::internal()
+        match db_unavailable(&e) {
+            Some(why) => {
+                tracing::warn!(error = %e, why, "database unavailable");
+                Self::new(Code::Unavailable, why)
+            }
+            None => {
+                tracing::error!(error = %e, "database error");
+                Self::internal()
+            }
+        }
+    }
+}
+
+/// Failures that are the database's state, not the request (S8 step 4): the client gets
+/// `503` + `Retry-After` and may retry; everything else stays `500`.
+pub fn db_unavailable(e: &sqlx::Error) -> Option<&'static str> {
+    match e {
+        // Pool exhausted for `acquire_timeout`, or connections cannot be opened.
+        sqlx::Error::PoolTimedOut => Some("database busy, try again"),
+        sqlx::Error::PoolClosed | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
+            Some("database unavailable, try again")
+        }
+        sqlx::Error::Database(d) => {
+            let code = d.code()?;
+            // Class 53: insufficient resources (53100 disk_full, 53200 out_of_memory,
+            // 53300 too_many_connections, 53400 configuration_limit_exceeded).
+            // Class 57P: the server is shutting down / starting / crashed.
+            // 08: connection exceptions.
+            if code.starts_with("53") {
+                Some("database storage or resources exhausted, try again later")
+            } else if code.starts_with("57P") || code.starts_with("08") {
+                Some("database unavailable, try again")
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = self.status();
+        let retry = matches!(self.code, Code::Unavailable);
         let body = v1::ApiError {
             code: self.code as i32,
             message: self.message,
         };
-        (status, Proto(body)).into_response()
+        let mut resp = (status, Proto(body)).into_response();
+        if retry {
+            resp.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
+        }
+        resp
     }
 }
 

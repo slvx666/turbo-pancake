@@ -13,6 +13,9 @@ pub mod calls;
 pub mod chat;
 pub mod events;
 pub mod groups;
+pub mod hashing;
+pub mod http;
+pub mod limits;
 pub mod ratelimit;
 pub mod signaling;
 pub mod tls;
@@ -68,6 +71,21 @@ pub struct Config {
     pub tls: Option<Arc<turbo_pancake_tls::rustls::ServerConfig>>,
     /// Signed releases to serve (ADR 0016): `manifest.json` and `files/`.
     pub update_dir: Option<std::path::PathBuf>,
+    /// Argon2id hashes at once (19 MiB each) and how many more may wait (S8 step 4).
+    pub hash_concurrency: usize,
+    pub hash_queue: usize,
+    /// Longest wait for a pool connection; then `503` (S8 step 4).
+    pub database_acquire_timeout: Duration,
+    /// Longest time a request handler may take; then `503` (WebSocket sessions excluded:
+    /// the upgrade answers at once).
+    pub request_timeout: Duration,
+    /// Accepted TCP (or TLS) connections at once; further clients wait in the OS backlog.
+    pub max_tcp_connections: usize,
+    /// After a shutdown request, in-flight requests get this long to finish.
+    pub shutdown_grace: Duration,
+    /// A connection whose request headers are not complete in this time is closed
+    /// (slow or silent clients; TLS handshakes have their own timeout).
+    pub header_read_timeout: Duration,
 }
 
 impl Default for Config {
@@ -88,6 +106,13 @@ impl Default for Config {
             limits: ratelimit::Limits::default(),
             tls: None,
             update_dir: None,
+            hash_concurrency: hashing::default_concurrency(),
+            hash_queue: 64,
+            database_acquire_timeout: Duration::from_secs(3),
+            request_timeout: Duration::from_secs(30),
+            max_tcp_connections: 4096,
+            shutdown_grace: Duration::from_secs(10),
+            header_read_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -107,6 +132,7 @@ pub struct AppState {
     pub limiters: Arc<ratelimit::Limiters>,
     pub calls: Arc<tokio::sync::Mutex<calls::Book>>,
     pub updates: Option<Arc<update::Updates>>,
+    pub hasher: Arc<hashing::Hasher>,
     /// Becomes `true` when the server shuts down: WebSocket connections end.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
@@ -121,8 +147,14 @@ impl AppState {
             .update_dir
             .clone()
             .map(|d| Arc::new(update::Updates::new(d)));
+        let hasher = Arc::new(hashing::Hasher::new(
+            config.hash_concurrency,
+            config.hash_queue,
+            Duration::from_secs(10),
+        ));
         Self {
             updates,
+            hasher,
             shutdown,
             shutdown_tx: Arc::new(shutdown_tx),
             config: Arc::new(config),
@@ -142,7 +174,7 @@ impl AppState {
         if let Some(url) = &self.config.database_url {
             let pool = sqlx::postgres::PgPoolOptions::new()
                 .max_connections(self.config.database_pool)
-                .acquire_timeout(Duration::from_secs(5))
+                .acquire_timeout(self.config.database_acquire_timeout)
                 .connect(url)
                 .await?;
             MIGRATOR.run(&pool).await?;
@@ -235,15 +267,28 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(chat::edit_message).delete(chat::delete_message),
         )
         .route("/v1/conversations/{id}/read", post(chat::mark_read))
+        .layer(axum::middleware::from_fn_with_state(
+            state.config.request_timeout,
+            limits::request_timeout,
+        ))
         .with_state(state)
 }
 
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
-    if state.connections.available_permits() > 0 {
-        (StatusCode::OK, "ready")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "connection limit reached")
+    if state.connections.available_permits() == 0 {
+        return (StatusCode::SERVICE_UNAVAILABLE, "connection limit reached");
     }
+    if let Some(pool) = &state.db {
+        let ping = async {
+            let mut c = pool.acquire().await?;
+            sqlx::query("SELECT 1").execute(&mut *c).await
+        };
+        match tokio::time::timeout(Duration::from_secs(2), ping).await {
+            Ok(Ok(_)) => {}
+            _ => return (StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
+        }
+    }
+    (StatusCode::OK, "ready")
 }
 
 /// SFU counters (numbers only, no member data) for diagnostics and load tests.
@@ -280,10 +325,16 @@ async fn server_stats(State(state): State<AppState>) -> impl IntoResponse {
             "in_use": (size as usize).saturating_sub(idle),
         })
     });
+    let h = state.hasher.stats();
     axum::Json(serde_json::json!({
         "connections": state.config.max_connections - state.connections.available_permits(),
         "max_connections": state.config.max_connections,
         "db_pool": db,
+        "password_hashing": {
+            "concurrency": h.concurrency, "queue": h.queue, "running": h.running,
+            "waiting": h.waiting, "peak_running": h.peak_running, "refused": h.refused,
+            "done": h.done,
+        },
     }))
 }
 
@@ -311,26 +362,44 @@ pub async fn serve(
     let sfu = state.sfu.clone();
     calls::supervise(state.clone());
     let stop_connections = state.shutdown_tx.clone();
-    let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
+    let mut stopped = state.shutdown.clone();
+    let grace = state.config.shutdown_grace;
+    let max_tcp = state.config.max_tcp_connections;
+    let pool = state.db.clone();
+    let header_timeout = state.config.header_read_timeout;
+    let app = router(state);
     let stop = async move {
         shutdown.await;
         // Long-lived WebSocket connections would hold the graceful shutdown forever.
         let _ = stop_connections.send(true);
     };
-    match tls {
-        Some(cfg) => {
-            use axum::serve::ListenerExt;
-            // `tap_io` gives any listener axum's `ConnectInfo<SocketAddr>` support.
-            let listener = tls::TlsListener::new(listener, cfg)?.tap_io(|_| {});
-            axum::serve(listener, app)
-                .with_graceful_shutdown(stop)
-                .await?
+    // In-flight requests finish within `grace`; a client that keeps a request open longer
+    // does not keep the process alive (systemd's stop timeout is larger).
+    let deadline = async move {
+        let _ = stopped.wait_for(|s| *s).await;
+        tokio::time::sleep(grace).await;
+        tracing::warn!(?grace, "shutdown grace over, closing remaining connections");
+    };
+    let served = async move {
+        match tls {
+            Some(cfg) => {
+                let listener = tls::TlsListener::new(listener, cfg)?;
+                let listener = limits::Limited::new(listener, max_tcp);
+                http::serve(listener, app, stop, header_timeout).await;
+            }
+            None => {
+                let listener = limits::Limited::new(listener, max_tcp);
+                http::serve(listener, app, stop, header_timeout).await;
+            }
         }
-        None => {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(stop)
-                .await?
-        }
+        std::io::Result::Ok(())
+    };
+    tokio::select! {
+        r = served => r?,
+        () = deadline => {}
+    }
+    if let Some(pool) = pool {
+        pool.close().await;
     }
     if let Some(sfu) = sfu {
         sfu.stop();

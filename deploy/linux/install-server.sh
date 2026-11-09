@@ -112,7 +112,16 @@ EnvironmentFile=$ETC/server.env
 ExecStart=/usr/local/bin/turbo-pancake-app-server
 Restart=always
 RestartSec=2
+# Graceful stop: SIGTERM, the server lets in-flight requests finish (10 s grace), then
+# systemd kills it after TimeoutStopSec.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# Resource limits (S8 step 4): descriptors well above --max-tcp-connections (4096) plus
+# the database pool and media; a memory ceiling so a runaway cannot take the host.
 LimitNOFILE=65536
+TasksMax=1024
+MemoryHigh=1536M
+MemoryMax=2G
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

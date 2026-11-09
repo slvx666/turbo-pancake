@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::api::{ApiError, ApiResult, AuthUser, ClientIp, Code, Db, Proto, ms, parse_id};
+use crate::hashing::Hasher;
 
 /// A session unused for this long ends (every use extends it).
 pub const SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -40,16 +41,17 @@ fn random(buf: &mut [u8]) {
     aws_lc_rs::rand::fill(buf).expect("system random generator");
 }
 
-/// Argon2id PHC string; runs on the blocking pool (≈ 20–40 ms of CPU).
-pub async fn hash_password(password: String) -> ApiResult<String> {
-    tokio::task::spawn_blocking(move || {
-        argon2()
-            .hash_password(password.as_bytes(), &salt())
-            .map(|h| h.to_string())
-    })
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(|_| ApiError::internal())
+/// Argon2id PHC string; runs on the blocking pool (≈ 20–40 ms of CPU) within the
+/// hashing bound (`503` when the server is saturated).
+pub async fn hash_password(hasher: &Hasher, password: String) -> ApiResult<String> {
+    hasher
+        .run(move || {
+            argon2()
+                .hash_password(password.as_bytes(), &salt())
+                .map(|h| h.to_string())
+        })
+        .await?
+        .map_err(|_| ApiError::internal())
 }
 
 /// Hash verified when the user does not exist, so both failures cost the same.
@@ -63,16 +65,22 @@ fn dummy_hash() -> &'static str {
     })
 }
 
-pub async fn verify_password(hash: Option<String>, password: String) -> bool {
-    tokio::task::spawn_blocking(move || {
-        let stored = hash.as_deref().unwrap_or_else(|| dummy_hash());
-        let ok = PasswordHash::new(stored)
-            .map(|h| argon2().verify_password(password.as_bytes(), &h).is_ok())
-            .unwrap_or(false);
-        ok && hash.is_some()
-    })
-    .await
-    .unwrap_or(false)
+/// `Ok(false)` = wrong password or unknown user (same cost); `Err` = the server could not
+/// check now (saturated): never reported as a wrong password.
+pub async fn verify_password(
+    hasher: &Hasher,
+    hash: Option<String>,
+    password: String,
+) -> ApiResult<bool> {
+    hasher
+        .run(move || {
+            let stored = hash.as_deref().unwrap_or_else(|| dummy_hash());
+            let ok = PasswordHash::new(stored)
+                .map(|h| argon2().verify_password(password.as_bytes(), &h).is_ok())
+                .unwrap_or(false);
+            ok && hash.is_some()
+        })
+        .await
 }
 
 fn token_hash(token: &str) -> Vec<u8> {
@@ -198,7 +206,7 @@ pub async fn register(
         req.display_name.clone()
     };
     proto::validate_display_name(&display)?;
-    let hash = hash_password(req.password).await?;
+    let hash = hash_password(&state.hasher, req.password).await?;
     let id = Uuid::new_v4();
     let inserted: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO users (id, username_key, username_display, display_name, password_hash)
@@ -245,7 +253,7 @@ pub async fn login(
     .fetch_optional(&pool)
     .await?;
     let (id, hash) = row.unzip();
-    if !verify_password(hash, req.password).await {
+    if !verify_password(&state.hasher, hash, req.password).await? {
         tracing::info!(target: "security", event = "login_failed", %ip);
         return Err(ApiError::new(
             Code::Unauthenticated,
@@ -350,12 +358,12 @@ pub async fn change_password(
         .fetch_optional(&pool)
         .await?;
     if req.old_password.chars().count() > proto::MAX_PASSWORD_CHARS
-        || !verify_password(hash, req.old_password).await
+        || !verify_password(&state.hasher, hash, req.old_password).await?
     {
         tracing::info!(target: "security", event = "password_change_failed", user = %me.user_id);
         return Err(ApiError::forbidden("current password is wrong"));
     }
-    let new_hash = hash_password(req.new_password).await?;
+    let new_hash = hash_password(&state.hasher, req.new_password).await?;
     // Every other session ends; this one stays with a new token.
     let token = new_token();
     let mut tx = pool.begin().await?;

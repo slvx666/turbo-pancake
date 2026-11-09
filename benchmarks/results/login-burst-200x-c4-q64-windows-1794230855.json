@@ -1,0 +1,53 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Core(TM) i5-14600KF",
+    "git_commit": "de4600b",
+    "logical_cpus": 20,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 85730697216
+  },
+  "label": "200x-c4-q64",
+  "params": {
+    "database": "pg-test (fsync=off)",
+    "hash_concurrency": 4,
+    "hash_queue": 64,
+    "logins": 200
+  },
+  "scenario": "login-burst",
+  "summary": {
+    "logins": 200,
+    "ok": 83,
+    "ok_latency_ms": {
+      "max": 437.8464,
+      "min": 25.4437,
+      "n": 83,
+      "p50": 225.8801,
+      "p95": 417.1434,
+      "p99": 422.871
+    },
+    "other_status": [],
+    "pass": true,
+    "password_hashing": {
+      "concurrency": 4,
+      "done": 84,
+      "peak_running": 4,
+      "queue": 64,
+      "refused": 117,
+      "running": 0,
+      "waiting": 0
+    },
+    "refused_503": 117,
+    "server_private_mib": {
+      "idle": 4.015625,
+      "peak": 91.19140625,
+      "peak_above_idle": 87.17578125
+    },
+    "server_working_set_mib": {
+      "idle": 11.921875,
+      "peak": 95.60546875
+    },
+    "wall_s": 0.4450342
+  }
+}

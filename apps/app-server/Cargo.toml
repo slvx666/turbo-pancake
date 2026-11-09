@@ -17,6 +17,9 @@ turbo-pancake-media-sfu = { path = "../../crates/media-sfu" }
 turbo-pancake-media-transport = { path = "../../crates/media-transport" }
 anyhow.workspace = true
 axum.workspace = true
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower-service = "0.3"
 futures-util.workspace = true
 tokio.workspace = true
 tracing.workspace = true

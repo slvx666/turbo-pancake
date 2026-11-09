@@ -3,11 +3,48 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Session 2026-11-06 (owner request, after S7): owner-server release 0.1.1 built locally (not committed): client with the server address + private CA baked in (DEPLOY-TLS §5), software renderer default, launcher, package and per-user installer 13.3 MiB. Probe of the built client without flags against the deployed server: TLS trusted, login with a non-existent user answered "wrong username or password". Server not redeployed: no server-side code changed since the deployment (`git diff e5e9d21 -- apps/app-server apps/media-sfu crates proto migrations Cargo.lock deploy` empty); `/v1/version` answers. Updates in this build: not configured (release key is an owner task, ADR 0016).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–3 done 2026-11-09; next: step 4, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–3 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–4 done 2026-11-09; next: step 5, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–4 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-09 (S8 steps 2–3: groups of 100 under load; media load with accounts); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-09 (S8 steps 2–4: groups of 100 under load; media load with accounts; hardening); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-09 — S8 step 4: hardening
+
+* Bounded Argon2id (issue 45, `hashing.rs`): `--hash-concurrency` (default half the CPUs,
+  1..=4), `--hash-queue` (64, ≤ 10 s wait), beyond → `503 server busy` + `Retry-After`;
+  a saturated server never answers a correct password with `401` (before: a failed
+  blocking task read as a wrong password). `login-burst` bench: 200 parallel logins
+  +87 MiB private with the bound vs **+874 MiB** with 256 slots (184 hashes at once).
+* Database failures → `503` + `Retry-After` instead of `500`: pool timeout
+  (`database_acquire_timeout` 3 s), connection failures, SQLSTATE 53 (disk full etc.),
+  57P, 08. `/readyz` checks the database (`SELECT 1` ≤ 2 s). Request handlers time out
+  after 30 s (`503 request timed out`, transaction rolled back).
+* Found and fixed: **slow request headers were never cut off** (`axum::serve` sets no
+  hyper timer; a half-sent request stayed open > 45 s). Own HTTP/1.1 loop (`http.rs`) =
+  axum's plus `header_read_timeout` (10 s); release probe now closes after 10 s;
+  WebSocket/TLS/messenger tests green. TCP/TLS connections capped (`limits::Limited`,
+  `--max-tcp-connections` 4096).
+* Found and fixed: **the server ignored SIGTERM** (Ctrl+C only), so `systemctl stop` /
+  restart killed it without a graceful stop. SIGTERM handled on Unix; shutdown stops
+  accepting, lets in-flight requests finish within 10 s, closes the pool. Unit file:
+  `KillSignal=SIGTERM`, `TimeoutStopSec=20`, `TasksMax=1024`, `MemoryHigh=1536M`,
+  `MemoryMax=2G`. `--database-pool` flag (step 2 finding).
+* `crates/pg-test`: `stop()` / `restart()` for an outage test in its own binary.
+* **PASS:** `hardening.rs` 7 tests (3 consecutive runs green), `db_outage.rs` (PostgreSQL
+  stopped/restarted under the running server: 503, readiness 503, liveness 200, recovery),
+  `hashing::tests` 2. Report `benchmarks/results/s8-step4-windows-2026-11-09.md`.
+* Dependencies: `hyper`, `hyper-util`, `tower-service` direct deps of the server (already
+  in the graph; `Cargo.lock` +3 lines, no new crate).
+* **UNVERIFIED / owner-assisted:** SIGTERM and unit limits on the Linux host (`cfg(unix)`
+  code is not compiled here; issue 46); a real full disk; desktop client behaviour on
+  `503` + `Retry-After` beyond its existing retry logic.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper
+  with `-- --skip own_sound_is_excluded`: **208 passed, 0 failed, 4 ignored, 1 filtered**,
+  53 binaries, real PostgreSQL (log `.local/logs/s8-step4-tests.log`). The first runs
+  failed this step's own new tests twice (a stuck connection outlives `serve` inside a
+  test process — the binary exits; a timing-dependent graceful test) — both rewritten
+  deterministically before the final run. Local branch only; no push or CI claimed.
 
 ## Session log 2026-11-09 — S8 step 3: media load with accounts
 
@@ -295,7 +332,7 @@ Last session: 2026-11-09 (S8 steps 2–3: groups of 100 under load; media load w
 | Groups of 100 on the target server, real PostgreSQL | UNVERIFIED (owner-assisted) | `group-load --database-url` on the server host |
 | 50 publishers / 50 previews, 1 → 50 high viewers with accounts; safe degradation | PASS (step 3, loopback) | `sfu-screen-*-accounts*` and `sfu-50m-accounts-…` reports; `s8-step3-windows-2026-11-09.md` |
 | Media load on the target server (CPU, real uplink) | UNVERIFIED (owner-assisted) | same commands with `--database-url` on the server host; remote viewers for uplink |
-| Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | NOT_STARTED (step 4) | issue 45 |
+| Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | PASS (step 4; Linux SIGTERM/unit limits and a real full disk owner-assisted) | `tests/{hardening,db_outage}.rs`, `login-burst-*` reports; `s8-step4-windows-2026-11-09.md` |
 | Backup / verified restore / recovery after reboot | NOT_STARTED (step 5) | |
 | Regression suite | NOT_STARTED (step 6) | |
 | Release package + administration guide | NOT_STARTED (step 7) | |
@@ -815,10 +852,14 @@ performance results for the target hardware (RTX 4070 Super / M4).
     code; the executable has no icon resource yet (installer step). One client per
     profile since step 2; the foreground hand-over to the restored window on the
     user's own desktop (a double-click on the shortcut) is owner-assisted.
-45. **Argon2id hashing is not bounded (found in S8 step 1):** register, login and
-    password checks each run one 19 MiB hash on Tokio's blocking pool (up to 512
-    threads), so a burst of parallel logins could take ≈ 9.5 GiB. S8 step 4 adds a
-    semaphore (and a measured limit); the load bench uses 8 parallel registrations.
+45. **Argon2id hashing is not bounded (found in S8 step 1): RESOLVED in S8 step 4**
+    (`hashing.rs`: concurrency 1..=4 by default, queue 64, then 503; 200-login burst
+    +87 MiB instead of +874 MiB).
+46. **SIGTERM / systemd limits not exercised (S8 step 4):** the Unix signal handler and
+    the unit's `KillSignal`/`TimeoutStopSec`/`MemoryMax`/`TasksMax` are written but not
+    compiled or run on this Windows machine (CI is Windows-only until S9). Check on the
+    Linux host: `systemctl restart turbo-pancake` logs "shutdown requested" … "stopped";
+    `systemd-analyze verify /etc/systemd/system/turbo-pancake.service`. Owner-assisted.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
@@ -1179,19 +1220,20 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S8 step 4: hardening
+## Exact next task — S8 step 5: backup, restore and recovery
 
-S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–3 are done on loopback. Next, step 4:
-bound concurrent Argon2id hashing (issue 45: memory × concurrency; queue or refuse with a
-clear error beyond the bound, negative test with a burst of logins), request body/time
-limits, behaviour at DB pool exhaustion (step 2 saw the 16-connection pool saturated by
-write bursts) and DB outage (readiness reports it, clients get errors, no crash, recovery
-when the DB returns), graceful shutdown with in-flight requests, connection/fd limits,
-disk full on the database (clear errors, recovery after space returns), systemd unit
-limits; a negative test for each. `/v1/server-stats` (step 2) shows the pool. Keep the
-real system-audio test out of the headless baseline (`-- --skip own_sound_is_excluded`).
-Target-server runs stay owner-assisted. GitHub publishing remains unavailable; do not
-claim a push or CI run.
+S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–4 are done (loopback / dev machine).
+Next, step 5: a backup script for the Linux server (`deploy/linux/`, `pg_dump -Fc` into
+a dated file, retention, run by a systemd timer), the documented retention cycle for
+deleted messages in backups (spec §7/§12: how long a deleted message can survive in a
+backup), a verified restore into a fresh cluster with a consistency check (users,
+conversations, members, message sequences gap-free, receipts) as an automated test with
+`crates/pg-test` (`pg_dump`/`pg_restore` from `TURBO_PANCAKE_PG_BIN`), and recovery after
+a server restart (service restart: clients reconnect and resync; the restart-and-resync
+part is partly covered by S5–S7 trials — reuse them). Target-server run (timer, real
+dump size/time, restore drill) is owner-assisted. Keep the real system-audio test out of
+the headless baseline (`-- --skip own_sound_is_excluded`). GitHub publishing remains
+unavailable; do not claim a push or CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

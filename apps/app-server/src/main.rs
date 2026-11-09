@@ -62,6 +62,23 @@ struct Args {
     /// from one address). Refused unless the server listens on a loopback address.
     #[arg(long, env = "TURBO_PANCAKE_LOAD_TEST_LIMITS")]
     load_test_limits: bool,
+    /// Database connections in the pool (docs/ADMIN.md: size it with PostgreSQL's
+    /// `max_connections`).
+    #[arg(long, env = "TURBO_PANCAKE_DATABASE_POOL", default_value_t = 16)]
+    database_pool: u32,
+    /// Argon2id hashes at once (19 MiB each). Default: half the CPUs, 1..=4.
+    #[arg(long, env = "TURBO_PANCAKE_HASH_CONCURRENCY")]
+    hash_concurrency: Option<usize>,
+    /// Logins/registrations that may wait for a hash slot; beyond it they get 503.
+    #[arg(long, env = "TURBO_PANCAKE_HASH_QUEUE", default_value_t = 64)]
+    hash_queue: usize,
+    /// Open TCP/TLS connections at once (keep well below the file descriptor limit).
+    #[arg(
+        long,
+        env = "TURBO_PANCAKE_MAX_TCP_CONNECTIONS",
+        default_value_t = 4096
+    )]
+    max_tcp_connections: usize,
 }
 
 #[derive(Subcommand, Debug)]
@@ -198,12 +215,41 @@ async fn main() -> anyhow::Result<()> {
         tls,
         update_dir: args.update_dir,
         limits,
+        database_pool: args.database_pool.max(1),
+        hash_concurrency: args
+            .hash_concurrency
+            .unwrap_or_else(turbo_pancake_app_server::hashing::default_concurrency),
+        hash_queue: args.hash_queue,
+        max_tcp_connections: args.max_tcp_connections,
         ..Default::default()
     };
-    turbo_pancake_app_server::serve(listener, config, async {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("shutdown requested");
-    })
-    .await?;
+    turbo_pancake_app_server::serve(listener, config, shutdown_signal()).await?;
+    tracing::info!("stopped");
     Ok(())
+}
+
+/// Ctrl+C everywhere; on Unix also SIGTERM, which systemd sends on `stop`/`restart`
+/// (without it the service would be killed without a graceful shutdown).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "SIGTERM handler unavailable");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    tracing::info!("shutdown requested");
 }

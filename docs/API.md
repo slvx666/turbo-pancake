@@ -11,9 +11,9 @@ Status legend: **implemented** (code + tests exist), **planned** (stage in brack
 | Method | Path | Status | Response |
 |---|---|---|---|
 | GET | `/healthz` | implemented | `200 ok` while the process serves requests |
-| GET | `/readyz` | implemented | `200 ready`; `503` when the WebSocket connection limit is reached |
+| GET | `/readyz` | implemented | `200 ready`; `503 connection limit reached` (WebSockets) or `503 database unavailable` (no answer to `SELECT 1` within 2 s, S8) |
 | GET | `/v1/version` | implemented | `{"server_version":"x.y.z","protocol_version":1,"messenger":true}` |
-| GET | `/v1/server-stats` | implemented (S8) | operator metrics, aggregate counts only: `{"connections","max_connections","db_pool":{"max","size","idle","in_use"}}` (`db_pool` is `null` without the messenger) |
+| GET | `/v1/server-stats` | implemented (S8) | operator metrics, aggregate counts only: `{"connections","max_connections","db_pool":{"max","size","idle","in_use"},"password_hashing":{"concurrency","queue","running","waiting","peak_running","refused","done"}}` (`db_pool` is `null` without the messenger) |
 | GET | `/v1/signal` | implemented | WebSocket upgrade (below); `503` when connection limit reached |
 | POST | `/v1/auth/register` | implemented (S5) | `RegisterRequest` → `201 AuthResponse`; `409` username taken |
 | POST | `/v1/auth/login` | implemented (S5) | `LoginRequest` → `AuthResponse`; `401` for unknown user *and* wrong password (same body, same cost) |
@@ -63,9 +63,18 @@ skip verification. Setup and rotation: `docs/DEPLOY-TLS.md`.
   `Authorization: Bearer <token>`; a missing, unknown, expired or revoked token is `401`.
 * Every error is an HTTP status plus `ApiError{code, message}`: `BAD_REQUEST` 400,
   `UNAUTHENTICATED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409,
-  `PAYLOAD_TOO_LARGE` 413, `RATE_LIMITED` 429, `UNAVAILABLE` 503 (server without a
-  database), `INTERNAL` 500. A conversation the caller is not in, and a malformed id, are
-  `404` (nothing about its existence leaks).
+  `PAYLOAD_TOO_LARGE` 413, `RATE_LIMITED` 429, `UNAVAILABLE` 503, `INTERNAL` 500. A
+  conversation the caller is not in, and a malformed id, are `404` (nothing about its
+  existence leaks).
+* `503 UNAVAILABLE` always carries `Retry-After: 2` and means "the server's state, retry
+  later", never a verdict on the request (S8 step 4): server without a database; database
+  busy (pool exhausted for 3 s), unavailable (connection failures, PostgreSQL shutting
+  down) or out of resources (SQLSTATE class 53, e.g. disk full); password hashing
+  saturated (`server busy`: register, login and password change are bounded, a correct
+  password is never answered `401` because of load); a handler running longer than 30 s
+  (`request timed out`, its transaction is rolled back).
+* Connections: at most 4096 open TCP/TLS connections (further clients wait in the OS
+  backlog); request headers must be complete within 10 s or the connection is closed.
 * IDs are UUID strings; times are Unix milliseconds.
 * Usernames: 3–32 chars of `[a-z0-9_]`, case-insensitive, start with a letter, no trailing or
   doubled `_`, reserved service names refused. Passwords: 8–128 characters. Messages: 1–4000

@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 struct Cluster {
     port: u16,
     bin: PathBuf,
+    dir: PathBuf,
+    options: String,
 }
 
 /// Started once per process; a failure is remembered so every test fails at once with
@@ -150,19 +152,29 @@ fn start() -> Result<Option<Cluster>, String> {
     // pg_ctl, not postgres directly: started by an administrator (CI runners) postgres
     // refuses to run, pg_ctl drops the privileges with a restricted token. The server
     // stays in this process's job object, so it still dies with the test process.
-    let log = dir.join("server.log");
-    let ctl_log = dir.join("pg_ctl.log");
     let options = format!(
         "-h 127.0.0.1 -p {port} -c fsync=off -c synchronous_commit=off \
          -c full_page_writes=off -c max_connections=300"
     );
+    pg_start(&bin, &dir, port, &options)?;
+    Ok(Some(Cluster {
+        port,
+        bin,
+        dir,
+        options,
+    }))
+}
+
+fn pg_start(bin: &Path, dir: &Path, port: u16, options: &str) -> Result<(), String> {
+    let log = dir.join("server.log");
+    let ctl_log = dir.join("pg_ctl.log");
     let out = Command::new(bin.join(exe("pg_ctl")))
         .arg("start")
         .arg("-D")
-        .arg(&dir)
+        .arg(dir)
         .arg("-l")
         .arg(&log)
-        .args(["-w", "-t", "60", "-o", &options])
+        .args(["-w", "-t", "60", "-o", options])
         // Files, not pipes: the server inherits pg_ctl's handles, so a pipe would never
         // reach end-of-file and `output()` would wait forever.
         .stdin(Stdio::null())
@@ -191,7 +203,35 @@ fn start() -> Result<Option<Cluster>, String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(Some(Cluster { port, bin }))
+    Ok(())
+}
+
+/// Stops this process's cluster (`pg_ctl stop -m fast`): a database outage for tests.
+/// Every database of the process goes away with it, so only a test binary whose tests
+/// all expect that may call this; [`restart`] brings it back.
+pub fn stop() {
+    let Some(Ok(Some(c))) = CLUSTER.get() else {
+        panic!("pg-test: no running cluster to stop");
+    };
+    let status = Command::new(c.bin.join(exe("pg_ctl")))
+        .arg("stop")
+        .arg("-D")
+        .arg(&c.dir)
+        .args(["-m", "fast", "-w", "-t", "60"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run pg_ctl stop");
+    assert!(status.success(), "pg_ctl stop failed");
+}
+
+/// Starts the cluster stopped by [`stop`] again, same port and data.
+pub fn restart() {
+    let Some(Ok(Some(c))) = CLUSTER.get() else {
+        panic!("pg-test: no cluster to restart");
+    };
+    pg_start(&c.bin, &c.dir, c.port, &c.options).unwrap_or_else(|e| panic!("{e}"));
 }
 
 /// Deletes clusters of earlier runs. A directory still in use cannot be renamed on

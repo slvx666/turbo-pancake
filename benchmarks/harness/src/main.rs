@@ -5,6 +5,7 @@
 
 mod call_accounts;
 mod group_load;
+mod login_burst;
 mod mem;
 mod messenger;
 mod sfu;
@@ -124,6 +125,21 @@ enum Cmd {
         #[arg(long, default_value_t = 8)]
         concurrency: usize,
         /// PostgreSQL of the server; default: a throw-away cluster (`crates/pg-test`).
+        #[arg(long, env = "TURBO_PANCAKE_BENCH_DATABASE_URL", hide_env_values = true)]
+        database_url: Option<String>,
+    },
+    /// S8: parallel logins against the bounded password hashing; server memory peak.
+    LoginBurst {
+        #[arg(long)]
+        server_exe: PathBuf,
+        #[arg(long, default_value_t = 200)]
+        logins: usize,
+        /// Passed to the server (`--hash-concurrency`).
+        #[arg(long, default_value_t = 4)]
+        hash_concurrency: usize,
+        /// Passed to the server (`--hash-queue`).
+        #[arg(long, default_value_t = 64)]
+        hash_queue: usize,
         #[arg(long, env = "TURBO_PANCAKE_BENCH_DATABASE_URL", hide_env_values = true)]
         database_url: Option<String>,
     },
@@ -259,6 +275,21 @@ fn main() -> anyhow::Result<()> {
                 churn_rounds,
                 storm_messages,
                 concurrency,
+                database_url,
+            },
+        ))?,
+        Cmd::LoginBurst {
+            server_exe,
+            logins,
+            hash_concurrency,
+            hash_queue,
+            database_url,
+        } => tokio::runtime::Runtime::new()?.block_on(login_burst::login_burst(
+            &server_exe,
+            login_burst::Params {
+                logins,
+                hash_concurrency,
+                hash_queue,
                 database_url,
             },
         ))?,

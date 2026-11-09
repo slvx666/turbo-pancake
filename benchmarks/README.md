@@ -67,6 +67,13 @@ mismatches, per-sender order). Samples the DB pool via `/v1/server-stats` every 
 turbo-pancake-bench group-load --server-exe <target>/release/turbo-pancake-app-server --groups 5
 ```
 
+### `login-burst` (S8)
+
+`--logins` (200) parallel logins of one account against the release server started with
+`--hash-concurrency` / `--hash-queue`; samples the server's private bytes every 10 ms and
+reports OK / 503 / other answers, latency, the hashing counters and the memory peak above
+idle. `pass` = no answer other than 200/503 and never more hashes at once than allowed.
+
 ### `sfu` / `sfu-screen` with `--accounts` (S8)
 
 Both media scenarios take `--accounts`: members are registered accounts in one group
