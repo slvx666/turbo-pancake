@@ -88,8 +88,18 @@ of memory (the script adds swap on small hosts).
    `/etc/turbo-pancake/db-password`), `/etc/turbo-pancake/server.env`, the service unit,
    the backup timer and the helper scripts in `/usr/local/lib/turbo-pancake/`, opens the
    port only when ufw is already active, and starts the service.
+   It also raises the kernel's UDP buffer maxima (`/etc/sysctl.d/90-turbo-pancake.conf`,
+   `rmem_max`/`wmem_max` = 8 MiB; with the usual 208 KiB the kernel dropped voice under
+   load on the target server) and runs the service with `MALLOC_MMAP_THRESHOLD_=1048576`
+   (without it glibc kept ~440 MiB of freed password-hashing memory). If the journal says
+   "UDP media buffers capped by the OS", check the sysctl file.
 3. Check: `systemctl status turbo-pancake`, `journalctl -u turbo-pancake -n 50`, and from
    a client machine `curl --cacert ca.pem https://<IP>:7878/v1/version`.
+
+Boot time: the unit is ordered after `network-online.target`. If the host's
+`systemd-networkd-wait-online` times out (an interface that never comes up), every such
+service starts only after its 2-minute timeout; fix the host's network configuration
+(e.g. `--any` in an override of that unit) if that matters.
 
 **Upgrade:** run the same command with the new release's `server/` directory. The
 database (migrations run at start), certificates, passwords and `server.local.env` are
@@ -216,8 +226,10 @@ exit 2); certificate expiry within 30 days; no backup newer than 2 days.
 ## 8. Limits and capacity
 
 Measured on the Windows development machine over loopback (server's own cost, not the
-network). The same tools must be run on the target server (section 9) before these
-numbers are quoted for it.
+network). The target-server run (`benchmarks/results/s8-target-server-2026-11-09.md`)
+gave the same verdicts on Linux: 500 sessions 0.5 % of a core / 22.9 MiB, 1000 sessions
+36 MiB, 5 × 100 groups 967 sends/s, grid 50 × 49 previews 403 Mbit/s at 76 % of a core,
+50 talkers 94 %, login burst +80 MiB.
 
 | Load | Result | Source |
 |---|---|---|

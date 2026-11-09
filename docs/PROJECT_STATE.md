@@ -3,11 +3,37 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Session 2026-11-06 (owner request, after S7): owner-server release 0.1.1 built locally (not committed): client with the server address + private CA baked in (DEPLOY-TLS §5), software renderer default, launcher, package and per-user installer 13.3 MiB. Probe of the built client without flags against the deployed server: TLS trusted, login with a non-existent user answered "wrong username or password". Server not redeployed: no server-side code changed since the deployment (`git diff e5e9d21 -- apps/app-server apps/media-sfu crates proto migrations Cargo.lock deploy` empty); `/v1/version` answers. Updates in this build: not configured (release key is an owner task, ADR 0016).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the owner's go-ahead and hardware, see "Exact next task"). **S8 DONE (Windows) 2026-11-09** (all 7 steps on the dev machine/loopback; target-server runs owner-assisted, procedure `deploy/linux/target-bench.sh`, ADMIN.md §9). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; owner-assisted pending: every target-server run of steps 1–5 incl. real uplink and reboot, Linux SIGTERM/unit limits, backup timer, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the owner's go-ahead and hardware, see "Exact next task"). **S8 DONE (Windows) 2026-11-09** (all 7 steps; target-server runs of steps 1–5 and a real reboot PASS 2026-11-09 after fix 874c6eb; real uplink owner-assisted). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; target server PASS incl. reboot; owner-assisted pending: real uplink with remote clients, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-09 — S8 on the target server
+
+* With the owner's permission, over SSH (key login; temporary passwordless sudo set by
+  the owner): server 0.1.2 (768be4b) installed with `install-server.sh`, then
+  `target-bench.sh`. Report: `benchmarks/results/s8-target-server-2026-11-09.md`.
+* **Found and fixed (874c6eb):** (1) Linux caps the SFU's 4 MiB UDP buffers at
+  `rmem_max` 208 KiB — 65 000 kernel drops per 50 × 49 grid run, voice 72 % (`pass: false`);
+  `install-server.sh` raises `rmem_max`/`wmem_max` to 8 MiB, the server warns when capped.
+  (2) glibc kept freed Argon2 blocks: +440 MiB after a login burst, ≈ 800 MiB after
+  registrations; the unit sets `MALLOC_MMAP_THRESHOLD_=1048576` (+80 MiB; 500 sessions
+  22.9 MiB). (3) `target-bench.sh`: 1000 sessions hung at the 1024-descriptor shell limit;
+  it printed PASS for a report with `pass: false`. All three fixed and re-measured.
+* **PASS (run 2, 874c6eb):** steps 1, 2, 3 (all 10 scenarios), 4 (login burst, unit
+  limits, graceful SIGTERM restart, ready after 155 ms), 5 (backup, restore drill,
+  `check-db` live 0 violations), real reboot (service back, `/readyz` 200 from outside,
+  every enabled host service back; on-demand D-Bus services not running is expected).
+* Host note (not changed): `systemd-networkd-wait-online` times out (2 min) on every boot,
+  delaying network-online services; recorded in ADMIN.md for the host owner.
+* Known issue (not fixed): the bench hangs instead of failing when it runs out of file
+  descriptors (now bounded by the script's deadline and raised limit).
+* Mistakes: `pkill -f target-bench.sh` matched the developer's own SSH command and ended
+  it (no harm to the service); kill bench processes by PID.
+* Checks before 874c6eb: fmt, workspace Clippy `-D warnings`, tests of app-server,
+  media-sfu, media-transport PASS. Owner tasks left: remove `/etc/sudoers.d/90-tp-bench`,
+  change the password that was pasted into the chat, the real uplink trial.
 
 ## Session log 2026-11-09 — S8 step 7: release and administration (S8 DONE (Windows))
 
@@ -422,18 +448,19 @@ Last session: 2026-11-09 (S8 step 7: release build with checksums, server proced
 | Criterion / slice | Status | Evidence / remaining work |
 |---|---|---|
 | 500 WebSocket sessions with presence (loopback, dev machine) | PASS (step 1) | `messenger-500u-…1793986102.json`, 1000-user run as headroom; `s8-step1-windows-2026-11-06.md` |
-| 500 sessions on the target server, real PostgreSQL | UNVERIFIED (owner-assisted) | same tool with `--database-url` on the server host |
+| 500 sessions on the target server, real PostgreSQL | PASS (2026-11-09, run 2; 1000 too) | `s8-target-server-2026-11-09.md`; loopback on the host |
 | Group of 100 under concurrent writes, membership changes, reconnect storm | PASS (step 2, loopback) | `group-load-2x100-…1794228692.json`, `group-load-5x100-…1794228706.json`; `s8-step2-windows-2026-11-09.md` |
-| Groups of 100 on the target server, real PostgreSQL | UNVERIFIED (owner-assisted) | `group-load --database-url` on the server host |
+| Groups of 100 on the target server, real PostgreSQL | PASS (2 × 100, 5 × 100) | `s8-target-server-2026-11-09.md` |
 | 50 publishers / 50 previews, 1 → 50 high viewers with accounts; safe degradation | PASS (step 3, loopback) | `sfu-screen-*-accounts*` and `sfu-50m-accounts-…` reports; `s8-step3-windows-2026-11-09.md` |
-| Media load on the target server (CPU, real uplink) | UNVERIFIED (owner-assisted) | same commands with `--database-url` on the server host; remote viewers for uplink |
+| Media load on the target server (CPU) | PASS after fix 874c6eb (run 1 FAIL: grid voice 72 %, kernel UDP drops) | `s8-target-server-2026-11-09.md` |
+| Real uplink with remote clients | UNVERIFIED (owner-assisted) | ADMIN.md §9; set `MAX_HIGH_EGRESS_MBPS` from it |
 | Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | PASS (step 4; Linux SIGTERM/unit limits and a real full disk owner-assisted) | `tests/{hardening,db_outage}.rs`, `login-burst-*` reports; `s8-step4-windows-2026-11-09.md` |
 | Backup / verified restore / recovery after reboot | PASS (step 5, dev machine; timer, real reboot and drill on the server owner-assisted) | `tests/backup_restore.rs`, `tests/db_outage.rs`; `docs/BACKUP.md` |
 | Regression suite | PASS (step 6: 16 / 16 items; `-Full` chains not re-run) | `benchmarks/scripts/regression.ps1`, `s8-step6-regression-windows-2026-11-09.md` |
 | Regression suite before the release commit | PASS (16 / 16, 11.1 min) | `s8-step7-regression-windows-2026-11-09.md` |
 | Release package with checksums | PASS (step 7: installer 13.3 MiB, SHA256SUMS verified, tampering detected) | `deploy/release.ps1`, `s8-step7-windows-2026-11-09.md`, `s8-step7-release-windows-2026-11-09.md` |
 | Administration guide (install, config, TLS, updates, backups, monitoring, limits, upgrade) | PASS (step 7) | `docs/ADMIN.md` |
-| Target-server procedure for steps 1–5 | PASS as a script (syntax checked); execution UNVERIFIED (owner-assisted) | `deploy/linux/target-bench.sh`, ADMIN.md §9 |
+| Target-server procedure for steps 1–5 | PASS (executed on the target server: steps 1–5, SIGTERM/unit limits, backup drill, real reboot) | `deploy/linux/target-bench.sh`, `s8-target-server-2026-11-09.md` |
 | No blocking auth / data-loss / AV-loop defects | PASS on Windows (security negatives, backup/restore, own-sound exclusion tests from S3–S8; no open blocking issue) | test suite, known issues list |
 
 ## Acceptance checks — S7 (DONE (Windows) 2026-11-06; owner-assisted rows below)
@@ -1325,11 +1352,9 @@ S0–S8 are DONE on Windows. Next by ADR 0012 is **S9 (macOS + Linux port)**; it
 owner's decision to start and their Mac / Linux machines — ask before planning it. Until
 then, the owner-assisted items are the useful work (none blocks S9):
 
-1. Target server: copy a release's `server/` (from `deploy/release.ps1`, with the public
-   `ca.pem` in `server/tls/`), run `install-server.sh`, then `target-bench.sh` steps
-   1,2,3 / 4 (`ALLOW_RESTART=1`) / 5, a reboot and step `r` (ADMIN.md §9); record the
-   summary generically in `benchmarks/results/` and fill the target-server rows of the
-   S8 table. Measure the real uplink and set `TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS`.
+1. Target server: done 2026-11-09 (874c6eb, all PASS incl. reboot). Left: the real uplink
+   with remote clients (ADMIN.md §9), then set `TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS`; the
+   owner removes `/etc/sudoers.d/90-tp-bench` and changes the account password.
 2. Release key (`turbo-pancake-update keygen`) and a release with updates; Authenticode;
    Slint license (ADR 0002).
 3. Bump `[workspace.package] version` with the next server release so the server and
