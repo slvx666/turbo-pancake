@@ -1,0 +1,61 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Core(TM) i5-14600KF",
+    "git_commit": "7d0e25d",
+    "logical_cpus": 20,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 85730697216
+  },
+  "label": "fanout-50",
+  "params": {
+    "accounts": false,
+    "database": "none (anonymous room)",
+    "high_fps": 30,
+    "high_kbps": 2000,
+    "max_high_egress_mbps": null,
+    "n": 50,
+    "preview_fps": 10,
+    "preview_kbps": 150,
+    "scenario": "Fanout",
+    "seconds": 10,
+    "talkers": 0,
+    "wire_overhead_bytes": 66
+  },
+  "scenario": "sfu-screen",
+  "summary": {
+    "accounts": false,
+    "audio_packets_expected": 0,
+    "clients_cpu_pct_of_one_core": 129.9536270741283,
+    "delivered_audio": 1.0,
+    "delivered_main": 0.9974316487158243,
+    "delivered_preview": 1.0,
+    "egress_mbit_s_estimated": 106.65021685730693,
+    "high_streams_forwarded": 50,
+    "ingress_pps": 261.2052926822279,
+    "layers_as_expected": true,
+    "members": 51,
+    "out_pps": 12020.835315754364,
+    "pass": true,
+    "preview_streams_forwarded": 0,
+    "publishers": 1,
+    "scenario": "Fanout",
+    "server_cpu_pct_of_one_core": 22.775583815296706,
+    "server_cpu_us_per_forwarded_packet": 18.946756375114212,
+    "server_working_set_mib": 91.453125,
+    "server_working_set_mib_before": 89.12109375,
+    "setup": null,
+    "talkers": 0,
+    "viewers": {
+      "budget_allows": null,
+      "high": 50,
+      "low": 0,
+      "low_reason_admission": 0,
+      "main_kbps_high_avg": 2006.0921781096595,
+      "main_kbps_low_avg": null,
+      "not_told": 0
+    },
+    "wall_s": 10.015111
+  }
+}

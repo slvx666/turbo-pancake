@@ -67,6 +67,19 @@ mismatches, per-sender order). Samples the DB pool via `/v1/server-stats` every 
 turbo-pancake-bench group-load --server-exe <target>/release/turbo-pancake-app-server --groups 5
 ```
 
+### `sfu` / `sfu-screen` with `--accounts` (S8)
+
+Both media scenarios take `--accounts`: members are registered accounts in one group
+call (`POST /v1/calls`, `join`, `JoinCallMedia` with the participation lease) on a server
+with real PostgreSQL (`--database-url` or pg-test) and `--load-test-limits`. `sfu-screen`
+also takes `--talkers N` (voice during the share) and `--max-high-egress-mbps B` (server
+high-layer budget; the report checks that exactly ⌊B / high⌋ viewers get the high layer
+and the rest the preview layer with reason `ADMISSION`), and reports `pass`.
+
+```bash
+turbo-pancake-bench sfu-screen --server-exe <server> --scenario fanout --n 50 --talkers 3 --accounts --max-high-egress-mbps 40
+```
+
 ### `sfu`
 
 Starts the release server on loopback and connects `--members` (default 20, ≤ 64) media

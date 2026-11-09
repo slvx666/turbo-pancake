@@ -6,6 +6,9 @@
 //! `CallDriver` (ICE + DTLS-SRTP, str0m) on its own loopback UDP socket. Talking members
 //! send one synthetic Opus-sized payload every 20 ms; everybody counts what arrives. The
 //! server runs in its own process, so its CPU time is measured apart from the members.
+//!
+//! `--accounts` (S8 step 3): the members are signed-in accounts in one group call
+//! (`call_accounts`) instead of anonymous peers in a named room.
 
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -22,7 +25,8 @@ use turbo_pancake_media_transport::call::{
 };
 use turbo_pancake_protocol::v1::{self, client_envelope::Body as C, server_envelope::Body as S};
 
-use crate::{MIB, host_info, mem, spawn_lines, wait_line, with_child_diag, ws_hello, ws_send};
+use crate::call_accounts::{self, Join};
+use crate::{MIB, host_info, mem, spawn_lines, wait_line, with_child_diag, ws_send};
 
 const ROOM: &str = "sfu-bench";
 const FRAME: Duration = Duration::from_millis(20);
@@ -43,32 +47,51 @@ struct Counters {
     heard_mask: AtomicU64,
 }
 
+/// Account mode of the media benches: `None` = anonymous room peers.
+pub struct Accounts {
+    pub concurrency: usize,
+    pub database_url: Option<String>,
+}
+
 pub async fn sfu(
     server_exe: &std::path::Path,
     members: usize,
     talkers: &[usize],
     seconds: u64,
     payload: usize,
+    accounts: Option<Accounts>,
 ) -> anyhow::Result<serde_json::Value> {
     if !(2..=64).contains(&members) {
         bail!("--members must be 2..=64");
     }
     turbo_pancake_media_transport::init_crypto();
-    let mut cmd = Command::new(server_exe);
-    cmd.args(["--bind", "127.0.0.1:0"]).env("RUST_LOG", "warn");
-    let (mut child, rx, tail) = spawn_lines(cmd)?;
-    let result = run(&child, &rx, members, talkers, seconds, payload).await;
+    let (mut child, rx, tail, database) = match &accounts {
+        Some(a) => crate::messenger::start_server(server_exe, a.database_url.as_deref(), &[])?,
+        None => {
+            let mut cmd = Command::new(server_exe);
+            cmd.args(["--bind", "127.0.0.1:0"]).env("RUST_LOG", "warn");
+            let (c, r, t) = spawn_lines(cmd)?;
+            (c, r, t, "none (anonymous room)")
+        }
+    };
+    let concurrency = accounts.as_ref().map(|a| a.concurrency);
+    let result = run(&child, &rx, members, talkers, seconds, payload, concurrency).await;
     let result = result.map_err(|e| with_child_diag(e, &mut child, &tail));
     let _ = child.kill();
     let _ = child.wait();
     let (summary, phases) = result?;
     Ok(json!({
         "scenario": "sfu",
-        "label": format!("{members}m"),
+        "label": if concurrency.is_some() {
+            format!("{members}m-accounts")
+        } else {
+            format!("{members}m")
+        },
         "host": host_info(),
         "params": {
             "members": members, "talkers": talkers, "seconds_per_phase": seconds,
             "payload_bytes": payload, "wire_overhead_bytes": WIRE_OVERHEAD,
+            "accounts": concurrency.is_some(), "database": database,
         },
         "phases": phases,
         "summary": summary,
@@ -106,6 +129,7 @@ fn sysinfo_cpu_ms(sys: &mut sysinfo::System, pid: u32) -> anyhow::Result<u64> {
         .accumulated_cpu_time())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(
     child: &Child,
     rx: &mpsc::Receiver<String>,
@@ -113,13 +137,30 @@ async fn run(
     talkers: &[usize],
     seconds: u64,
     payload: usize,
+    accounts: Option<usize>,
 ) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
-    let line = wait_line(rx, "TURBO_PANCAKE_LISTENING", Duration::from_secs(10))?;
-    let addr = line
-        .split_whitespace()
-        .nth(1)
-        .context("no addr")?
-        .to_owned();
+    let (addr, joins, setup) = match accounts {
+        Some(concurrency) => {
+            let (addr, http) = crate::messenger::ready(rx, concurrency).await?;
+            let (joins, setup) = call_accounts::setup(&http, members, concurrency).await?;
+            (addr, joins, setup)
+        }
+        None => {
+            let line = wait_line(rx, "TURBO_PANCAKE_LISTENING", Duration::from_secs(10))?;
+            let addr = line
+                .split_whitespace()
+                .nth(1)
+                .context("no addr")?
+                .to_owned();
+            let joins = (0..members)
+                .map(|i| Join::Room {
+                    name: format!("m{i:02}"),
+                    room: ROOM.into(),
+                })
+                .collect::<Vec<_>>();
+            (addr, joins, serde_json::Value::Null)
+        }
+    };
     let pid = child.id();
     let mem_start = mem::sample(pid)?;
     let counters = Arc::new(Counters::default());
@@ -128,11 +169,12 @@ async fn run(
 
     let mut feeds = Vec::with_capacity(members);
     let mut tasks = Vec::with_capacity(members);
-    for i in 0..members {
+    for (i, join) in joins.iter().enumerate() {
         let (tx, rx) = sync_channel::<AudioOut>(50);
         feeds.push(tx);
         tasks.push(tokio::spawn(member(
             addr.clone(),
+            join.clone(),
             i,
             rx,
             counters.clone(),
@@ -210,6 +252,8 @@ async fn run(
     }
     let summary = json!({
         "members": members,
+        "accounts": accounts.is_some(),
+        "setup": setup,
         "server_working_set_mib_start": mem_start.working_set_bytes as f64 / MIB,
         "phases": phases.iter().map(|p| json!({
             "talkers": p["talkers"],
@@ -259,20 +303,13 @@ fn feed(
 
 async fn member(
     addr: String,
+    join: Join,
     index: usize,
     outgoing: mpsc::Receiver<AudioOut>,
     counters: Arc<Counters>,
     stop: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    let (mut ws, _) = ws_hello(&addr, &format!("m{index:02}")).await?;
-    ws_send(
-        &mut ws,
-        2,
-        C::JoinRoom(v1::JoinRoom {
-            room_id: ROOM.into(),
-        }),
-    )
-    .await?;
+    let (mut ws, _, room) = call_accounts::enter(&addr, &join).await?;
 
     let mut cc = CallConfig::new(Role::Offerer, "127.0.0.1:0".parse()?);
     cc.advertise = Some("127.0.0.1".parse()?);
@@ -317,7 +354,7 @@ async fn member(
                 Some(ev) = ev_rx.recv() => match ev {
                     CallEvent::Signal(LocalSignal::Offer(sdp)) => {
                         ws_send(&mut ws, 3, C::MediaOffer(v1::MediaOffer {
-                            room_id: ROOM.into(),
+                            room_id: room.clone(),
                             sdp,
                             transport: v1::MediaTransport::Udp as i32,
                             dialed_ip: "127.0.0.1".into(),

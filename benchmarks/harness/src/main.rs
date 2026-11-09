@@ -3,6 +3,7 @@
 //! Every scenario writes a self-describing JSON report (host, parameters, raw
 //! samples, summary) into `benchmarks/results/`. See `benchmarks/README.md`.
 
+mod call_accounts;
 mod group_load;
 mod mem;
 mod messenger;
@@ -140,6 +141,14 @@ enum Cmd {
         /// Payload bytes per 20 ms frame (100 ≈ Opus voice at 40 kbit/s).
         #[arg(long, default_value_t = 100)]
         payload: usize,
+        /// Members are signed-in accounts in one group call (real PostgreSQL).
+        #[arg(long)]
+        accounts: bool,
+        /// Parallel registrations in `--accounts` mode.
+        #[arg(long, default_value_t = 8)]
+        concurrency: usize,
+        #[arg(long, env = "TURBO_PANCAKE_BENCH_DATABASE_URL", hide_env_values = true)]
+        database_url: Option<String>,
     },
     /// S4 screen share load: `publishers` (N share, 2 watch + preview all), `fanout`
     /// (1 shares, N watch high), `grid` (N share, each previews all others).
@@ -160,6 +169,20 @@ enum Cmd {
         preview_kbps: u32,
         #[arg(long, default_value_t = 10)]
         preview_fps: u32,
+        /// Members that also send voice during the share (the first ones).
+        #[arg(long, default_value_t = 0)]
+        talkers: usize,
+        /// The server's high-layer budget (passed to the server as is).
+        #[arg(long)]
+        max_high_egress_mbps: Option<u32>,
+        /// Members are signed-in accounts in one group call (real PostgreSQL).
+        #[arg(long)]
+        accounts: bool,
+        /// Parallel registrations in `--accounts` mode.
+        #[arg(long, default_value_t = 8)]
+        concurrency: usize,
+        #[arg(long, env = "TURBO_PANCAKE_BENCH_DATABASE_URL", hide_env_values = true)]
+        database_url: Option<String>,
     },
 }
 
@@ -245,12 +268,19 @@ fn main() -> anyhow::Result<()> {
             talkers,
             seconds,
             payload,
+            accounts,
+            concurrency,
+            database_url,
         } => tokio::runtime::Runtime::new()?.block_on(sfu::sfu(
             &server_exe,
             members,
             &talkers,
             seconds,
             payload,
+            accounts.then_some(sfu::Accounts {
+                concurrency,
+                database_url,
+            }),
         ))?,
         Cmd::SfuScreen {
             server_exe,
@@ -261,6 +291,11 @@ fn main() -> anyhow::Result<()> {
             high_fps,
             preview_kbps,
             preview_fps,
+            talkers,
+            max_high_egress_mbps,
+            accounts,
+            concurrency,
+            database_url,
         } => tokio::runtime::Runtime::new()?.block_on(sfu_screen::sfu_screen(
             &server_exe,
             sfu_screen::Params {
@@ -271,6 +306,11 @@ fn main() -> anyhow::Result<()> {
                 high_fps,
                 preview_kbps,
                 preview_fps,
+                talkers,
+                max_high_egress_mbps,
+                accounts,
+                concurrency,
+                database_url,
             },
         ))?,
     };

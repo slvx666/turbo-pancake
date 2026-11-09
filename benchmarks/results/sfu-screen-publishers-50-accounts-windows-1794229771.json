@@ -1,0 +1,73 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Core(TM) i5-14600KF",
+    "git_commit": "7d0e25d",
+    "logical_cpus": 20,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 85730697216
+  },
+  "label": "publishers-50-accounts",
+  "params": {
+    "accounts": true,
+    "database": "pg-test (fsync=off)",
+    "high_fps": 30,
+    "high_kbps": 2000,
+    "max_high_egress_mbps": null,
+    "n": 50,
+    "preview_fps": 10,
+    "preview_kbps": 150,
+    "scenario": "Publishers",
+    "seconds": 10,
+    "talkers": 3,
+    "wire_overhead_bytes": 66
+  },
+  "scenario": "sfu-screen",
+  "summary": {
+    "accounts": true,
+    "audio_packets_expected": 76500,
+    "clients_cpu_pct_of_one_core": 120.60959139226284,
+    "delivered_audio": 1.0,
+    "delivered_main": 0.9985480190831778,
+    "delivered_preview": 0.9998480858821146,
+    "egress_mbit_s_estimated": 30.264476175706033,
+    "high_streams_forwarded": 2,
+    "ingress_pps": 13093.670016277594,
+    "layers_as_expected": true,
+    "members": 52,
+    "out_pps": 10105.027936089115,
+    "pass": true,
+    "preview_streams_forwarded": 98,
+    "publishers": 50,
+    "scenario": "Publishers",
+    "server_cpu_pct_of_one_core": 26.867681319102157,
+    "server_cpu_us_per_forwarded_packet": 26.588428541742942,
+    "server_working_set_mib": 49.2265625,
+    "server_working_set_mib_before": 45.3828125,
+    "setup": {
+      "accounts": 52,
+      "call_create_ms": 4.200200000000001,
+      "call_join_http_ms": {
+        "max": 10.7138,
+        "min": 2.5957,
+        "n": 51,
+        "p50": 3.633,
+        "p95": 9.786299999999999,
+        "p99": 10.7138
+      },
+      "register_all_s": 0.2498892
+    },
+    "talkers": 3,
+    "viewers": {
+      "budget_allows": null,
+      "high": 2,
+      "low": 0,
+      "low_reason_admission": 0,
+      "main_kbps_high_avg": 2008.181893902556,
+      "main_kbps_low_avg": null,
+      "not_told": 0
+    },
+    "wall_s": 10.000863
+  }
+}

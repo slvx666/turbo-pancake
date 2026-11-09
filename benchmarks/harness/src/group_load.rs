@@ -244,7 +244,11 @@ pub async fn group_load(server_exe: &Path, p: Params) -> anyhow::Result<serde_js
         p.group_size - 1
     );
     ensure!(p.concurrency >= 1, "--concurrency must be at least 1");
-    let (mut child, rx, tail, db_kind) = start_server(server_exe, p.database_url.as_deref())?;
+    let (mut child, rx, tail, db_kind) = start_server(
+        server_exe,
+        p.database_url.as_deref(),
+        &["--no-media-udp".into()],
+    )?;
     let pid = child.id();
     let result = async {
         let (addr, http) = ready(&rx, 64).await?;

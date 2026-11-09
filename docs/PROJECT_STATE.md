@@ -3,11 +3,42 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Session 2026-11-06 (owner request, after S7): owner-server release 0.1.1 built locally (not committed): client with the server address + private CA baked in (DEPLOY-TLS §5), software renderer default, launcher, package and per-user installer 13.3 MiB. Probe of the built client without flags against the deployed server: TLS trusted, login with a non-existent user answered "wrong username or password". Server not redeployed: no server-side code changed since the deployment (`git diff e5e9d21 -- apps/app-server apps/media-sfu crates proto migrations Cargo.lock deploy` empty); `/v1/version` answers. Updates in this build: not configured (release key is an owner task, ADR 0016).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, step 2 done 2026-11-09; next: step 3, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–2 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–3 done 2026-11-09; next: step 4, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–3 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-09 (S8 step 2: groups of 100 under load); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-09 (S8 steps 2–3: groups of 100 under load; media load with accounts); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-09 — S8 step 3: media load with accounts
+
+* `sfu-screen` / `sfu` gain `--accounts` (`benchmarks/harness/src/call_accounts.rs`):
+  registered accounts in one group, `POST /v1/calls` + `join`, `JoinCallMedia` with the
+  participation lease, media room from the server. `sfu-screen` also gains `--talkers`
+  (voice during the share), `--max-high-egress-mbps` (server budget), the announced share
+  bitrate, per-viewer told layer/reason and received main-picture rate, and a `pass`
+  verdict (≥ 98 % of the told layer per subscription, voice ≥ 98 %, layers exactly as the
+  budget allows). Its private sysinfo CPU probe is replaced by the `GetProcessTimes` one.
+* **PASS (loopback, accounts, 3 talkers):** 50 publishers + 2 viewers 27 % of a core;
+  grid 50 × 49 previews 66 %, 403 Mbit/s; 1 → 50 high viewers 31 %, 116 Mbit/s; 1 → 50
+  at 8 Mbit/s 60 fps 49 %, 436 Mbit/s; 50 × 12 Mbit/s 60–64 %, **647 Mbit/s**, 77 000
+  packets/s (server not saturated); voice-only 50 members, 50 talkers 92 %, 122 600
+  packets/s. Voice 99.8–100 % in every run.
+* **PASS (safe degradation):** budget 40 Mbit/s with 50 viewers: exactly 20 high, 30
+  low with reason `ADMISSION` (150 kbit/s main picture), voice 100 %, egress 57 instead of
+  116 Mbit/s; publishers with budget 2 Mbit/s: 1 high, 1 low (ADMISSION), 98 previews
+  99.5 %, voice 100 %.
+* Found: one share is capped at 12 Mbit/s by the client's pacer default
+  (`video_pacing_bps`), so the high-bitrate runs measure 12 Mbit/s per viewer; the
+  S4 CPU figures were read with the unreliable probe (grid 92 % → 60 % anonymous / 66 %
+  with accounts; conclusion unchanged). Report:
+  `benchmarks/results/s8-step3-windows-2026-11-09.md`.
+* **UNVERIFIED / owner-assisted:** target server CPU and its real 1 Gbit/s uplink; real
+  network loss on the path.
+* **PASS:** fmt; workspace Clippy `-D warnings` (after one `needless_range_loop` fix in
+  `sfu.rs`); workspace tests via the dev/APM wrapper with `-- --skip own_sound_is_excluded`:
+  **198 passed, 0 failed, 4 ignored, 1 filtered**, 51 binaries, real PostgreSQL (log
+  `.local/logs/s8-step3-tests.log`; the Clippy fix came after it, bench tests re-run green
+  and the `sfu --accounts` smoke re-run). Local branch only; no push or CI claimed.
 
 ## Session log 2026-11-09 — S8 step 2: groups of 100 under load
 
@@ -262,7 +293,8 @@ Last session: 2026-11-09 (S8 step 2: groups of 100 under load); before: 2026-11-
 | 500 sessions on the target server, real PostgreSQL | UNVERIFIED (owner-assisted) | same tool with `--database-url` on the server host |
 | Group of 100 under concurrent writes, membership changes, reconnect storm | PASS (step 2, loopback) | `group-load-2x100-…1794228692.json`, `group-load-5x100-…1794228706.json`; `s8-step2-windows-2026-11-09.md` |
 | Groups of 100 on the target server, real PostgreSQL | UNVERIFIED (owner-assisted) | `group-load --database-url` on the server host |
-| 50 publishers / 50 previews, 1 → 50 high viewers with accounts; safe degradation | NOT_STARTED (step 3) | S4 anonymous benches exist |
+| 50 publishers / 50 previews, 1 → 50 high viewers with accounts; safe degradation | PASS (step 3, loopback) | `sfu-screen-*-accounts*` and `sfu-50m-accounts-…` reports; `s8-step3-windows-2026-11-09.md` |
+| Media load on the target server (CPU, real uplink) | UNVERIFIED (owner-assisted) | same commands with `--database-url` on the server host; remote viewers for uplink |
 | Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | NOT_STARTED (step 4) | issue 45 |
 | Backup / verified restore / recovery after reboot | NOT_STARTED (step 5) | |
 | Regression suite | NOT_STARTED (step 6) | |
@@ -1147,21 +1179,19 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S8 step 3: media load with accounts
+## Exact next task — S8 step 4: hardening
 
-S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–2 (sessions/presence, groups of 100
-under load) are done on loopback. Next, step 3: run the `sfu` / `sfu-screen` load on
-authenticated account calls (register accounts, a group call via `POST /v1/calls` +
-`join`, `JoinCallMedia` with the participation lease) instead of anonymous rooms: 50
-publishers, 50 previews (grid) and a separate 1 → 50 high-viewer run; with the high-egress
-budget show safe degradation (audio first, then the watched high stream, then previews;
-viewers over the budget get the preview layer and the reason) and the measured limit of
-this machine. Reuse `messenger::{start_server, ready, Http}` for accounts and the CPU probe
-fixed in step 2 (`mem::process_cpu_ms`). Keep the bench's registrations bounded (issue 45
-is step 4). Target-server runs stay owner-assisted (describe generically, never commit
-addresses). Keep the real system-audio test out of the headless baseline
-(`-- --skip own_sound_is_excluded`). GitHub publishing remains unavailable; do not claim
-a push or CI run.
+S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–3 are done on loopback. Next, step 4:
+bound concurrent Argon2id hashing (issue 45: memory × concurrency; queue or refuse with a
+clear error beyond the bound, negative test with a burst of logins), request body/time
+limits, behaviour at DB pool exhaustion (step 2 saw the 16-connection pool saturated by
+write bursts) and DB outage (readiness reports it, clients get errors, no crash, recovery
+when the DB returns), graceful shutdown with in-flight requests, connection/fd limits,
+disk full on the database (clear errors, recovery after space returns), systemd unit
+limits; a negative test for each. `/v1/server-stats` (step 2) shows the pool. Keep the
+real system-audio test out of the headless baseline (`-- --skip own_sound_is_excluded`).
+Target-server runs stay owner-assisted. GitHub publishing remains unavailable; do not
+claim a push or CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

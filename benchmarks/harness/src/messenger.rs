@@ -105,7 +105,11 @@ pub async fn messenger(server_exe: &Path, p: Params) -> anyhow::Result<serde_jso
         "--group-size must be 2..=100 (spec §7: groups of up to 100)"
     );
     ensure!(p.concurrency >= 1, "--concurrency must be at least 1");
-    let (mut child, rx, tail, db_kind) = start_server(server_exe, p.database_url.as_deref())?;
+    let (mut child, rx, tail, db_kind) = start_server(
+        server_exe,
+        p.database_url.as_deref(),
+        &["--no-media-udp".into()],
+    )?;
     let result = run(&child, &rx, &p).await;
     let result = result.map_err(|e| with_child_diag(e, &mut child, &tail));
     let _ = child.kill();
@@ -173,12 +177,13 @@ pub(crate) fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-/// Starts the release server on loopback with load-test limits and the given (or a
+/// Starts the release server on loopback with load-test limits, `extra_args` and the given (or a
 /// throw-away) PostgreSQL. Returns the child, its stdout lines, the stderr tail and the
 /// database kind for the report.
 pub(crate) fn start_server(
     server_exe: &Path,
     database_url: Option<&str>,
+    extra_args: &[String],
 ) -> anyhow::Result<(
     Child,
     std_mpsc::Receiver<String>,
@@ -194,14 +199,10 @@ pub(crate) fn start_server(
         ),
     };
     let mut cmd = Command::new(server_exe);
-    cmd.args([
-        "--bind",
-        "127.0.0.1:0",
-        "--no-media-udp",
-        "--load-test-limits",
-    ])
-    .env("TURBO_PANCAKE_DATABASE_URL", &db_url)
-    .env("RUST_LOG", "warn");
+    cmd.args(["--bind", "127.0.0.1:0", "--load-test-limits"])
+        .args(extra_args)
+        .env("TURBO_PANCAKE_DATABASE_URL", &db_url)
+        .env("RUST_LOG", "warn");
     let (child, rx, tail) = spawn_lines(cmd)?;
     Ok((child, rx, tail, db_kind))
 }

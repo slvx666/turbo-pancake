@@ -1,0 +1,73 @@
+{
+  "host": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Core(TM) i5-14600KF",
+    "git_commit": "7d0e25d",
+    "logical_cpus": 20,
+    "os": "windows",
+    "os_version": "Windows 11 Pro",
+    "total_memory_bytes": 85730697216
+  },
+  "label": "fanout-50-accounts-budget40",
+  "params": {
+    "accounts": true,
+    "database": "pg-test (fsync=off)",
+    "high_fps": 30,
+    "high_kbps": 2000,
+    "max_high_egress_mbps": 40,
+    "n": 50,
+    "preview_fps": 10,
+    "preview_kbps": 150,
+    "scenario": "Fanout",
+    "seconds": 10,
+    "talkers": 3,
+    "wire_overhead_bytes": 66
+  },
+  "scenario": "sfu-screen",
+  "summary": {
+    "accounts": true,
+    "audio_packets_expected": 75000,
+    "clients_cpu_pct_of_one_core": 106.48654983738416,
+    "delivered_audio": 1.0018266666666666,
+    "delivered_main": 0.9930121368150056,
+    "delivered_preview": 1.0,
+    "egress_mbit_s_estimated": 57.338643697123466,
+    "high_streams_forwarded": 50,
+    "ingress_pps": 261.6195453024322,
+    "layers_as_expected": true,
+    "members": 51,
+    "out_pps": 12904.798785989376,
+    "pass": true,
+    "preview_streams_forwarded": 0,
+    "publishers": 1,
+    "scenario": "Fanout",
+    "server_cpu_pct_of_one_core": 28.11061042535301,
+    "server_cpu_us_per_forwarded_packet": 21.783067594879856,
+    "server_working_set_mib": 61.96875,
+    "server_working_set_mib_before": 61.1171875,
+    "setup": {
+      "accounts": 51,
+      "call_create_ms": 3.7326,
+      "call_join_http_ms": {
+        "max": 8.0106,
+        "min": 2.5669999999999997,
+        "n": 50,
+        "p50": 2.9008,
+        "p95": 7.7772,
+        "p99": 8.0106
+      },
+      "register_all_s": 0.2444416
+    },
+    "talkers": 3,
+    "viewers": {
+      "budget_allows": 20,
+      "high": 20,
+      "low": 30,
+      "low_reason_admission": 30,
+      "main_kbps_high_avg": 2001.1796663133641,
+      "main_kbps_low_avg": 149.81666245890221,
+      "not_told": 0
+    },
+    "wall_s": 10.0068976
+  }
+}
