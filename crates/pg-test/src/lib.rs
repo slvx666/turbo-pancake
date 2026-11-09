@@ -70,6 +70,15 @@ pub fn database_url() -> Option<String> {
     ))
 }
 
+/// Directory with the PostgreSQL tools of the running cluster (`pg_dump`, `pg_restore`,
+/// `psql`, `createdb`), after the first [`database_url`].
+pub fn tools() -> Option<PathBuf> {
+    match CLUSTER.get() {
+        Some(Ok(Some(c))) => Some(c.bin.clone()),
+        _ => None,
+    }
+}
+
 /// Port of the running cluster (after the first [`database_url`]).
 pub fn port() -> Option<u16> {
     match CLUSTER.get() {

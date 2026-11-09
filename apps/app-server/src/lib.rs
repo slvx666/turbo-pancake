@@ -15,6 +15,7 @@ pub mod events;
 pub mod groups;
 pub mod hashing;
 pub mod http;
+pub mod integrity;
 pub mod limits;
 pub mod ratelimit;
 pub mod signaling;
@@ -86,6 +87,9 @@ pub struct Config {
     /// A connection whose request headers are not complete in this time is closed
     /// (slow or silent clients; TLS handshakes have their own timeout).
     pub header_read_timeout: Duration,
+    /// At start, how long to keep retrying an unreachable database (after a reboot the
+    /// server may start before PostgreSQL accepts connections).
+    pub database_startup_wait: Duration,
 }
 
 impl Default for Config {
@@ -113,6 +117,7 @@ impl Default for Config {
             max_tcp_connections: 4096,
             shutdown_grace: Duration::from_secs(10),
             header_read_timeout: Duration::from_secs(10),
+            database_startup_wait: Duration::from_secs(120),
         }
     }
 }
@@ -172,11 +177,27 @@ impl AppState {
     /// Connects to the messenger database and applies pending migrations.
     pub async fn with_database(mut self) -> Result<Self, sqlx::Error> {
         if let Some(url) = &self.config.database_url {
-            let pool = sqlx::postgres::PgPoolOptions::new()
-                .max_connections(self.config.database_pool)
-                .acquire_timeout(self.config.database_acquire_timeout)
-                .connect(url)
-                .await?;
+            let deadline = std::time::Instant::now() + self.config.database_startup_wait;
+            let mut delay = Duration::from_millis(250);
+            let pool = loop {
+                let tried = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(self.config.database_pool)
+                    .acquire_timeout(self.config.database_acquire_timeout)
+                    .connect(url)
+                    .await;
+                match tried {
+                    Ok(pool) => break pool,
+                    Err(e)
+                        if crate::api::db_unavailable(&e).is_some()
+                            && std::time::Instant::now() + delay < deadline =>
+                    {
+                        tracing::warn!(error = %e, retry_in = ?delay, "database not reachable yet");
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(5));
+                    }
+                    Err(e) => return Err(e),
+                }
+            };
             MIGRATOR.run(&pool).await?;
             tracing::info!("messenger database ready");
             self.db = Some(pool);

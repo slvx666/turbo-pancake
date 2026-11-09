@@ -83,6 +83,10 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Check the messenger database (`TURBO_PANCAKE_DATABASE_URL`) for consistency, e.g.
+    /// after a restore: prints a JSON report, exit code 1 when an invariant is broken.
+    /// Read-only; does not run migrations.
+    CheckDb,
     /// Create a private CA and a server certificate for these IP addresses / host names
     /// (writes ca.pem, ca.key, server.pem, server.key into --out). Give ca.pem to the
     /// clients (`--server-ca`), keep ca.key offline.
@@ -135,6 +139,7 @@ fn certificates(cmd: Cmd) -> anyhow::Result<()> {
                 out.display()
             );
         }
+        Cmd::CheckDb => unreachable!("handled in main"),
         Cmd::RenewCert { names, dir, days } => {
             let ca = std::fs::read_to_string(dir.join("ca.pem"))?;
             let ca_key = std::fs::read_to_string(dir.join("ca.key"))?;
@@ -147,11 +152,28 @@ fn certificates(cmd: Cmd) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn check_db(url: Option<&str>) -> anyhow::Result<()> {
+    let url = url.ok_or_else(|| anyhow::anyhow!("set TURBO_PANCAKE_DATABASE_URL"))?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(url)
+        .await?;
+    let report = turbo_pancake_app_server::integrity::check(&pool).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    pool.close().await;
+    if report["ok"] != true {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    if let Some(cmd) = args.command {
-        return certificates(cmd);
+    match args.command {
+        Some(Cmd::CheckDb) => return check_db(args.database_url.as_deref()).await,
+        Some(cmd) => return certificates(cmd),
+        None => {}
     }
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     if args.log_json {

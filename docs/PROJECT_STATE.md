@@ -3,11 +3,47 @@ Spec version: 1.0 (`TECHNICAL_SPEC_MESSENGER_RU.md`, owner copy outside the repo
 **Session 2026-11-06 (owner request): build-time default server + CA (`TURBO_PANCAKE_DEFAULT_SERVER[_CA]`, DEPLOY-TLS §5), `deploy/linux/install-server.sh`; release builds for the owner's server built locally (not committed). Server deployed with the script on the owner's Ubuntu 22.04 host behind NAT: service active, `/v1/version` 200 over the public address with the private CA verified. A real client sign-in and call on it: UNVERIFIED (owner).**
 **Session 2026-11-06 (owner request, after S7): owner-server release 0.1.1 built locally (not committed): client with the server address + private CA baked in (DEPLOY-TLS §5), software renderer default, launcher, package and per-user installer 13.3 MiB. Probe of the built client without flags against the deployed server: TLS trusted, login with a non-existent user answered "wrong username or password". Server not redeployed: no server-side code changed since the deployment (`git diff e5e9d21 -- apps/app-server apps/media-sfu crates proto migrations Cargo.lock deploy` empty); `/v1/version` answers. Updates in this build: not configured (release key is an owner task, ADR 0016).**
 **Scope (owner decision 2026-11-04, ADR 0012): Windows only until S0–S8 are done on Windows; macOS and Linux are stage S9.** Platform parts of earlier criteria moved to S9; items needing the owner's hardware or presence are listed as owner-assisted and do not block.
-Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–4 done 2026-11-09; next: step 5, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
-Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–4 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
+Current stage: **S8 — load, hardening and release (Windows): IN_PROGRESS** (plan in `docs/STAGES.md`, 86fbb7a; step 1 done 2026-11-06, steps 2–5 done 2026-11-09; next: step 6, see "Exact next task"). **S7 DONE (Windows) 2026-11-06** (all 7 steps; owner-assisted items listed in the S7 table). S6 DONE (2026-11-05). New developer: `docs/ONBOARDING.md`.
+Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); S8 = IN_PROGRESS (steps 1–5 of 7 done); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-09 (S8 steps 2–4: groups of 100 under load; media load with accounts; hardening); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-09 (S8 steps 2–5: groups of 100 under load; media load with accounts; hardening; backup/restore); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-09 — S8 step 5: backup, restore and recovery
+
+* `deploy/linux/backup.sh` (pg_dump custom format via peer auth, `.partial` → checked
+  with `pg_restore --list` → renamed, space check, retention 14 days keeping the 3
+  newest), `deploy/linux/restore.sh` (new database only, single transaction, optional
+  owner, then `check-db`), `turbo-pancake-backup.{service,timer}` (daily 03:30,
+  `Persistent`, user postgres) installed by `install-server.sh`.
+* `turbo-pancake-app-server check-db` (`integrity.rs`): read-only JSON report, exit 1 on
+  a broken invariant (10 checks: gap-free sequences, counters, unique change positions,
+  receipts, direct/group membership rules, ≤ 100 members, replies, authors) plus row
+  counts and per-table fingerprints.
+* Reboot order: the server retries an unreachable database for 120 s at start
+  (`database_startup_wait`), the unit never stops restarting (`StartLimitIntervalSec=0`;
+  before, 5 quick failures in 10 s would have made systemd give up).
+* `docs/BACKUP.md`: what is backed up, schedule, **retention cycle of deleted messages:
+  gone from the server's own backups at most 15 days after deletion** (live table files
+  until vacuum, WAL minutes, off-site copies must follow the same 14 days), restore
+  drill, recovery procedure, reboot behaviour.
+* **PASS:** `tests/backup_restore.rs` (real scripts through Git's bash — `bash` on PATH
+  is WSL's here, so the test finds bash next to `git.exe`): data through the API →
+  backup → retention removed exactly the 2 expired dumps → no `.partial` → a message
+  deleted before the backup is not in the dump, one deleted after it is, no plaintext
+  password → restore into a new DB, `check-db` ok, refusal to overwrite → all table
+  fingerprints equal → a second server on the copy serves the same history to the same
+  sessions, login works, the next message is seq 5 → `check-db` exits 1 on a gap.
+  `tests/db_outage.rs` extended: start with the database down gives up after the wait
+  (error, no hang); with a longer wait the server comes up after PostgreSQL returns.
+* Restart/resync after a reboot: covered by the existing `sync.rs` / `messenger.rs`
+  restart tests and the native S7 reconnect trial (not re-run).
+* **UNVERIFIED / owner-assisted:** timer/service on the Linux host, peer auth, the
+  socket URL of `check-db`, a real reboot, dump size/time on real data.
+* **PASS:** fmt; workspace Clippy `-D warnings`; workspace tests via the dev/APM wrapper
+  with `-- --skip own_sound_is_excluded`: **209 passed, 0 failed, 4 ignored, 1 filtered**,
+  54 binaries, real PostgreSQL (log `.local/logs/s8-step5-tests.log`). Local branch only;
+  no push or CI claimed.
 
 ## Session log 2026-11-09 — S8 step 4: hardening
 
@@ -333,7 +369,7 @@ Last session: 2026-11-09 (S8 steps 2–4: groups of 100 under load; media load w
 | 50 publishers / 50 previews, 1 → 50 high viewers with accounts; safe degradation | PASS (step 3, loopback) | `sfu-screen-*-accounts*` and `sfu-50m-accounts-…` reports; `s8-step3-windows-2026-11-09.md` |
 | Media load on the target server (CPU, real uplink) | UNVERIFIED (owner-assisted) | same commands with `--database-url` on the server host; remote viewers for uplink |
 | Hardening (hash concurrency, limits, DB outage, disk full, shutdown) | PASS (step 4; Linux SIGTERM/unit limits and a real full disk owner-assisted) | `tests/{hardening,db_outage}.rs`, `login-burst-*` reports; `s8-step4-windows-2026-11-09.md` |
-| Backup / verified restore / recovery after reboot | NOT_STARTED (step 5) | |
+| Backup / verified restore / recovery after reboot | PASS (step 5, dev machine; timer, real reboot and drill on the server owner-assisted) | `tests/backup_restore.rs`, `tests/db_outage.rs`; `docs/BACKUP.md` |
 | Regression suite | NOT_STARTED (step 6) | |
 | Release package + administration guide | NOT_STARTED (step 7) | |
 
@@ -1220,20 +1256,19 @@ audit green; macOS runner not acquired (cancelled, 0 steps).
 * Local checks need the APM environment (see the 2026-11-03 log): fmt, clippy -D warnings,
   `cargo test --workspace --locked --no-fail-fast` all green.
 
-## Exact next task — S8 step 5: backup, restore and recovery
+## Exact next task — S8 step 6: regression suite
 
-S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–4 are done (loopback / dev machine).
-Next, step 5: a backup script for the Linux server (`deploy/linux/`, `pg_dump -Fc` into
-a dated file, retention, run by a systemd timer), the documented retention cycle for
-deleted messages in backups (spec §7/§12: how long a deleted message can survive in a
-backup), a verified restore into a fresh cluster with a consistency check (users,
-conversations, members, message sequences gap-free, receipts) as an automated test with
-`crates/pg-test` (`pg_dump`/`pg_restore` from `TURBO_PANCAKE_PG_BIN`), and recovery after
-a server restart (service restart: clients reconnect and resync; the restart-and-resync
-part is partly covered by S5–S7 trials — reuse them). Target-server run (timer, real
-dump size/time, restore drill) is owner-assisted. Keep the real system-audio test out of
-the headless baseline (`-- --skip own_sound_is_excluded`). GitHub publishing remains
-unavailable; do not claim a push or CI run.
+S8 plan is in `docs/STAGES.md` (86fbb7a); steps 1–5 are done (dev machine). Next, step 6:
+one script (`benchmarks/scripts/regression.ps1`, Windows) that runs fmt / Clippy / the
+headless test baseline (`-- --skip own_sound_is_excluded`, real PostgreSQL via the dev/APM
+wrapper), the load scenarios in a short form (`messenger --users 100`, `group-load
+--groups 1`, `sfu-screen --accounts` publishers/fanout/budget with small `--n`,
+`sfu --accounts`, `login-burst`) checking each report's `pass`, the release startup
+smoke and the background native trials that are safe under the local GUI rules
+(invisible desktop, no focus/input), and writes one summary report (per item PASS/FAIL,
+durations, log paths) under `.local/logs` plus a sanitized copy for `benchmarks/results`.
+Keep the real system-audio test out. GitHub publishing remains unavailable; do not claim
+a push or CI run.
 
 ## Session log 2026-11-04 (S5 step 7 — TLS; S5 DONE (Windows))
 

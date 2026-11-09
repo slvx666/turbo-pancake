@@ -104,6 +104,8 @@ cat > /etc/systemd/system/turbo-pancake.service <<EOF
 Description=turbo-pancake messenger server
 After=network-online.target postgresql.service
 Wants=network-online.target
+# Keep restarting (the server also waits up to 120 s for PostgreSQL after a reboot).
+StartLimitIntervalSec=0
 
 [Service]
 User=turbo-pancake
@@ -139,8 +141,41 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
     ufw allow "$PORT/udp" >/dev/null
 fi
 
+echo "== backups (docs/BACKUP.md)"
+install -d -m 755 /usr/local/lib/turbo-pancake
+install -m 755 "$SRC/deploy/linux/backup.sh" /usr/local/lib/turbo-pancake/backup.sh
+install -m 755 "$SRC/deploy/linux/restore.sh" /usr/local/lib/turbo-pancake/restore.sh
+install -d -m 700 -o postgres -g postgres /var/backups/turbo-pancake
+cat > /etc/systemd/system/turbo-pancake-backup.service <<EOF
+[Unit]
+Description=turbo-pancake database backup
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Environment=TURBO_PANCAKE_BACKUP_DIR=/var/backups/turbo-pancake
+Environment=TURBO_PANCAKE_BACKUP_KEEP_DAYS=14
+ExecStart=/usr/local/lib/turbo-pancake/backup.sh
+Nice=10
+IOSchedulingClass=idle
+EOF
+cat > /etc/systemd/system/turbo-pancake-backup.timer <<EOF
+[Unit]
+Description=Daily turbo-pancake database backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
 systemctl enable turbo-pancake >/dev/null
+systemctl enable --now turbo-pancake-backup.timer >/dev/null
 systemctl restart turbo-pancake
 sleep 2
 systemctl --no-pager --lines 15 status turbo-pancake
