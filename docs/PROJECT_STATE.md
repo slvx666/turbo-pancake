@@ -7,7 +7,7 @@ Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the o
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; target server PASS incl. reboot; owner-assisted pending: real uplink with remote clients, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-16 (owner-server release 0.1.4 built; server not redeployed); before: 2026-11-15, second part (the open items of the audit: repair window, listeners' loss feedback, stereo share audio, pitch-period delay correction, GPU presentation in the share window, SFU worker process, session module split; ADR 0019, 0020); before: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-16 (owner-server release 0.1.4 built; server redeployed with it); before: 2026-11-15, second part (the open items of the audit: repair window, listeners' loss feedback, stereo share audio, pitch-period delay correction, GPU presentation in the share window, SFU worker process, session module split; ADR 0019, 0020); before: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
 
 ## Session log 2026-11-16 — owner-server release 0.1.4
 
@@ -21,10 +21,16 @@ Last session: 2026-11-16 (owner-server release 0.1.4 built; server not redeploye
 * Checked: the release client on the invisible desktop (first frame, `opaque=true`, clean
   exit); the deployed server answers `/v1/version` over TLS verified with the built-in CA
   (it still runs the previous build, `server_version` 0.1.0).
-* **Not done:** the server was not redeployed (the owner's host; needs their go-ahead).
-  The 0.1.4 client works with the old server; the server-side changes — listeners' loss
-  feedback, the SFU worker process — take effect after `install-server.sh` from this
-  bundle. Installing the client on the owner's own profile and a real call: owner.
+* **Server redeployed (owner's go-ahead, 2026-11-16, over SSH):** nobody was in a call;
+  backup taken first (`turbo-pancake-backup.service`, new dump present); bundle copied,
+  SHA-256 of both files equal to the release's; `install-server.sh` exit 0. After it:
+  service active, `server_version` 0.1.4 from inside and from outside over TLS verified
+  with the built-in CA, `/readyz` 200, **the SFU runs as a worker process on Linux**
+  (`sfu-worker` child in the unit's cgroup, `own_process: true`, `worker_starts` 1), no
+  error lines in the journal since the start.
+* **Not done:** killing the worker on the live server to watch the supervised restart
+  there (not asked for; covered by `tests/remote.rs` on Windows only). Installing the
+  client on the owner's own profile and a real call: owner.
 
 ## Session log 2026-11-15 — the open items of the audit (owner: "fix everything you wrote about")
 
@@ -1139,8 +1145,8 @@ performance results for the target hardware (RTX 4070 Super / M4).
     packets). Drop the copy when upstream makes it a setting. The effect at real round
     trip times is not measured (no delay injection in the tests).
 50. **SFU isolation: done as an option (ADR 0020),** on for deployments made with
-    `install-server.sh`. Still one thread per worker (issue 25); the Linux run with the
-    worker is owner-assisted; clients learn of a restarted worker by timeout only.
+    `install-server.sh`. Still one thread per worker (issue 25); on the target server the
+    worker runs since 2026-11-16 (its restart after a failure was not exercised there); clients learn of a restarted worker by timeout only.
 51. **Voice:** the listeners' downlink loss now reaches the sender; delay correction
     removes pitch periods. Left: audio is not retransmitted; playout keeps the jitter
     target plus 40 ms of device prefill (latency not measured mouth-to-ear); the echo
