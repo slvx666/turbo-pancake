@@ -90,6 +90,10 @@ try {
         closed_hidden = $text -match 'TURBO_PANCAKE_LIFECYCLE closed visible=false'
         restored_visible = $text -match 'TURBO_PANCAKE_LIFECYCLE restored visible=true'
         exit_marker = $text -match 'TURBO_PANCAKE_EXIT'
+        # ADR 0018: the compositor's blend mode is switched off on the first native window
+        # and again on the one Slint creates when the client comes back from the tray.
+        opaque_at_start_and_after_restore = ([regex]::Matches($text, 'TURBO_PANCAKE_WINDOW opaque=true visible=true')).Count -ge 2
+        never_left_blended = -not ($text -match 'TURBO_PANCAKE_WINDOW opaque=false visible=true')
     }
     $tray = ([regex]::Match($text, 'TURBO_PANCAKE_TRAY [^\r\n]*')).Value
     $summary = "backend=$Backend $tray`n$($result -replace ' trace=.*', '')`n" + (($checks.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "`n")

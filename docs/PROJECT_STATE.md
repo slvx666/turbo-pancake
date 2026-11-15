@@ -48,6 +48,18 @@ desktop, no sound). No stage changed; S9 is still next.
   burst. Tests rewritten to the real behaviour before the final run.
 * **Checks:** fmt PASS; workspace Clippy `-D warnings` PASS; workspace tests at idle priority with `--no-fail-fast -- --skip own_sound_is_excluded`: **221 passed, 1 failed, 4 ignored**, 56 binaries, real PostgreSQL (log `.local/logs/fix-tests.log`). The failure, `stun.rs::silent_stun_server_only_delays_the_offer`, also failed on the unchanged tree before the fixes: resolving a name that does not exist takes 11 s on this machine and the call thread resolved STUN hosts with no deadline (a real defect: the offer waited). Fixed (`resolve_within`, bounded by `stun_timeout`); then Clippy PASS again and media-transport + desktop re-run: **52 passed, 0 failed, 1 ignored**, 10 binaries (`.local/logs/fix-tests2.log`). The other crates were not re-run after that last change (a private function of the call thread).
 * **Background trials (invisible desktop, debug client):** startup smoke PASS (first frame 249 ms, software, clean exit); `s7-tray-trial.ps1` PASS (hidden → restored → exit, 0 foreground samples) — both exercise the opaque-window and full-repaint code paths without showing that the picture is right.
+* **Full regression after the fixes (owner request: check everything in the background):**
+  `regression.ps1 -Full` at idle priority, **19 / 19 PASS in 26.9 min**
+  (`benchmarks/results/audit-fixes-regression-windows-2026-11-15.md`): fmt, Clippy, tests
+  **222 passed, 0 failed, 4 ignored, 1 filtered**, 56 binaries; release build; 7 load
+  scenarios (voice 100 %); native trials on the invisible desktop — tray, instance,
+  layout, S6 chat/call, reconnect, update, installer, E2E. New checks inside them: the
+  tray trial requires `TURBO_PANCAKE_WINDOW opaque=true` at start **and on the window
+  re-created after the tray** (8 / 8 checks); the S6 trial requires `realtime=true` and
+  the encoder settings in every real client's call log. These show that the calls take
+  effect in a real client process, not how the window looks or the voice sounds.
+* Owner decision 2026-11-15: commit everything directly to `main` (CLAUDE.local.md
+  updated).
 * **UNVERIFIED / owner-assisted:** everything on screen and by ear — that the window no
   longer shows through after sleep / display change / full screen; the tray notification;
   voice under a real game load with MMCSS; the sound of blended frames and of the
@@ -1068,7 +1080,9 @@ performance results for the target hardware (RTX 4070 Super / M4).
 51. **Voice resilience sees only the sender's own path** (uplink loss from the server's
     reports, own downlink loss); a listener with a bad downlink is covered only by the
     10 % default. A per-listener worst-loss report from the SFU is the exact signal.
-    Audio is not retransmitted; no TURN (issue 16). Delay correction blends frames; a
+    Audio is not retransmitted. TURN is not needed for this topology (the client dials a
+    public ICE-lite server; where UDP is blocked the WebSocket tunnel carries the media,
+    which is what TURN over TCP would do). Delay correction blends frames; a
     time-stretcher would be inaudible. Playout keeps the jitter target plus 40 ms of
     device prefill (latency not measured mouth-to-ear).
 52. **Client structure:** `session.rs` (≈ 2200 lines, one `Core`) mixes signaling, call

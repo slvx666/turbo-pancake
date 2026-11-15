@@ -130,6 +130,9 @@ try {
             if (-not $text.Contains($marker)) { throw "Missing native marker: $name / $marker" }
         }
         if ($text -match 'decode_errors=[1-9]' -or $text -match 'draft_preserved=false') { throw "Native media/draft failure: $name" }
+        # ADR 0018: the voice threads run with audio-class scheduling and the encoder
+        # reports its bitrate and loss resilience in a real client process.
+        if ($text -notmatch ' realtime=true ' -or $text -notmatch ' enc_kbps=(48|60|72) enc_loss_pct=(10|15|20|25|30) ') { throw "Voice scheduling / encoder settings not observed: $name" }
         if ($text -notmatch '(?s)joined=true.*joined=false others=0 media=none' -or $text -notmatch 'messages=2') { throw "Leave/history not observed: $name" }
         $summary += "$name : native_window=PASS; exit=0; peers=$others; played=$played; draft_switch=PASS; snapshot=PASS; history=PASS"
     }

@@ -487,11 +487,22 @@ fn refresh_main(w: &MainWindow) {
     let weak = w.as_weak();
     slint::Timer::single_shot(Duration::from_millis(150), move || {
         if let Some(w) = weak.upgrade() {
-            make_opaque(w.window());
+            let opaque = make_opaque(w.window());
             w.invoke_repaint();
+            // Scripted runs: the mode was switched off on the live native window (after a
+            // restore from the tray that is a new window).
+            if TRIAL_MARKERS.load(std::sync::atomic::Ordering::Relaxed) {
+                println!(
+                    "TURBO_PANCAKE_WINDOW opaque={opaque} visible={}",
+                    w.window().is_visible()
+                );
+            }
         }
     });
 }
+
+/// Smoke and trial runs print machine-readable markers.
+static TRIAL_MARKERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn refresh_share(w: &ShareWindow) {
     make_opaque(w.window());
@@ -1141,6 +1152,10 @@ fn main() -> Result<(), slint::PlatformError> {
     } else {
         None
     };
+    TRIAL_MARKERS.store(
+        smoke.is_some() || args.trial_tray || args.trial_close_after_ms.is_some(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let renderer = Rc::new(Cell::new("software"));
 
     // Software renderer by default (ADR 0002, S7 profiles: idle RAM within the target,
