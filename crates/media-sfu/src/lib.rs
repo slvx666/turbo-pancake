@@ -117,6 +117,9 @@ pub trait PeerSink: Send + 'static {
     fn screen(&mut self, peer: &str, share: Option<ShareInfo>);
     /// The layer of this member's watched share (after a subscribe and on every change).
     fn subscription(&mut self, _sub: &Subscription) {}
+    /// The worst packet loss (0–1) on the way from the server to any *other* member of
+    /// the room: what this member's voice has to survive. Sent when it changes.
+    fn listeners_loss(&mut self, _loss: f32) {}
 }
 
 /// How a member's datagrams travel.
@@ -415,6 +418,10 @@ struct Member {
     /// many viewers.
     last_pli: [Option<Instant>; 2],
     share: Option<ShareInfo>,
+    /// Loss on the leg from the server to this member (its receiver reports), 0–1.
+    down_loss: f32,
+    /// The listeners' loss this member was last told, in percent.
+    told_listeners_loss: Option<u8>,
     /// Whose share this member watches.
     watch: Option<Watch>,
     /// Whose previews this member shows.
@@ -659,6 +666,8 @@ impl Worker {
                                 offers_preview,
                                 video_pts: Vec::new(),
                                 connected: false,
+                                down_loss: 0.0,
+                                told_listeners_loss: None,
                                 next_timeout: Instant::now(),
                                 ssrc,
                                 video_ssrc,
@@ -1218,7 +1227,42 @@ impl Worker {
         }
     }
 
+    /// Tells every member the worst downlink loss among the other members of its room
+    /// (in whole percent, only on change): the sender's voice encoder prepares for it.
+    fn report_listeners_loss(&mut self) {
+        // Per room: the two highest losses and whose the highest is, so each member
+        // gets the maximum over everyone else in one pass.
+        let mut rooms: HashMap<&str, (f32, &str, f32)> = HashMap::new();
+        for (id, m) in self.peers.iter().filter(|(_, m)| m.connected) {
+            let e = rooms.entry(m.room.as_str()).or_insert((0.0, "", 0.0));
+            if m.down_loss > e.0 {
+                *e = (m.down_loss, id.as_str(), e.0);
+            } else if m.down_loss > e.2 {
+                e.2 = m.down_loss;
+            }
+        }
+        let worst: Vec<(PeerId, u8)> = self
+            .peers
+            .iter()
+            .filter(|(_, m)| m.connected)
+            .filter_map(|(id, m)| {
+                let (top, owner, second) = *rooms.get(m.room.as_str())?;
+                let others = if owner == id.as_str() { second } else { top };
+                Some((id.clone(), (others * 100.0).round().clamp(0.0, 100.0) as u8))
+            })
+            .collect();
+        for (id, percent) in worst {
+            if let Some(m) = self.peers.get_mut(&id)
+                && m.told_listeners_loss != Some(percent)
+            {
+                m.told_listeners_loss = Some(percent);
+                m.sink.listeners_loss(f32::from(percent) / 100.0);
+            }
+        }
+    }
+
     fn publish(&mut self) {
+        self.report_listeners_loss();
         self.st.peers = self.peers.len();
         self.st.tunnel_peers = self.peers.values().filter(|m| m.tunnel).count();
         self.st.connected_peers = self.peers.values().filter(|m| m.connected).count();
@@ -1518,6 +1562,11 @@ fn drain_member(
                     if let Some(ssrc) = r.rid.and_then(|rid| rid_ssrc(&rid)) {
                         got.keyframes.push((id.clone(), ssrc));
                     }
+                }
+                Event::PeerStats(s) => {
+                    // Falls slowly: one clean report after a burst is not a clean path.
+                    let loss = s.egress_loss_fraction.unwrap_or(0.0).clamp(0.0, 1.0);
+                    m.down_loss = loss.max(m.down_loss * 0.8);
                 }
                 Event::MediaEgressStats(s) if Some(s.mid) == m.video_mid => {
                     if let (Some(loss), Some(ssrc)) = (s.loss, s.rid.and_then(|r| rid_ssrc(&r))) {

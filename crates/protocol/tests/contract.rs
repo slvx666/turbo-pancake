@@ -422,6 +422,22 @@ fn layer_messages_are_pinned() {
         ]
     );
     assert_eq!(decode_client(&bytes).unwrap(), prev);
+    // ServerEnvelope 35 = VoiceFeedback { 1:"r", 2: 12 }.
+    let fb = v1::ServerEnvelope {
+        protocol_version: 1,
+        request_id: 0,
+        event_id: 9,
+        body: Some(S::VoiceFeedback(v1::VoiceFeedback {
+            room_id: "r".into(),
+            listeners_loss_percent: 12,
+        })),
+    };
+    assert_eq!(
+        encode(&fb),
+        vec![
+            0x08, 0x01, 0x18, 0x09, 0x9A, 0x02, 0x05, 0x0A, 0x01, b'r', 0x10, 0x0C
+        ]
+    );
     // ServerEnvelope 23 = ScreenSubscription { 1:"r", 2:"p", 3: AUTO, 4: LOW, 5: NETWORK }.
     let upd = v1::ServerEnvelope {
         protocol_version: 1,

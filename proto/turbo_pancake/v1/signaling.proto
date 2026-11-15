@@ -78,6 +78,7 @@ message ServerEnvelope {
     ConversationCall call_participant_joined = 32;
     ConversationCall call_participant_left = 33;
     ConversationCall call_ended = 34;
+    VoiceFeedback voice_feedback = 35;
   }
 }
 
@@ -375,6 +376,16 @@ enum LayerReason {
   LAYER_REASON_ADMISSION = 3;
   // The sharer sends one layer only (an S3 client): that one is forwarded.
   LAYER_REASON_SINGLE_LAYER = 4;
+}
+
+// Server -> client: what this member's voice has to survive on its way to the others.
+// Sent to members with a media session when the value changes (whole percent).
+message VoiceFeedback {
+  string room_id = 1;
+  // Worst packet loss on the way from the server to any other member of the room, in
+  // percent (0-100), from their receiver reports. The sender's own uplink is not part of
+  // it: the client sees that in its own RTCP.
+  uint32 listeners_loss_percent = 2;
 }
 
 // Server -> client (spec §11 subscription.updated): the layer this connection receives

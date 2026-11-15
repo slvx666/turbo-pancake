@@ -21,6 +21,7 @@ enum ToClient {
     Track(String, Track, bool),
     Screen(String, Option<ShareInfo>),
     Subscription(Subscription),
+    ListenersLoss(f32),
 }
 
 struct Sink {
@@ -45,6 +46,9 @@ impl PeerSink for Sink {
     fn subscription(&mut self, sub: &Subscription) {
         let _ = self.events.send(ToClient::Subscription(sub.clone()));
     }
+    fn listeners_loss(&mut self, loss: f32) {
+        let _ = self.events.try_send(ToClient::ListenersLoss(loss));
+    }
 }
 
 struct Member {
@@ -61,6 +65,12 @@ struct Member {
 }
 
 fn member(sfu: &Sfu, name: &str, send_loss: f32) -> Member {
+    member_with(sfu, name, send_loss, 0.0)
+}
+
+/// `recv_loss`: share of the datagrams from the server this member never sees (a bad
+/// downlink: its receiver reports show the loss to the server).
+fn member_with(sfu: &Sfu, name: &str, send_loss: f32, recv_loss: f32) -> Member {
     let (events_tx, sfu_events) = sync_channel::<ToClient>(256);
     let (audio, outgoing) = sync_channel::<AudioOut>(16);
     let (video, video_out) = sync_channel::<VideoOut>(8);
@@ -69,6 +79,7 @@ fn member(sfu: &Sfu, name: &str, send_loss: f32) -> Member {
     let sink_rx = received.clone();
     let mut config = CallConfig::new(Role::Offerer, "127.0.0.1:0".parse().unwrap());
     config.send_loss = send_loss;
+    config.recv_loss = recv_loss;
     let (screen_audio, audio_out) = sync_channel::<AudioOut>(16);
     let audio_in: Arc<Mutex<Vec<u32>>> = Arc::default();
     let heard = audio_in.clone();
@@ -395,6 +406,45 @@ fn losses_are_repaired_by_retransmission() {
     println!("viewer {:?}", b.driver.stats());
     println!("SFU {:?}", sfu.stats());
     check_frames(&run, 0.85);
+}
+
+/// The highest listeners' loss `m` was told so far (events already queued).
+fn told_listeners_loss(m: &Member) -> f32 {
+    let mut worst = 0.0f32;
+    while let Ok(ev) = m.sfu_events.try_recv() {
+        if let ToClient::ListenersLoss(l) = ev {
+            worst = worst.max(l);
+        }
+    }
+    worst
+}
+
+#[test]
+fn a_sender_is_told_the_loss_on_its_listeners_downlink() {
+    let sfu = sfu();
+    let a = member(&sfu, "a", 0.0);
+    // 15 % of what the server sends to b is lost on the way.
+    let b = member_with(&sfu, "b", 0.0, 0.15);
+    let (ssrc, rtx, _) = screen_track_of(&b, "a");
+    b.driver.expect_video_source(ssrc, rtx).unwrap();
+    assert!(sfu.share(
+        "a",
+        Some(ShareInfo {
+            width: 1280,
+            height: 720,
+            fps: 60,
+            ..Default::default()
+        })
+    ));
+    assert!(sfu.subscribe("b", Some("a")));
+    std::thread::sleep(Duration::from_millis(200));
+    // Three seconds of traffic towards b: several receiver reports.
+    let _ = share(&a, &b, ssrc, 180);
+    let (to_a, to_b) = (told_listeners_loss(&a), told_listeners_loss(&b));
+    // a hears about b's downlink; b's own loss is not reported back to b, and a's
+    // downlink (which carries next to nothing here) is clean.
+    assert!((0.05..=0.4).contains(&to_a), "a was told {to_a}");
+    assert!(to_b < 0.03, "b was told {to_b}");
 }
 
 /// Every track `viewer` was told about for `peer`, once all four kinds are known.

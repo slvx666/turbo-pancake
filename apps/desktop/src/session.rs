@@ -488,6 +488,8 @@ struct Core {
     share_restarts: RestartBudget,
     /// When to start the share again, and with what.
     share_retry: Option<(Instant, ShareConfig)>,
+    /// Worst loss on the way from the server to the other members (`VoiceFeedback`).
+    listeners_loss: f32,
     /// Voice encoder resilience following the measured loss.
     voice_adapter: LossAdapter,
     voice_adapt_at: Instant,
@@ -572,6 +574,7 @@ impl Core {
         Self {
             share_restarts: RestartBudget::default(),
             share_retry: None,
+            listeners_loss: 0.0,
             voice_adapter: LossAdapter::new(cfg.engine.encoder),
             voice_adapt_at: Instant::now(),
             cfg,
@@ -1507,6 +1510,11 @@ impl Core {
                     self.sync_previews();
                 }
             }
+            S::VoiceFeedback(f) => {
+                if self.joined.as_deref() == Some(f.room_id.as_str()) {
+                    self.listeners_loss = f.listeners_loss_percent.min(100) as f32 / 100.0;
+                }
+            }
             S::ScreenSubscription(sub) => {
                 if self.watching.as_deref() == Some(sub.peer_id.as_str()) {
                     self.layer = Some(LayerState {
@@ -1788,6 +1796,7 @@ impl Core {
             Ok((engine, link)) => {
                 // A new engine starts with the base encoder settings.
                 self.voice_adapter = LossAdapter::new(self.cfg.engine.encoder);
+                self.listeners_loss = 0.0;
                 let route: Arc<Mutex<Option<SyncSender<AudioOut>>>> = Arc::default();
                 let pump_route = route.clone();
                 let outgoing = link.outgoing;
@@ -2039,9 +2048,9 @@ impl Core {
         self.dirty = true;
     }
 
-    /// Once a second: the voice encoder's loss resilience follows the path (spec §4).
-    /// The sender sees its own uplink (what the server reports) and its own downlink;
-    /// the worse of the two stands in for the listeners' paths, which it cannot see.
+    /// Once a second: the voice encoder's loss resilience follows the path (spec §4):
+    /// the worse of our uplink (the server's receiver reports) and the worst downlink
+    /// among the listeners (`VoiceFeedback` from the server).
     fn adapt_voice(&mut self) {
         if self.voice_adapt_at.elapsed() < Duration::from_secs(1) {
             return;
@@ -2051,10 +2060,7 @@ impl Core {
             return;
         };
         let st = m.driver.stats();
-        let loss = st
-            .egress_loss
-            .unwrap_or(0.0)
-            .max(st.ingress_loss.unwrap_or(0.0));
+        let loss = st.egress_loss.unwrap_or(0.0).max(self.listeners_loss);
         if let Some(cfg) = self.voice_adapter.update(loss) {
             let _ = a.engine.set_encoder(cfg);
         }

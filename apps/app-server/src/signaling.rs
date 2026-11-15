@@ -149,6 +149,16 @@ impl PeerSink for WsSink {
         );
     }
 
+    fn listeners_loss(&mut self, loss: f32) {
+        self.handle.send(
+            0,
+            S::VoiceFeedback(v1::VoiceFeedback {
+                room_id: self.room.clone(),
+                listeners_loss_percent: (loss * 100.0).round().clamp(0.0, 100.0) as u32,
+            }),
+        );
+    }
+
     fn subscription(&mut self, sub: &Subscription) {
         self.handle.send(
             0,

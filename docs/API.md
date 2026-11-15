@@ -271,6 +271,7 @@ with four m-lines (an S3 client would read an unknown kind as audio).
 | Event | Meaning |
 |---|---|
 | `ScreenShareState{…, bitrate_kbps, preview}` | `preview`: a preview layer can be received for this share. |
+| `VoiceFeedback{room_id, listeners_loss_percent}` | The worst packet loss (percent) on the way from the server to any *other* member of the room, from their receiver reports, smoothed (falls by a fifth per report). Sent to a member with a media session when the value changes. The client prepares its voice encoder for it (expected loss 10–30 %, ADR 0018); clients that do not know the message ignore it. |
 | `ScreenSubscription{room_id, peer_id, requested, layer, reason}` | spec §11 `subscription.updated`: the layer (`HIGH`/`LOW`) the watched share flows with now or after the pending switch, and why: `REQUESTED(1)`, `NETWORK(2)` (auto, ≥ 8 % loss in two receiver reports or ≥ 20 % in one; back up after 8 clean reports and a hold that doubles after a failed probe, 8–64 s), `ADMISSION(3)` (server budget `--max-high-egress-mbps` used up; earlier subscriptions keep theirs), `SINGLE_LAYER(4)` (the sharer sends no preview). Sent after every `SubscribeScreen` and on every change. |
 
 ### Error codes
