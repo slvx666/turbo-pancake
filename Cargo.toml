@@ -67,6 +67,8 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # WebRTC APM build fixes for Windows/MSVC (third_party/webrtc-audio-processing-sys/README.md).
 [patch.crates-io]
 webrtc-audio-processing-sys = { path = "third_party/webrtc-audio-processing-sys/crate" }
+# Wider NACK / repair window for high-bitrate screen shares (third_party/str0m/README.md).
+str0m = { path = "third_party/str0m/crate" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
