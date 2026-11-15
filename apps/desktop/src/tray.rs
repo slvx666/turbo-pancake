@@ -10,6 +10,9 @@ pub enum TrayEvent {
     Open,
     /// "Выйти" in the menu.
     Exit,
+    /// The display configuration changed, the machine woke up or desktop composition
+    /// restarted: window surfaces may have been discarded, so windows repaint in full.
+    Refresh,
 }
 
 pub use imp::{Tray, signal_running};
@@ -30,7 +33,8 @@ mod imp {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Shell::{
-        NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+        NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+        NOTIFYICONDATAW, Shell_NotifyIconW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW,
@@ -39,8 +43,9 @@ mod imp {
         LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE, PeekMessageW,
         PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON,
         SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-        WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-        WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+        WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DISPLAYCHANGE,
+        WM_DWMCOMPOSITIONCHANGED, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST,
+        WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
     use windows::core::{PCWSTR, w};
 
@@ -50,6 +55,9 @@ mod imp {
     const WM_TRAY: u32 = WM_APP + 1;
     const ID_OPEN: usize = 1;
     const ID_EXIT: usize = 2;
+    /// `WM_POWERBROADCAST` wParam: resumed from sleep (by the user / automatically).
+    const PBT_APMRESUMESUSPEND: usize = 0x0007;
+    const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
     const CLASS: PCWSTR = w!("turbo-pancake-tray");
 
     struct Entry {
@@ -123,7 +131,15 @@ mod imp {
             }
             return LRESULT(0);
         }
+        // Broadcasts to top-level windows after which the compositor may have dropped the
+        // windows' surfaces; the app windows then repaint in full.
+        let resumed = msg == WM_POWERBROADCAST
+            && matches!(wp.0, PBT_APMRESUMESUSPEND | PBT_APMRESUMEAUTOMATIC);
+        if msg == WM_DISPLAYCHANGE || msg == WM_DWMCOMPOSITIONCHANGED || resumed {
+            dispatch(hwnd, TrayEvent::Refresh);
+        }
         if msg == taskbar_created() {
+            dispatch(hwnd, TrayEvent::Refresh);
             let data = ENTRIES.with(|e| e.borrow().get(&(hwnd.0 as isize)).and_then(|e| e.data));
             if let Some(d) = data {
                 let _ = unsafe { Shell_NotifyIconW(NIM_ADD, &d) };
@@ -308,12 +324,36 @@ mod imp {
             self.shown
         }
 
+        /// Shows a notification balloon at the icon (no-op without an icon), e.g. the
+        /// one-time hint that closing the window keeps the app running here.
+        pub fn notify(&self, title: &str, text: &str) {
+            if !self.shown {
+                return;
+            }
+            let mut d = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: self.hwnd,
+                uID: 1,
+                uFlags: NIF_INFO,
+                dwInfoFlags: NIIF_INFO,
+                ..Default::default()
+            };
+            for (dst, src) in d.szInfoTitle.iter_mut().zip(title.encode_utf16().take(63)) {
+                *dst = src;
+            }
+            for (dst, src) in d.szInfo.iter_mut().zip(text.encode_utf16().take(255)) {
+                *dst = src;
+            }
+            let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &d) };
+        }
+
         /// Queues the message a click on the icon (`Open`) or on the menu's "Выйти"
         /// (`Exit`) would send; it is handled by the message loop like the real one.
         pub fn post(&self, event: TrayEvent) {
             let (msg, wp, lp) = match event {
                 TrayEvent::Open => (WM_TRAY, 0, WM_LBUTTONUP as isize),
                 TrayEvent::Exit => (WM_COMMAND, ID_EXIT, 0),
+                TrayEvent::Refresh => (WM_DISPLAYCHANGE, 0, 0),
             };
             let _ = unsafe { PostMessageW(Some(self.hwnd), msg, WPARAM(wp), LPARAM(lp)) };
         }
@@ -367,6 +407,7 @@ mod imp {
             false
         }
         pub fn post(&self, _event: TrayEvent) {}
+        pub fn notify(&self, _title: &str, _text: &str) {}
     }
 
     pub fn signal_running(_instance: &str) -> Option<u32> {
@@ -393,13 +434,17 @@ mod tests {
         .unwrap();
         assert!(!tray.icon_shown());
         tray.post(TrayEvent::Open);
+        tray.post(TrayEvent::Refresh);
         tray.post(TrayEvent::Exit);
         pump_pending();
-        assert_eq!(*seen.borrow(), [TrayEvent::Open, TrayEvent::Exit]);
+        assert_eq!(
+            *seen.borrow(),
+            [TrayEvent::Open, TrayEvent::Refresh, TrayEvent::Exit]
+        );
         drop(tray);
         // A dropped tray's window is gone: nothing is delivered any more.
         pump_pending();
-        assert_eq!(seen.borrow().len(), 2);
+        assert_eq!(seen.borrow().len(), 3);
     }
 
     #[test]

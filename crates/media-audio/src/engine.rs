@@ -289,6 +289,65 @@ pub struct EngineStatus {
     pub dsp: DspConfig,
     pub dsp_available: bool,
     pub dsp_stats: DspStats,
+    /// The worker runs with audio-class scheduling ([`crate::rt`]).
+    pub realtime: bool,
+    /// The encoder's current target bitrate (bits/s) and the loss it is prepared for
+    /// (percent); both follow the network ([`crate::LossAdapter`]).
+    pub encoder_bitrate: i32,
+    pub encoder_loss_percent: i32,
+    /// 20 ms ticks in which the mix had to be turned down to avoid clipping.
+    pub limited_ticks: u64,
+}
+
+/// Keeps the sum of several voices below full scale without clipping it: the gain drops
+/// within 5 ms when a tick would exceed the ceiling and recovers slowly.
+struct Limiter {
+    gain: f32,
+}
+
+impl Limiter {
+    /// −1 dBFS.
+    const CEILING: f32 = 0.891;
+    const ATTACK_SAMPLES: usize = (CODEC_RATE / 200) as usize;
+    /// Gain regained per 20 ms tick (full recovery from −12 dB in about 300 ms).
+    const RELEASE_PER_TICK: f32 = 0.05;
+
+    fn new() -> Self {
+        Self { gain: 1.0 }
+    }
+
+    /// Returns whether the tick was turned down.
+    fn process(&mut self, frame: &mut [f32]) -> bool {
+        let peak = frame.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let needed = if peak > Self::CEILING {
+            Self::CEILING / peak
+        } else {
+            1.0
+        };
+        let from = self.gain;
+        let (to, ramp) = if needed < from {
+            (needed, Self::ATTACK_SAMPLES.min(frame.len()).max(1))
+        } else {
+            (
+                (from + Self::RELEASE_PER_TICK).min(needed),
+                frame.len().max(1),
+            )
+        };
+        if from == 1.0 && to == 1.0 {
+            return false;
+        }
+        for (i, s) in frame.iter_mut().enumerate() {
+            let g = if i < ramp {
+                from + (to - from) * (i as f32 / ramp as f32)
+            } else {
+                to
+            };
+            // The clamp only catches a peak inside the attack ramp.
+            *s = (*s * g).clamp(-1.0, 1.0);
+        }
+        self.gain = to;
+        true
+    }
 }
 
 enum Command {
@@ -352,6 +411,8 @@ impl AudioEngine {
                         mic_db: -100.0,
                         dsp: config.dsp,
                         dsp_available: DSP_AVAILABLE,
+                        encoder_bitrate: config.encoder.bitrate,
+                        encoder_loss_percent: config.encoder.expected_loss_percent,
                         ..EngineStatus::default()
                     },
                     input_retry: None,
@@ -359,6 +420,7 @@ impl AudioEngine {
                     past_input_xruns: 0,
                     past_output_xruns: 0,
                     past_backend_xruns: 0,
+                    limiter: Limiter::new(),
                     wall_tick: None,
                     epoch: Instant::now(),
                     mix: vec![0.0; FRAME_SAMPLES],
@@ -479,6 +541,7 @@ struct Worker {
     past_input_xruns: u64,
     past_output_xruns: u64,
     past_backend_xruns: u64,
+    limiter: Limiter,
     /// Wall-clock playout while no output device is open.
     wall_tick: Option<Instant>,
     epoch: Instant,
@@ -490,6 +553,8 @@ struct Worker {
 
 impl Worker {
     fn run(mut self, ready: SyncSender<()>) {
+        // Before the devices open: the first frames already need the CPU on time.
+        self.st.realtime = crate::rt::boost_current_thread();
         self.sender.set_muted(self.config.muted);
         self.sender.set_voice_gate(self.config.voice_gate);
         self.dsp.set_muted(self.config.muted);
@@ -575,11 +640,13 @@ impl Worker {
                     self.dsp.set_config(cfg);
                     self.st.dsp = cfg;
                 }
-                Ok(Command::SetEncoder(cfg)) => {
-                    if let Err(e) = self.sender.encoder().apply(cfg) {
-                        self.st.last_error = Some(e.to_string());
+                Ok(Command::SetEncoder(cfg)) => match self.sender.encoder().apply(cfg) {
+                    Ok(()) => {
+                        self.st.encoder_bitrate = cfg.bitrate;
+                        self.st.encoder_loss_percent = cfg.expected_loss_percent;
                     }
-                }
+                    Err(e) => self.st.last_error = Some(e.to_string()),
+                },
             }
         }
     }
@@ -772,8 +839,8 @@ impl Worker {
                 *m += s;
             }
         }
-        for m in &mut self.mix {
-            *m = m.clamp(-1.0, 1.0);
+        if self.limiter.process(&mut self.mix) {
+            self.st.limited_ticks += 1;
         }
         if to_speaker {
             self.dsp.analyze_render(&self.mix)?;
@@ -857,5 +924,53 @@ impl Worker {
         if let Ok(mut s) = self.status.lock() {
             s.clone_from(&self.st);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limiter_leaves_normal_levels_alone() {
+        let mut l = Limiter::new();
+        let mut frame: Vec<f32> = (0..FRAME_SAMPLES)
+            .map(|i| 0.5 * (i as f32 * 0.05).sin())
+            .collect();
+        let before = frame.clone();
+        assert!(!l.process(&mut frame));
+        assert_eq!(frame, before);
+    }
+
+    #[test]
+    fn limiter_turns_a_loud_mix_down_without_clipping_and_recovers() {
+        let mut l = Limiter::new();
+        // Three voices at full scale: peak 3.0.
+        let loud = |n: usize| -> Vec<f32> {
+            (0..FRAME_SAMPLES)
+                .map(|i| 3.0 * ((n * FRAME_SAMPLES + i) as f32 * 0.05).sin())
+                .collect()
+        };
+        let mut first = loud(0);
+        assert!(l.process(&mut first));
+        assert!(first.iter().all(|s| s.abs() <= 1.0));
+        // From the second tick on the wave keeps its shape: scaled, not flattened.
+        let mut second = loud(1);
+        l.process(&mut second);
+        let peak = second.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!((peak - Limiter::CEILING).abs() < 0.01, "peak {peak}");
+        let flat = second.iter().filter(|s| s.abs() >= 0.999).count();
+        assert_eq!(flat, 0, "clipped samples");
+        // Quiet again: the gain comes back within half a second.
+        let mut ticks = 0;
+        loop {
+            let mut quiet = vec![0.1f32; FRAME_SAMPLES];
+            if !l.process(&mut quiet) {
+                break;
+            }
+            ticks += 1;
+            assert!(ticks < 25, "gain never recovered");
+        }
+        assert!(ticks >= 5, "recovered too abruptly: {ticks} ticks");
     }
 }

@@ -16,6 +16,8 @@ pub struct AppSettings {
     pub dark_theme: bool,
     /// Interface scale on top of the system DPI, percent (100–200); applied at start.
     pub ui_scale: u32,
+    /// The one-time notification "the app keeps running in the tray" was shown.
+    pub tray_hint_shown: bool,
 }
 
 impl Default for AppSettings {
@@ -24,6 +26,7 @@ impl Default for AppSettings {
             close_to_tray: true,
             dark_theme: true,
             ui_scale: 100,
+            tray_hint_shown: false,
         }
     }
 }
@@ -53,6 +56,7 @@ impl AppSettings {
                 }
                 "close_to_tray" => s.close_to_tray = value.unwrap_or(s.close_to_tray),
                 "dark_theme" => s.dark_theme = value.unwrap_or(s.dark_theme),
+                "tray_hint_shown" => s.tray_hint_shown = value.unwrap_or(s.tray_hint_shown),
                 _ => {}
             }
         }
@@ -61,8 +65,9 @@ impl AppSettings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# turbo-pancake settings\nclose_to_tray={}\ndark_theme={}\nui_scale={}\n",
-            self.close_to_tray, self.dark_theme, self.ui_scale
+            "# turbo-pancake settings\nclose_to_tray={}\ndark_theme={}\nui_scale={}\n\
+             tray_hint_shown={}\n",
+            self.close_to_tray, self.dark_theme, self.ui_scale, self.tray_hint_shown
         )
     }
 
@@ -104,6 +109,7 @@ mod tests {
             close_to_tray: false,
             dark_theme: false,
             ui_scale: 150,
+            tray_hint_shown: true,
         };
         assert_eq!(AppSettings::parse(&s.to_text()), s);
         assert_eq!(AppSettings::parse(""), AppSettings::default());

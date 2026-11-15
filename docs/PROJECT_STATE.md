@@ -7,7 +7,54 @@ Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the o
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; target server PASS incl. reboot; owner-assisted pending: real uplink with remote clients, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-15 — audit and fixes (owner request, ADR 0018)
+
+The owner asked for a full review ("the interface can disappear / turn transparent";
+voice and screen shares must be flawless), then for the findings to be fixed in the
+background while the machine was in use (builds at idle priority, no GUI on the user's
+desktop, no sound). No stage changed; S9 is still next.
+
+* **Audit (read-only):** spec, state, ADRs, client, audio, transport, SFU, video; server
+  and messenger in part. Findings are the fixes below plus known issues 47–53.
+* **See-through window (found in the dependencies' code, not reproduced on screen):**
+  Slint creates Windows windows transparent, winit enables DWM blur-behind, the software
+  renderer repaints only changed regions. Fixed: windows created opaque and blur-behind
+  switched off after every show (`opaque.rs`; Slint re-creates a hidden window without
+  our hook); full repaint after show / focus / display change / resume / compositor or
+  shell restart (the tray window receives those broadcasts → `TrayEvent::Refresh`); the
+  same for the share window, also on entering full screen. One-time tray notification
+  when the window is first closed to the tray (`tray_hint_shown` in the settings file).
+* **Voice:** MMCSS "Pro Audio" for `tp-audio`, `tp-audio-pump`, `tp-call`,
+  `tp-system-audio` (`media_audio::rt`, `CallConfig::thread_init`); the engine reports
+  `realtime`. Opus 32 → 48 kbit/s, expected loss 5 → 10 %; `LossAdapter` (10–30 % in
+  steps of 5, bitrate +25 / +50 %) driven once a second by the worse of uplink and
+  downlink loss — `set_encoder` was never called before (spec §4 MUST). Jitter buffer:
+  excess delay removed by skipping a hole or by `Playout::Merge` (two frames blended in
+  one tick) instead of discarding a frame; a real frame is no longer dropped next to a
+  hole. Mix limiter instead of hard clipping. Status line and `TURBO_PANCAKE_CALL` log
+  show `realtime`, encoder bitrate / expected loss, `limited_ticks`.
+* **Screen share:** a pipeline that stops on its own (resolution change, device lost) is
+  restarted, 3 attempts per minute (`RestartBudget`); an explicit stop cancels it.
+* **UI:** the message list is updated in place (`sync_messages`: append / prepend /
+  changed rows) instead of being rebuilt on every message and receipt.
+* **SFU:** the two `expect`s on the SFU thread are gone (release builds abort on panic,
+  and the SFU shares the server process).
+* **Docs:** `ARCHITECTURE.md` rewritten to the current state (it described S0–S1);
+  ADR 0018.
+* **Mistake in this session's own tests:** three new jitter tests first assumed a burst
+  shortens the delay at once; the buffer (correctly) first raises its target after a
+  burst. Tests rewritten to the real behaviour before the final run.
+* **Checks:** fmt PASS; workspace Clippy `-D warnings` PASS; workspace tests at idle priority with `--no-fail-fast -- --skip own_sound_is_excluded`: **221 passed, 1 failed, 4 ignored**, 56 binaries, real PostgreSQL (log `.local/logs/fix-tests.log`). The failure, `stun.rs::silent_stun_server_only_delays_the_offer`, also failed on the unchanged tree before the fixes: resolving a name that does not exist takes 11 s on this machine and the call thread resolved STUN hosts with no deadline (a real defect: the offer waited). Fixed (`resolve_within`, bounded by `stun_timeout`); then Clippy PASS again and media-transport + desktop re-run: **52 passed, 0 failed, 1 ignored**, 10 binaries (`.local/logs/fix-tests2.log`). The other crates were not re-run after that last change (a private function of the call thread).
+* **Background trials (invisible desktop, debug client):** startup smoke PASS (first frame 249 ms, software, clean exit); `s7-tray-trial.ps1` PASS (hidden → restored → exit, 0 foreground samples) — both exercise the opaque-window and full-repaint code paths without showing that the picture is right.
+* **UNVERIFIED / owner-assisted:** everything on screen and by ear — that the window no
+  longer shows through after sleep / display change / full screen; the tray notification;
+  voice under a real game load with MMCSS; the sound of blended frames and of the
+  limiter; a share restart on a real resolution change. No release build was made.
+* **Not done, with reasons (known issues 48–53):** GPU picture path for the viewer;
+  str0m's repair window; stereo system audio at the viewer; SFU as its own process;
+  per-listener loss feedback; TURN.
 
 ## Session log 2026-11-09 — application icon, release 0.1.3, publishing
 
@@ -869,7 +916,7 @@ performance results for the target hardware (RTX 4070 Super / M4).
 12. Output startup underrun ≈ 22 ms before the first decoded frame in `device_check`; the
     engine now prefills 40 ms of silence, remaining output xruns ≈ 7 ms per stream open.
 13. **cpal reports non-fatal events through the error callback** (WASAPI capture discontinuity → `ErrorKind::Xrun`). Treating them as fatal caused a reopen storm (213 reopens / 10 s). Fixed in `device.rs`; only device/stream-level kinds mark a stream failed.
-14. Physical unplug and sleep/wake are not tested on real hardware (only simulated devices); engine thread runs at default OS priority.
+14. Physical unplug and sleep/wake are not tested on real hardware (only simulated devices). The engine thread ran at default OS priority until 2026-11-15; it now registers with MMCSS (ADR 0018), effect under a real game load UNVERIFIED.
 15. Desktop release exe grew 9.1 → 17.9 MiB (APM, str0m/aws-lc, Tokio, Slint std-widgets); installer ≤ 30 MB target to be measured in S7.
 16. Media: host + server-reflexive (STUN) candidates since 2026-11-02; no TURN, so symmetric NAT / CGNAT on both sides cannot connect. In the trial `rx_peak` stayed 0.000 with remote volume 0 although B's mic peak was 0.05 — the peak is measured after the volume; audible quality needs an owner-assisted trial.
 17. **Historical S1 limitation, closed by S2/S6:** group media supports multiple members;
@@ -1002,6 +1049,33 @@ performance results for the target hardware (RTX 4070 Super / M4).
     compiled or run on this Windows machine (CI is Windows-only until S9). Check on the
     Linux host: `systemctl restart turbo-pancake` logs "shutdown requested" … "stopped";
     `systemd-analyze verify /etc/systemd/system/turbo-pancake.service`. Owner-assisted.
+47. **See-through / vanishing window (owner report 2026-11-15): fixed by ADR 0018, on
+    screen UNVERIFIED.** Cause read from Slint / winit / softbuffer sources (transparent
+    window attribute + DWM blur-behind + partial software repaint). If it still happens,
+    note what preceded it (sleep, monitor change, full screen, game) and whether moving
+    the mouse brings pieces back; `SLINT_BACKEND=winit-femtovg` is the comparison run.
+48. **Viewer picture path is the limit for 1440p120:** decoded frames are read back,
+    converted on the CPU and scaled by the software renderer on the UI thread; the
+    picture timer is 16 ms, so at most ≈ 60 fps are shown (S7: 130 % of a core at
+    1440p120). Needs the GPU path (texture import with the OpenGL renderer or an own
+    swap chain) and a display to verify it on.
+49. **str0m `MAX_MISORDER = 100` (issue 31) is a constant, not a setting:** widening the
+    repair window needs a vendored patch or our own NACK/RTX. Open.
+50. **SFU isolation:** one thread inside `app-server` for all rooms (spec §3 asks for an
+    isolated media service); with `panic = "abort"` a panic there ends the chats too. Its
+    `expect`s are removed; a separate process is open work. Per-packet work scans every
+    member (fine at the measured loads, see S8).
+51. **Voice resilience sees only the sender's own path** (uplink loss from the server's
+    reports, own downlink loss); a listener with a bad downlink is covered only by the
+    10 % default. A per-listener worst-loss report from the SFU is the exact signal.
+    Audio is not retransmitted; no TURN (issue 16). Delay correction blends frames; a
+    time-stretcher would be inaudible. Playout keeps the jitter target plus 40 ms of
+    device prefill (latency not measured mouth-to-ear).
+52. **Client structure:** `session.rs` (≈ 2200 lines, one `Core`) mixes signaling, call
+    control, share, viewing and adaptation; `main.rs` carries ≈ 60 trial flags in the
+    production binary. Refactoring candidates, no defect known.
+53. **`CLAUDE.local.md` (untracked) still says the branch is local-only;** the branch is
+    pushed and equal to `main` since 2026-11-09. The owner's file, not edited here.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`

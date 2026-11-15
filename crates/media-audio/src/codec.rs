@@ -22,12 +22,72 @@ pub struct EncoderConfig {
 impl Default for EncoderConfig {
     fn default() -> Self {
         Self {
-            bitrate: 32_000,
+            // Fullband mono speech with room for the in-band FEC copy.
+            bitrate: 48_000,
             fec: true,
             dtx: false,
-            expected_loss_percent: 5,
+            // A single lost packet is recoverable for every listener even before any
+            // loss was measured (the sender only sees its own path, see `LossAdapter`).
+            expected_loss_percent: 10,
             complexity: 9,
         }
+    }
+}
+
+/// Follows the measured packet loss with the encoder's loss resilience (spec §4:
+/// dynamic bitrate / resilience, continuity before quality): more loss → a stronger
+/// in-band FEC copy and the bits to carry it. Rises at once, falls slowly, moves in
+/// steps of 5 % so the encoder is not reconfigured on every report.
+#[derive(Debug, Clone)]
+pub struct LossAdapter {
+    base: EncoderConfig,
+    current: EncoderConfig,
+    /// Loss the encoder is prepared for, 0–1 (decays between reports).
+    held: f32,
+}
+
+impl LossAdapter {
+    /// Most loss the encoder is told to expect, percent.
+    pub const MAX_PERCENT: i32 = 30;
+
+    pub fn new(base: EncoderConfig) -> Self {
+        Self {
+            base,
+            current: base,
+            held: 0.0,
+        }
+    }
+
+    pub fn current(&self) -> EncoderConfig {
+        self.current
+    }
+
+    /// `loss`: share of packets lost on the path in the last report window (0–1); call
+    /// about once a second. Returns the configuration to apply when it changed.
+    pub fn update(&mut self, loss: f32) -> Option<EncoderConfig> {
+        let loss = if loss.is_finite() {
+            loss.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // Up at once, down by a tenth per report: bursts come back.
+        self.held = loss.max(self.held * 0.9);
+        // Headroom: the next window is rarely better than the last one.
+        let wanted = (self.held * 150.0).ceil() as i32;
+        let step = (wanted + 4) / 5 * 5;
+        let percent = step.clamp(self.base.expected_loss_percent, Self::MAX_PERCENT);
+        let mut next = self.base;
+        next.expected_loss_percent = percent;
+        // The FEC copy takes its bits from the main signal: give them back.
+        if percent >= 25 {
+            next.bitrate = self.base.bitrate + self.base.bitrate / 2;
+        } else if percent >= 15 {
+            next.bitrate = self.base.bitrate + self.base.bitrate / 4;
+        }
+        (next != self.current).then(|| {
+            self.current = next;
+            next
+        })
     }
 }
 
@@ -151,7 +211,36 @@ mod tests {
             "{level} vs {expected}"
         );
         let kbps = bytes as f32 * 8.0 / 2.0 / 1000.0;
-        assert!(kbps > 16.0 && kbps < 48.0, "{kbps} kbit/s");
+        assert!(kbps > 24.0 && kbps < 64.0, "{kbps} kbit/s");
+    }
+
+    #[test]
+    fn loss_adapter_rises_at_once_and_falls_slowly() {
+        let base = EncoderConfig::default();
+        let mut a = LossAdapter::new(base);
+        // A clean path changes nothing.
+        assert_eq!(a.update(0.0), None);
+        assert_eq!(a.update(0.02), None, "within the default resilience");
+        // 12 % loss: prepared for 20 % at once, with more bits.
+        let up = a.update(0.12).expect("reconfigured");
+        assert_eq!(up.expected_loss_percent, 20);
+        assert_eq!(up.bitrate, base.bitrate + base.bitrate / 4);
+        assert!(up.fec);
+        // Heavy loss is capped.
+        let top = a.update(0.6).expect("reconfigured");
+        assert_eq!(top.expected_loss_percent, LossAdapter::MAX_PERCENT);
+        assert_eq!(top.bitrate, base.bitrate + base.bitrate / 2);
+        // The path recovers: not back at once, back to the base eventually.
+        assert_eq!(a.update(0.0), None, "held after one clean report");
+        let mut steps = 0;
+        while a.current() != base {
+            a.update(0.0);
+            steps += 1;
+            assert!(steps < 60, "never came back");
+        }
+        assert!(steps >= 10, "came back after only {steps} reports");
+        // Garbage in the statistics is ignored.
+        assert_eq!(a.update(f32::NAN), None);
     }
 
     #[test]

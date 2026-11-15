@@ -6,8 +6,10 @@
 //!   continuity wins over latency: a gap never stalls playout (spec §4).
 //! * The target delay follows the observed spread of packet transit times over a sliding
 //!   window (≈ p95 − min, plus a safety margin), so it grows quickly under jitter and
-//!   shrinks again on a calm network. Excess delay is removed by dropping frames one at a
-//!   time, which also absorbs sender/receiver clock drift.
+//!   shrinks again on a calm network. Excess delay is removed one frame at a time, which
+//!   also absorbs sender/receiver clock drift: a hole is skipped for free, otherwise two
+//!   consecutive frames are handed out for one tick ([`Playout::Merge`]) and the receiver
+//!   blends them, so the correction is not a cut in the sound.
 //! * Transit times use the RTP timestamp, not the sequence number: a sender with voice
 //!   activation stops sending in pauses and continues the sequence numbers afterwards, so
 //!   only the timestamp shows the gap. A packet whose timestamp jumped ahead of its
@@ -55,6 +57,9 @@ pub enum Playout {
     Buffering,
     /// The packet for this tick.
     Packet(Vec<u8>),
+    /// Too much delay: this tick's packet and the next one, to be played within one tick
+    /// (the receiver drops the first if it is silent, else blends the two).
+    Merge(Vec<u8>, Vec<u8>),
     /// This tick's packet is missing but the next one is here: decode it with FEC.
     Fec(Vec<u8>),
     /// Nothing usable: run packet loss concealment.
@@ -305,11 +310,25 @@ impl JitterBuffer {
         self.empty_ticks = 0;
 
         let mut next = next;
-        // Too much delay (burst after a stall, or drift): drop one frame per tick.
+        // Too much delay (burst after a stall, or drift): remove one frame per tick.
         if highest - next + 1 > self.target_frames + 2 {
-            self.take(next);
-            self.stats.dropped += 1;
-            next += 1;
+            if self.peek(next).is_some() && self.peek(next + 1).is_some() {
+                // Both are here: one tick plays the two, blended by the receiver.
+                self.stats.dropped += 1;
+                self.stats.played += 1;
+                self.next = Some(next + 2);
+                return match (self.take(next), self.take(next + 1)) {
+                    (Some(a), Some(b)) => Playout::Merge(a, b),
+                    // Unreachable (both were just seen); keep the clock running.
+                    _ => Playout::Lost,
+                };
+            }
+            if self.peek(next).is_none() {
+                // A hole: leaving it out loses no sound.
+                self.stats.dropped += 1;
+                next += 1;
+            }
+            // Otherwise this frame plays as it is and a later tick corrects.
         }
         self.next = Some(next + 1);
         if let Some(p) = self.take(next) {
@@ -524,5 +543,50 @@ mod tests {
         }
         assert_eq!(played, (0..10u16).collect::<Vec<_>>());
         assert_eq!(jb.stats().talkspurts, 1);
+    }
+
+    #[test]
+    fn excess_delay_is_removed_by_merging_two_frames_not_by_cutting_one() {
+        let mut jb = JitterBuffer::new(JitterConfig::default());
+        // Twelve frames wait in the buffer although the path is steady (the playout side
+        // stalled, or the clocks drifted): steady arrivals keep the target small.
+        for seq in 0..12u16 {
+            jb.insert(seq, vec![seq as u8], u64::from(seq) * 20);
+        }
+        let mut merged = 0;
+        let mut payloads = Vec::new();
+        for _ in 0..12 {
+            match jb.pop() {
+                Playout::Packet(p) => payloads.push(p[0]),
+                Playout::Merge(a, b) => {
+                    assert_eq!(b[0], a[0] + 1, "two consecutive frames");
+                    payloads.extend([a[0], b[0]]);
+                    merged += 1;
+                }
+                Playout::Lost | Playout::Buffering => break,
+                Playout::Fec(_) => panic!("nothing was lost"),
+            }
+        }
+        assert!(merged >= 1, "the burst was never shortened");
+        // Every frame reached the decoder exactly once, in order.
+        assert_eq!(payloads, (0..12u8).collect::<Vec<_>>());
+        let st = jb.stats();
+        assert_eq!(st.dropped, merged);
+        assert_eq!(st.played + st.dropped, 12);
+    }
+
+    #[test]
+    fn a_hole_is_what_gets_removed_when_there_is_one() {
+        let mut jb = JitterBuffer::new(JitterConfig::default());
+        jb.insert(0, vec![0], 0);
+        for seq in 2..14u16 {
+            jb.insert(seq, vec![seq as u8], u64::from(seq) * 20);
+        }
+        // Frame 0 has no successor yet: it plays as it is.
+        assert_eq!(jb.pop(), Playout::Packet(vec![0]));
+        // The missing frame 1 is the frame to leave out: no sound is lost for it.
+        assert_eq!(jb.pop(), Playout::Packet(vec![2]));
+        let st = jb.stats();
+        assert_eq!((st.dropped, st.fec, st.concealed), (1, 0, 0), "{st:?}");
     }
 }

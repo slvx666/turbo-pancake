@@ -1,82 +1,139 @@
 # Architecture
 
 Source of requirements: `TECHNICAL_SPEC_MESSENGER_RU.md` v1.0 (kept outside the repo by the
-owner; sections referenced as §N). This file describes what exists **now** and where
-the planned pieces will go.
+owner; sections referenced as §N). This file describes what exists **now** (Windows, S0–S8
+done; macOS and Linux are stage S9, ADR 0012). Status and evidence: `PROJECT_STATE.md`.
 
-## Workspace layout (actual)
+## Workspace layout
 
 ```text
 turbo-pancake/
-├─ Cargo.toml                 workspace, shared deps, release profile
-├─ rust-toolchain.toml        pinned toolchain (1.99.1)
+├─ Cargo.toml                 workspace, shared deps, lints (unsafe denied), profiles
+├─ rust-toolchain.toml        pinned toolchain
 ├─ apps/
-│  ├─ desktop/                Slint native client: window, voice room panel; lib: session (signaling + engine + call), view
-│  └─ app-server/             Axum server (S0: health/version + signaling relay)
+│  ├─ desktop/                Slint client: windows, tray, settings, updater glue;
+│  │                          lib: session (signaling + audio + call + share), view, banner
+│  ├─ app-server/             Axum server: accounts, chats, groups, calls, signaling,
+│  │                          updates, limits; runs the SFU as one thread
+│  ├─ launcher/               `turbo-pancake.exe`: starts the installed version, rollback
+│  └─ installer/              per-user installer with the package embedded (ADR 0017)
 ├─ crates/
-│  ├─ protocol/               prost types generated from proto/ + validation + limits
-│  ├─ media-transport/        str0m: UdpPeer + CallDriver (1:1 call thread, RTP-mode Opus, state machine)
-│  ├─ media-audio/            voice pipeline: cpal I/O + SPSC rings, rubato, Opus, jitter buffer, AudioEngine thread
-│  └─ media-sfu/              SFU: ICE-lite session per member, RTP forwarding, UDP + WebSocket tunnel (ADR 0007)
-├─ proto/turbo_pancake/v1/           protobuf schemas (source of truth for the wire format)
-├─ benchmarks/
-│  ├─ harness/                turbo-pancake-bench: startup/memory/signaling scenarios → JSON
-│  └─ results/                committed reports
-├─ tools/media-probe/         audio host/device enumeration + open test
-├─ docs/                      this file, API, TESTING, STAGES, PROJECT_STATE, ADR/
-└─ .github/workflows/ci.yml   fmt + clippy -D warnings + tests on Windows/Linux/macOS
+│  ├─ protocol/               prost types from proto/ + validation + limits + contract tests
+│  ├─ media-audio/            cpal I/O, SPSC rings, resampling, Opus, jitter buffer, WebRTC
+│  │                          APM, AudioEngine thread, system-audio capture, rt scheduling
+│  ├─ media-transport/        str0m: UdpPeer + CallDriver (call thread, RTP mode, pacing)
+│  ├─ media-video/            Windows capture → GPU convert → H.264 MFT; decoder; adaptation
+│  ├─ media-sfu/              SFU: ICE-lite session per member, RTP forwarding, layers
+│  ├─ messenger-client/       HTTP API client, SQLite cache, sync engine, service thread
+│  ├─ tls/                    rustls configuration, private CA (ADR 0014)
+│  ├─ update/                 signed manifest, staged install, rollback (ADR 0016)
+│  ├─ setup/                  install layout, shortcuts, uninstall entry
+│  ├─ win-icon/               `.ico` → `.res` in build scripts
+│  └─ pg-test/                throw-away PostgreSQL cluster for tests
+├─ proto/turbo_pancake/v1/    protobuf schemas (source of truth for the wire format)
+├─ migrations/                PostgreSQL schema (SQLx)
+├─ benchmarks/                harness (load and media scenarios), scripts, results
+├─ deploy/                    release script, Linux install / backup / restore / bench
+├─ tools/                     media-probe, screen-probe, update-tool, apm-eval
+├─ third_party/               patched `webrtc-audio-processing-sys` (MSVC build)
+└─ docs/                      this file, API, TESTING, STAGES, ADMIN, BACKUP, ADR/
 ```
 
-Planned additions (created when the owning stage starts, not before, to avoid empty
-crates): `crates/media-capture` and
-`crates/media-codec` (S3), `crates/storage`, `crates/auth`, `crates/chat`, `migrations/`
-(S5), `deploy/` contents (S5/S8).
+Differences from the spec's example layout (§15): the SFU is a library run inside
+`app-server` (ADR 0007), not a separate `apps/media-sfu` process; `domain` / `auth` / `chat`
+/ `storage` are modules of `app-server` and `messenger-client`, not crates of their own.
 
 ## Runtime components
 
 ```text
- desktop (Slint UI thread)                     app-server (Tokio)
- ├─ UI event loop  ── never blocks ──┐         ├─ /healthz /readyz /v1/version
- ├─ tp-session (Tokio current-thread)  ◄─WS/protobuf─►├─ /v1/signal  (rooms, SDP/ICE relay)
- │    commands in (bounded), snapshots out (invoke_from_event_loop)
- ├─ tp-audio (AudioEngine) + cpal RT callbacks └─ (S5) auth, chat, PostgreSQL
- │    └─ tp-audio-pump ─▶ current call (bounded, drop when full)
- └─ tp-call (CallDriver, str0m) ◄─UDP or WS tunnel, DTLS-SRTP─► media-sfu (in app-server)
-      └─ tp-call-events ─▶ tp-session
+ desktop process                                   app-server process (Tokio)
+ ├─ UI thread (Slint, software renderer)           ├─ HTTPS /v1/… (accounts, chats, calls)
+ │    callbacks → bounded command channels         ├─ WSS /v1/signal (events + signaling)
+ │    snapshots ← invoke_from_event_loop           ├─ PostgreSQL pool (SQLx)
+ ├─ tp-session (Tokio current-thread): signaling,  ├─ bounded Argon2 hashing
+ │    call control, share control, adaptation      └─ tp-sfu (one thread, all rooms):
+ ├─ messenger thread: HTTP + SQLite cache               str0m session per member,
+ ├─ tp-audio (AudioEngine)  ◄─ cpal RT callbacks        RTP forward, layer choice
+ │    └─ tp-audio-pump ─▶ current call
+ ├─ tp-call (CallDriver, str0m) ◄─ UDP, or the WebSocket tunnel, DTLS-SRTP ─► tp-sfu
+ ├─ tp-screen-share (capture → convert → encode), tp-system-audio
+ └─ viewer / preview decoder threads ─▶ newest picture ─▶ UI timer
 ```
 
-S1 room model (`apps/desktop/src/session.rs`, ADR 0007): after joining a room each member
-offers one WebRTC session to the server's SFU (`crates/media-sfu`, a thread in
-`app-server`), which forwards every member's RTP to every other member as its own SSRC
-(ADR 0008; `TrackPublished` says whose it is, each SSRC is an engine peer with its own
-jitter buffer and volume); media goes over UDP to the server or,
-when UDP does not connect, through the signaling WebSocket. Joining starts the audio engine, leaving
-stops call and engine (devices, threads and socket released). A failed call is restarted
-while the peer is still in the room; a lost signaling connection ends the call and is
-retried with backoff (0.5 → 5 s), then the room is rejoined.
+Concurrency rules (§3): the UI thread only renders and dispatches; network on Tokio; audio
+callbacks are real-time and lock-free (bounded SPSC rings); capture, encode and decode run
+on dedicated threads with bounded queues that drop the oldest item. Every queue in the
+server is bounded. The threads that carry voice (`tp-audio`, `tp-audio-pump`, `tp-call`,
+`tp-system-audio`) register for audio-class scheduling (`media_audio::rt`, MMCSS "Pro
+Audio" on Windows) so a game that saturates the CPU does not starve them.
 
-Concurrency rules (§3): UI thread only renders and dispatches; network on Tokio; audio
-callbacks are real-time and lock-free (bounded SPSC rings); capture/encode/decode on
-dedicated threads with bounded queues that drop the oldest frame. Every queue in the
-server is bounded (see signaling outbound queue).
+## Voice path
+
+```text
+mic → ring → resample 48 kHz → APM (AEC3, NS) → mute/gate → Opus (48 kbit/s, in-band FEC)
+    → RTP → SFU (forward, one SSRC per member) →
+    jitter buffer (adaptive target, FEC / PLC, delay correction) → decode → volume
+    → mix → limiter → AEC reference → resample → ring → speaker
+```
+
+* The encoder's loss resilience follows the measured path loss (`LossAdapter`: expected
+  loss 10–30 %, more bits for the FEC copy), evaluated once a second in the session.
+* The jitter buffer removes excess delay one frame per tick: a hole is skipped, otherwise
+  two consecutive frames play in one tick, blended (no cut in the waveform).
+* The mix of several voices goes through a limiter instead of being clipped.
+* Audio is not retransmitted (video is, by NACK/RTX); there is no TURN: without UDP the
+  media goes through the signaling WebSocket.
+
+## Screen share path
+
+```text
+Windows.Graphics.Capture → D3D11 video processor (scale, NV12) → H.264 MFT (hardware, low
+latency, CBR) → pacer → RTP → SFU → (high layer to the viewer of the share, low layer as
+previews) → frame assembler (NACK repairs, keyframe requests) → H.264 decoder (DXVA) →
+NV12 → RGBA on the CPU → newest picture → Slint image
+```
+
+Two layers per share (ADR 0011); the high layer adapts bitrate, then size, then rate. A
+share whose pipeline stops on its own (resolution change, device lost) is restarted up to
+three times a minute. System audio: WASAPI process loopback excluding our own process
+tree, Opus stereo 96 kbit/s on its own stream.
+
+Known limits of this path are listed in `PROJECT_STATE.md` (viewer shows at most ≈ 60 fps
+through the CPU path; the repair window of str0m; system audio plays mono).
+
+## Windows
+
+The client creates its windows opaque and keeps them so (`apps/desktop/src/opaque.rs`):
+Slint's winit backend otherwise asks for a transparent window, which lets the desktop
+show through whenever the surface is not fully painted. After a show, a focus change, a
+display change or a resume from sleep the window repaints in full (the software renderer
+otherwise repaints only what changed).
 
 ## Wire protocol
 
-WebSocket + protobuf envelopes (`ClientEnvelope`/`ServerEnvelope`), versioned by package
-(`turbo_pancake.v1`) and `protocol_version`. See [API.md](API.md) and
-[ADR 0004](ADR/0004-signaling-protocol.md).
+WebSocket + protobuf envelopes (`ClientEnvelope` / `ServerEnvelope`), versioned by package
+(`turbo_pancake.v1`) and `protocol_version`; HTTPS + protobuf for requests. See
+[API.md](API.md) and [ADR 0004](ADR/0004-signaling-protocol.md).
 
 ## Decisions
 
-See `docs/ADR/`. Summary:
-
-| ADR | Decision | Status |
-|---|---|---|
-| 0001 | Rust workspace, pinned toolchain, prost+protox (no system protoc) | accepted |
-| 0002 | Slint (winit + FemtoVG/OpenGL, software fallback) as UI | provisional — license + GPU-texture checks pending |
-| 0003 | str0m for WebRTC in client and SFU; aws-lc-rs crypto backend | provisional — backend benchmark in S1 |
-| 0004 | Signaling over WebSocket + protobuf binary frames | accepted |
-| 0005 | Media/OS API research plan (audio, capture, codecs, system-audio exclusion) | research, most items UNVERIFIED |
-| 0006 | Voice pipeline: cpal + rtrb + rubato + libopus 1.6.1 (static), own jitter buffer | accepted for S1; APM open |
-| 0007 | Media through the server SFU, UDP + WebSocket tunnel fallback | accepted |
-| 0008 | Per-member audio: one m-line, one SSRC per member, `TrackPublished` mapping | accepted |
+| ADR | Decision |
+|---|---|
+| 0001 | Rust workspace, pinned toolchain, prost + protox (no system protoc) |
+| 0002 | Slint (winit); software renderer by default, FemtoVG/OpenGL selectable; license open |
+| 0003 | str0m for WebRTC in client and SFU; aws-lc-rs crypto backend |
+| 0004 | Signaling over WebSocket + protobuf binary frames |
+| 0005 | Media / OS API research (audio, capture, codecs, system-audio exclusion) |
+| 0006 | Voice pipeline: cpal + rtrb + rubato + libopus (static), own jitter buffer, APM |
+| 0007 | Media through the server SFU, UDP + WebSocket tunnel fallback |
+| 0008 | Per-member audio: one m-line, one SSRC per member |
+| 0009 | H.264 through operating-system and vendor codecs only |
+| 0010 | Screen share transport, subscriptions, loss repair, system audio |
+| 0011 | Two layers per share, layer subscriptions, previews, adaptation |
+| 0012 | Windows first; macOS and Linux after the full Windows product (S9) |
+| 0013 | Accounts, sessions, direct messages and sync |
+| 0014 | TLS for an IP-only server: a private CA trusted by the clients |
+| 0015 | Conversation calls and account ownership |
+| 0016 | Signed updates with staged install and rollback |
+| 0017 | Per-user installer |
+| 0018 | Opaque windows, audio-class scheduling, adaptive voice resilience |

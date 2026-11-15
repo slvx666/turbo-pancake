@@ -21,11 +21,12 @@ pub mod engine;
 pub mod jitter;
 pub mod pipeline;
 pub mod resample;
+pub mod rt;
 pub mod sim;
 pub mod system;
 pub mod testsignal;
 
-pub use codec::{DecodeKind, EncoderConfig, VoiceDecoder, VoiceEncoder};
+pub use codec::{DecodeKind, EncoderConfig, LossAdapter, VoiceDecoder, VoiceEncoder};
 pub use dsp::{DSP_AVAILABLE, DspConfig, DspStats, VoiceDsp};
 pub use engine::{
     AudioEngine, AudioIo, CpalIo, EngineConfig, EngineStatus, IncomingPacket, OutgoingFrame,

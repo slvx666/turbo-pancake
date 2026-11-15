@@ -980,7 +980,7 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
                     error: chat::error_text(&r.error).into(),
                 })
                 .collect();
-            w.set_messages(ModelRc::new(VecModel::from(model)));
+            sync_messages(w, model);
         }
         Update::Opened { conversation_id } => {
             w.set_new_group_open(false);
@@ -1068,6 +1068,67 @@ fn open_from_service(w: &MainWindow, id: &str) {
     }
 }
 
+/// Brings the message list to `rows` with the smallest change to the model: the list
+/// view keeps its items and its scroll position when a message arrives, a receipt
+/// changes a state or older history is loaded, instead of being rebuilt every time.
+fn sync_messages(w: &MainWindow, rows: Vec<MessageRow>) {
+    let model = w.get_messages();
+    let Some(vm) = model.as_any().downcast_ref::<VecModel<MessageRow>>() else {
+        w.set_messages(ModelRc::new(VecModel::from(rows)));
+        return;
+    };
+    let old: Vec<slint::SharedString> = vm.iter().map(|r| r.key).collect();
+    let new: Vec<slint::SharedString> = rows.iter().map(|r| r.key.clone()).collect();
+    let plan = plan_sync(&old, &new);
+    // The newest message is shown when one was added at the end or the list is another
+    // one; a receipt, an edit or older history leaves the reader where they are.
+    let show_newest = match plan {
+        SyncPlan::InPlace { prepended } => new.len() > prepended + old.len(),
+        SyncPlan::Replace => true,
+    };
+    match plan {
+        SyncPlan::InPlace { prepended } => {
+            for (at, r) in rows.into_iter().enumerate() {
+                if at < prepended {
+                    vm.insert(at, r);
+                } else if at >= vm.row_count() {
+                    vm.push(r);
+                } else if vm.row_data(at).as_ref() != Some(&r) {
+                    vm.set_row_data(at, r);
+                }
+            }
+        }
+        SyncPlan::Replace => vm.set_vec(rows),
+    }
+    if show_newest {
+        w.set_messages_scroll_tick(w.get_messages_scroll_tick().wrapping_add(1));
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SyncPlan {
+    /// `prepended` new rows go in front, the old rows follow in order (updated where
+    /// they differ), any further rows are appended.
+    InPlace { prepended: usize },
+    /// The lists do not line up (another conversation, a removed row): new contents.
+    Replace,
+}
+
+/// How the old list of row keys becomes the new one.
+fn plan_sync<K: PartialEq>(old: &[K], new: &[K]) -> SyncPlan {
+    if new.len() < old.len() {
+        return SyncPlan::Replace;
+    }
+    // Same rows or new rows at the end first, then older history in front (possibly
+    // with new rows at the end as well).
+    let grown = new.len() - old.len();
+    (0..=grown)
+        .find(|&p| new[p..p + old.len()] == *old)
+        .map_or(SyncPlan::Replace, |prepended| SyncPlan::InPlace {
+            prepended,
+        })
+}
+
 /// Replaces rows in place when the length is unchanged (keeps the list's scroll position).
 fn update_model<T: Clone + PartialEq + 'static>(
     current: ModelRc<T>,
@@ -1085,4 +1146,29 @@ fn update_model<T: Clone + PartialEq + 'static>(
         return;
     }
     set(ModelRc::new(VecModel::from(rows)));
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn appends_prepends_and_updates_stay_in_place() {
+        let p = |old: &[u32], new: &[u32]| plan_sync(old, new);
+        assert_eq!(p(&[], &[1, 2]), SyncPlan::InPlace { prepended: 0 });
+        assert_eq!(p(&[1, 2], &[1, 2]), SyncPlan::InPlace { prepended: 0 });
+        assert_eq!(p(&[1, 2], &[1, 2, 3]), SyncPlan::InPlace { prepended: 0 });
+        assert_eq!(
+            p(&[3, 4], &[1, 2, 3, 4]),
+            SyncPlan::InPlace { prepended: 2 }
+        );
+        assert_eq!(
+            p(&[3, 4], &[1, 2, 3, 4, 5]),
+            SyncPlan::InPlace { prepended: 2 }
+        );
+        // A row went away or the list is another one: start over.
+        assert_eq!(p(&[1, 2, 3], &[1, 3]), SyncPlan::Replace);
+        assert_eq!(p(&[1, 2], &[7, 8]), SyncPlan::Replace);
+        assert_eq!(p(&[1, 2], &[1, 9, 2]), SyncPlan::Replace);
+    }
 }

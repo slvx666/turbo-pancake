@@ -265,6 +265,7 @@ mod imp {
         mut on_frame: OnFrame,
         ready: Ready,
     ) {
+        let _ = crate::rt::boost_current_thread();
         // SAFETY: COM for this thread; MTA is what the audio client expects here.
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);

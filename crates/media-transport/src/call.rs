@@ -101,6 +101,9 @@ pub struct CallConfig {
     /// (≈ 1 400 packets/s) a loss gets two repair attempts on a LAN. Also caps the
     /// encoder's average bitrate.
     pub video_pacing_bps: u32,
+    /// Runs first on the call thread (e.g. to raise its scheduling class: it pumps the
+    /// voice packets, and a starved loop is heard as gaps).
+    pub thread_init: Option<fn()>,
 }
 
 impl CallConfig {
@@ -117,6 +120,7 @@ impl CallConfig {
             stun_servers: Vec::new(),
             stun_timeout: Duration::from_millis(1500),
             video_pacing_bps: 12_000_000,
+            thread_init: None,
         }
     }
 }
@@ -545,16 +549,13 @@ const STEP: Duration = Duration::from_millis(1);
 
 impl Worker {
     fn run(mut self) {
+        if let Some(init) = self.config.thread_init {
+            init();
+        }
         // Before any SDP: the reflexive candidate travels inside the offer/answer. A
         // remote offer waits in the command queue meanwhile.
         if !self.config.stun_servers.is_empty() && !self.peer.is_tunnel() {
-            let servers: Vec<SocketAddr> = self
-                .config
-                .stun_servers
-                .iter()
-                .filter_map(|s| s.to_socket_addrs().ok())
-                .flatten()
-                .collect();
+            let servers = resolve_within(&self.config.stun_servers, self.config.stun_timeout);
             self.st.reflexive_addr = self
                 .peer
                 .add_server_reflexive(&servers, self.config.stun_timeout);
@@ -1117,6 +1118,40 @@ impl Worker {
             s.clone_from(&self.st);
         }
     }
+}
+
+/// Resolves `host:port` names, waiting at most `timeout` in total: the system resolver
+/// has no deadline of its own (a name that does not resolve took 11 s on a machine with
+/// a slow DNS path), and the offer must not wait for it. Names still unresolved at the
+/// deadline are left out; their lookups end on their own threads.
+fn resolve_within(hosts: &[String], timeout: Duration) -> Vec<SocketAddr> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut pending = 0;
+    for host in hosts {
+        let (tx, host) = (tx.clone(), host.clone());
+        let spawned = std::thread::Builder::new()
+            .name("tp-resolve".into())
+            .spawn(move || {
+                let found: Vec<SocketAddr> = host
+                    .to_socket_addrs()
+                    .map(Iterator::collect)
+                    .unwrap_or_default();
+                let _ = tx.send(found);
+            });
+        pending += usize::from(spawned.is_ok());
+    }
+    let deadline = Instant::now() + timeout;
+    let mut out = Vec::new();
+    while pending > 0 {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(found) => {
+                out.extend(found);
+                pending -= 1;
+            }
+            Err(_) => break,
+        }
+    }
+    out
 }
 
 /// Extends a 16-bit sequence number relative to the previous extended one (nearest

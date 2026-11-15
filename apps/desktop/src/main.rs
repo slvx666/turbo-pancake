@@ -464,6 +464,47 @@ fn share_config(
     }
 }
 
+/// Switches the compositor's blend-with-the-desktop mode off for a live window
+/// (`opaque.rs`); `false` while the window does not exist yet.
+fn make_opaque(window: &slint::Window) -> bool {
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window
+        .with_winit_window(|w| match w.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => {
+                turbo_pancake_desktop::opaque::disable_blur_behind(h.hwnd.get())
+            }
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
+/// After the main window was shown again or the system may have dropped its surface:
+/// opaque mode on the (possibly new) native window and one full repaint. Repeated a
+/// moment later, when a window created by this very call exists.
+fn refresh_main(w: &MainWindow) {
+    make_opaque(w.window());
+    w.invoke_repaint();
+    let weak = w.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(150), move || {
+        if let Some(w) = weak.upgrade() {
+            make_opaque(w.window());
+            w.invoke_repaint();
+        }
+    });
+}
+
+fn refresh_share(w: &ShareWindow) {
+    make_opaque(w.window());
+    w.invoke_repaint();
+    let weak = w.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(150), move || {
+        if let Some(w) = weak.upgrade() {
+            make_opaque(w.window());
+            w.invoke_repaint();
+        }
+    });
+}
+
 /// The watched share in its own window (spec §5.1), created on demand.
 type ShareWindowSlot = Rc<std::cell::RefCell<Option<ShareWindow>>>;
 
@@ -494,6 +535,7 @@ fn open_share_window(main: &MainWindow, slot: &ShareWindowSlot, fullscreen: bool
         win.on_fullscreen_changed(move |on| {
             if let Some(w) = weak.upgrade() {
                 w.window().set_fullscreen(on);
+                refresh_share(&w);
             }
         });
         if win.show().is_err() {
@@ -505,6 +547,7 @@ fn open_share_window(main: &MainWindow, slot: &ShareWindowSlot, fullscreen: bool
         w.set_fullscreen(fullscreen);
         w.window().set_fullscreen(fullscreen);
         w.set_share_name(main.get_watching_name());
+        refresh_share(w);
     }
     main.set_share_window_open(true);
 }
@@ -623,6 +666,7 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
             save();
         });
     }
+    let save_hint = save.clone();
     {
         let settings = settings.clone();
         window.on_close_to_tray_changed(move |on| {
@@ -649,10 +693,14 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
                     if activate {
                         w.window().with_winit_window(|ww| ww.focus_window());
                     }
+                    refresh_main(&w);
                 });
             }
             TrayEvent::Exit => {
                 let _ = slint::quit_event_loop();
+            }
+            TrayEvent::Refresh => {
+                let _ = weak.upgrade_in_event_loop(|w| refresh_main(&w));
             }
         },
     )
@@ -665,11 +713,37 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
         || args.trial_tray
         || args.trial_close_after_ms.is_some();
     window.set_tray_available(can_hide);
+    let hint_tray = tray.clone();
     window.window().on_close_requested(move || {
         if !(can_hide && settings.borrow().close_to_tray) {
             let _ = slint::quit_event_loop();
+        } else if !settings.borrow().tray_hint_shown
+            && let Some(t) = hint_tray.as_ref().filter(|t| t.icon_shown())
+        {
+            // Once: the window is gone but the app is not.
+            t.notify(
+                "turbo-pancake работает в фоне",
+                "Окно свёрнуто в область уведомлений. Щёлкните значок, чтобы открыть; \
+                 «Выйти» в его меню завершает приложение.",
+            );
+            settings.borrow_mut().tray_hint_shown = true;
+            save_hint();
         }
         slint::CloseRequestResponse::HideWindow
+    });
+    // Regaining the focus is the cheapest moment to make sure the picture is whole.
+    let weak_focus = window.as_weak();
+    window.window().on_winit_window_event(move |_, event| {
+        if matches!(event, WindowEvent::Focused(true)) {
+            let weak = weak_focus.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(w) = weak.upgrade() {
+                    make_opaque(w.window());
+                    w.invoke_repaint();
+                }
+            });
+        }
+        EventResult::Propagate
     });
     tray
 }
@@ -1078,11 +1152,17 @@ fn main() -> Result<(), slint::PlatformError> {
             .backend_name("winit".into())
             .renderer_name("software".into());
     }
-    if args.window_pos.is_some() || args.no_activate {
+    {
+        // Always opaque (see `opaque.rs`); position and activation only for trials.
         let pos = args.window_pos;
-        let active = !args.no_activate;
+        let no_activate = args.no_activate;
         selector = selector.with_winit_window_attributes_hook(move |attrs| {
-            let attrs = attrs.with_active(active);
+            let attrs = attrs.with_transparent(false);
+            let attrs = if no_activate {
+                attrs.with_active(false)
+            } else {
+                attrs
+            };
             match pos {
                 Some((x, y)) => attrs.with_position(PhysicalPosition::new(x, y)),
                 None => attrs,
@@ -1263,6 +1343,15 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     // Runs on while the window is hidden to the tray; ends by an explicit exit.
     window.show()?;
+    {
+        // The native window exists once the loop runs.
+        let weak = window.as_weak();
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            if let Some(w) = weak.upgrade() {
+                refresh_main(&w);
+            }
+        });
+    }
     slint::run_event_loop_until_quit()?;
     drop(tray);
     if let Some(w) = share_window.borrow_mut().take() {

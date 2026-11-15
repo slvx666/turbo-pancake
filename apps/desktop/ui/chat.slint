@@ -476,8 +476,12 @@ export component ChatPanel inherits Rectangle {
     callback toggle-block;
     callback draft-changed(string);
     // New content: show the newest message (after the list has laid it out).
+    // The list itself is updated in place (receipts, edits and older history must not
+    // move it); `scroll-tick` changes when a message was added at the end.
+    in property <int> scroll-tick;
     property <bool> scroll-pending: true;
     changed messages => { root.scroll-pending = true; }
+    changed scroll-tick => { root.scroll-pending = true; }
     Timer {
         interval: 30ms;
         running: root.scroll-pending;

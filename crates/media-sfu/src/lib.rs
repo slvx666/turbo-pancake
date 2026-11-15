@@ -790,7 +790,9 @@ impl Worker {
         };
         let current = m.watch.as_ref().map(|w| w.source.clone());
         if current.is_some() && current == source {
-            let w = m.watch.as_mut().expect("watching");
+            let Some(w) = m.watch.as_mut() else {
+                return;
+            };
             if w.requested != requested {
                 w.requested = requested;
                 w.told = None;
@@ -899,7 +901,10 @@ impl Worker {
             let Some(m) = self.peers.get_mut(&id) else {
                 continue;
             };
-            let w = m.watch.as_mut().expect("watching");
+            // The whole server shares this thread: never panic on a broken invariant.
+            let Some(w) = m.watch.as_mut() else {
+                continue;
+            };
             w.target = target;
             w.reason = reason;
             match w.layer {

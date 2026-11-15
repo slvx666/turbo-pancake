@@ -171,6 +171,16 @@ pub fn render(s: &Snapshot) -> CallView {
         if let Some(gate) = e.voice_gate {
             devices.push_str(&format!(" · активация голосом от {gate:.0} дБ"));
         }
+        if e.encoder_bitrate > 0 {
+            devices.push_str(&format!(
+                " · голос {} кбит/с, запас на потери {} %",
+                e.encoder_bitrate / 1000,
+                e.encoder_loss_percent
+            ));
+        }
+        if e.running && !e.realtime && cfg!(windows) {
+            devices.push_str(" · звуковой поток без повышенного приоритета");
+        }
         dsp_available = e.dsp_available;
         if error.is_empty()
             && let Some(le) = &e.last_error
@@ -427,6 +437,13 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
             e.dsp.echo_cancellation,
             e.dsp_available,
             e.dsp_stats.erle_db.unwrap_or(-1.0),
+        ));
+        line.push_str(&format!(
+            " realtime={} enc_kbps={} enc_loss_pct={} limited_ticks={}",
+            e.realtime,
+            e.encoder_bitrate / 1000,
+            e.encoder_loss_percent,
+            e.limited_ticks,
         ));
         if let Some(p) = e.peers.first() {
             let r = &p.stats;

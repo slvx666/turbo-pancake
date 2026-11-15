@@ -60,7 +60,7 @@ use tokio_tungstenite::tungstenite::Message;
 use turbo_pancake_media_audio::system::{SystemAudioCapture, SystemAudioStats};
 use turbo_pancake_media_audio::{
     AudioEngine, AudioError, AudioIo, DspConfig, EngineConfig, EngineStatus, IncomingPacket,
-    PacketSink, PeerId, PeerStatus, VoiceLink,
+    LossAdapter, PacketSink, PeerId, PeerStatus, VoiceLink,
 };
 use turbo_pancake_media_transport::call::{
     AudioOut, CallConfig, CallDriver, CallEvent, CallState, CallStats, KeyframeRequester,
@@ -484,6 +484,13 @@ struct Core {
     on_update: Box<dyn FnMut(&Snapshot) + Send>,
     snap: Snapshot,
     dirty: bool,
+    /// Automatic restarts of our share after its pipeline stopped on its own.
+    share_restarts: RestartBudget,
+    /// When to start the share again, and with what.
+    share_retry: Option<(Instant, ShareConfig)>,
+    /// Voice encoder resilience following the measured loss.
+    voice_adapter: LossAdapter,
+    voice_adapt_at: Instant,
     online: bool,
     /// Server IP the signaling connection reached (offered back as the UDP candidate).
     dialed_ip: Option<IpAddr>,
@@ -563,6 +570,10 @@ impl Core {
         let (tunnel_tx, tunnel_rx) = mpsc::unbounded_channel();
         let next_transport = first_transport(cfg.transport);
         Self {
+            share_restarts: RestartBudget::default(),
+            share_retry: None,
+            voice_adapter: LossAdapter::new(cfg.engine.encoder),
+            voice_adapt_at: Instant::now(),
             cfg,
             start_engine,
             on_update,
@@ -991,7 +1002,11 @@ impl Core {
                 self.cfg.engine.voice_gate = g;
                 self.with_engine(|e| e.set_voice_gate(g));
             }
-            Command::StartShare(config) => self.start_share(config),
+            Command::StartShare(config) => {
+                self.share_restarts = RestartBudget::default();
+                self.share_retry = None;
+                self.start_share(config)
+            }
             Command::StopShare => self.stop_share(),
             Command::SetShareAudio(on) => {
                 self.cfg.share_audio = on;
@@ -1094,6 +1109,8 @@ impl Core {
     }
 
     fn stop_share(&mut self) {
+        // Whoever stops the share (the user, leaving the room) also ends its retries.
+        self.share_retry = None;
         if let Some(s) = self.share.take() {
             s.share.stop();
             self.sync_system_audio();
@@ -1769,6 +1786,8 @@ impl Core {
     fn start_audio(&mut self) {
         match (self.start_engine)(self.cfg.engine.clone()) {
             Ok((engine, link)) => {
+                // A new engine starts with the base encoder settings.
+                self.voice_adapter = LossAdapter::new(self.cfg.engine.encoder);
                 let route: Arc<Mutex<Option<SyncSender<AudioOut>>>> = Arc::default();
                 let pump_route = route.clone();
                 let outgoing = link.outgoing;
@@ -1776,6 +1795,7 @@ impl Core {
                 let pump = std::thread::Builder::new()
                     .name("tp-audio-pump".into())
                     .spawn(move || {
+                        realtime_thread();
                         while let Ok(f) = outgoing.recv() {
                             if let Some(tx) = pump_route.lock().unwrap().as_ref() {
                                 // A full queue drops: the call thread is behind.
@@ -1831,6 +1851,7 @@ impl Core {
         let accepted = audio.accepted.clone();
         let mut cc = CallConfig::new(Role::Offerer, self.cfg.media_bind);
         cc.advertise = self.cfg.advertise;
+        cc.thread_init = Some(realtime_thread);
         cc.send_loss = self.cfg.send_loss;
         cc.recv_loss = self.cfg.recv_loss;
         cc.stun_servers = self.cfg.stun_servers.clone();
@@ -2005,16 +2026,63 @@ impl Core {
         self.dirty = true;
     }
 
+    /// Schedules another start of a share that stopped on its own, or gives up with
+    /// the reason once the budget is spent.
+    fn retry_share(&mut self, config: ShareConfig, why: &str) {
+        match self.share_restarts.next(Instant::now()) {
+            Some(delay) => {
+                self.share_retry = Some((Instant::now() + delay, config));
+                self.snap.last_error = Some(format!("показ экрана прерван ({why}), перезапуск…"));
+            }
+            None => self.snap.last_error = Some(format!("показ экрана: {why}")),
+        }
+        self.dirty = true;
+    }
+
+    /// Once a second: the voice encoder's loss resilience follows the path (spec §4).
+    /// The sender sees its own uplink (what the server reports) and its own downlink;
+    /// the worse of the two stands in for the listeners' paths, which it cannot see.
+    fn adapt_voice(&mut self) {
+        if self.voice_adapt_at.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.voice_adapt_at = Instant::now();
+        let (Some(a), Some(m)) = (&self.audio, &self.media) else {
+            return;
+        };
+        let st = m.driver.stats();
+        let loss = st
+            .egress_loss
+            .unwrap_or(0.0)
+            .max(st.ingress_loss.unwrap_or(0.0));
+        if let Some(cfg) = self.voice_adapter.update(loss) {
+            let _ = a.engine.set_encoder(cfg);
+        }
+    }
+
     fn publish(&mut self) {
-        // A share that stopped on its own (monitor resolution changed, device lost).
+        // A share that stopped on its own (monitor resolution changed, device lost):
+        // the pipeline is rebuilt for the monitor as it is now, a few times at most.
         if let Some(s) = &self.share
             && !s.share.is_running()
         {
             let why = s.share.stats().error.unwrap_or_else(|| "остановлен".into());
-            self.snap.last_error = Some(format!("показ экрана: {why}"));
+            let config = s.config;
             self.stop_share();
+            self.retry_share(config, &why);
+        }
+        if let Some((at, config)) = self.share_retry
+            && Instant::now() >= at
+        {
+            self.share_retry = None;
+            self.start_share(config);
+            if self.share.is_none() {
+                let why = self.snap.last_error.clone().unwrap_or_default();
+                self.retry_share(config, &why);
+            }
         }
         self.adapt_share();
+        self.adapt_voice();
         // The size, rate or bitrate the server knows is behind (adaptation, fitting).
         if let Some(s) = &self.share {
             let st = s.share.stats();
@@ -2096,9 +2164,56 @@ impl Core {
     }
 }
 
+/// How often a share that stopped on its own is started again: a few attempts with a
+/// growing delay inside a time window, so a pipeline that cannot run (monitor gone, no
+/// encoder) ends with its error instead of restarting forever.
+#[derive(Debug, Default)]
+struct RestartBudget {
+    recent: Vec<Instant>,
+}
+
+impl RestartBudget {
+    const ATTEMPTS: usize = 3;
+    const WINDOW: Duration = Duration::from_secs(60);
+
+    /// The delay before the next attempt, `None` when the budget is spent.
+    fn next(&mut self, now: Instant) -> Option<Duration> {
+        self.recent
+            .retain(|t| now.saturating_duration_since(*t) < Self::WINDOW);
+        if self.recent.len() >= Self::ATTEMPTS {
+            return None;
+        }
+        self.recent.push(now);
+        Some(Duration::from_millis(500) * self.recent.len() as u32)
+    }
+}
+
+/// Audio-class scheduling for a thread that carries voice (`media_audio::rt`).
+fn realtime_thread() {
+    let _ = turbo_pancake_media_audio::rt::boost_current_thread();
+}
+
 fn first_transport(pref: TransportPref) -> MediaTransport {
     match pref {
         TransportPref::Tunnel => MediaTransport::Tunnel,
         TransportPref::Auto | TransportPref::Udp => MediaTransport::Udp,
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn a_few_attempts_per_window_with_growing_delay() {
+        let mut b = RestartBudget::default();
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        assert_eq!(b.next(at(0)), Some(Duration::from_millis(500)));
+        assert_eq!(b.next(at(2)), Some(Duration::from_millis(1000)));
+        assert_eq!(b.next(at(4)), Some(Duration::from_millis(1500)));
+        assert_eq!(b.next(at(6)), None, "budget spent");
+        // The window moved on: attempts are available again.
+        assert!(b.next(at(70)).is_some());
     }
 }

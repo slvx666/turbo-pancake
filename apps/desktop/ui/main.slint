@@ -617,6 +617,10 @@ export component ShareWindow inherits Window {
     in-out property <bool> fullscreen;
     callback fullscreen-changed(bool);
     callback close-window();
+    property <bool> repaint-flip;
+    public function repaint() {
+        root.repaint-flip = !root.repaint-flip;
+    }
     if root.has-picture: Image {
         width: parent.width;
         height: parent.height;
@@ -628,6 +632,13 @@ export component ShareWindow inherits Window {
     if !root.has-picture: Text {
         text: "Ожидание трансляции…";
         color: #b5bac1;
+    }
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.repaint-flip ? root.width : root.width - 1px;
+        height: root.height;
+        background: #00000001;
     }
     TouchArea {
         double-clicked => {
@@ -710,6 +721,8 @@ export component MainWindow inherits Window {
     in property <bool> chat-can-send: true;
     in property <bool> chat-blocked-by-me;
     in property <[MessageRow]> messages;
+    // Bumped when a message was added at the end of the open conversation.
+    in property <int> messages-scroll-tick;
     in property <string> compose-mode;
     in property <string> compose-label;
     in-out property <string> compose-text;
@@ -813,6 +826,14 @@ export component MainWindow inherits Window {
     callback close-to-tray-changed(bool);
     callback quit-app();
 
+    // A full repaint on demand: the software renderer repaints only what changed, so
+    // after the system discarded the window's surface (sleep, display change) nothing
+    // would bring the picture back. Changing this item's geometry dirties the window.
+    property <bool> repaint-flip;
+    public function repaint() {
+        root.repaint-flip = !root.repaint-flip;
+    }
+
     public function apply-theme(dark: bool) {
         Theme.dark = dark;
         Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
@@ -901,6 +922,7 @@ export component MainWindow inherits Window {
             can-send: root.chat-can-send;
             blocked-by-me: root.chat-blocked-by-me;
             messages: root.messages;
+            scroll-tick: root.messages-scroll-tick;
             compose-mode: root.compose-mode;
             compose-label: root.compose-label;
             compose-text <=> root.compose-text;
@@ -1028,6 +1050,14 @@ export component MainWindow inherits Window {
         }
         }
         }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.repaint-flip ? root.width : root.width - 1px;
+        height: root.height;
+        background: #00000001;
     }
 
     // Above the user panel, over the sidebar and the content.

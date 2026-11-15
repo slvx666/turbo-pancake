@@ -6,6 +6,7 @@ pub mod banner;
 pub mod chat;
 pub mod credentials;
 pub mod instance;
+pub mod opaque;
 pub mod screen;
 pub mod session;
 pub mod tray;

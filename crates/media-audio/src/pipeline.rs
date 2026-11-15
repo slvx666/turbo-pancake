@@ -241,11 +241,16 @@ impl ReceiverStats {
     }
 }
 
+/// Below this level (dBFS) a frame removed to shorten the delay is simply left out.
+const SKIP_SILENT_DB: f32 = -55.0;
+
 pub struct VoiceReceiver {
     jitter: JitterBuffer,
     decoder: VoiceDecoder,
     resampler: MonoResampler,
     pcm: Vec<f32>,
+    /// The first of two frames played in one tick (delay correction).
+    merge_pcm: Vec<f32>,
     volume: f32,
     stats: ReceiverStats,
     speech_left: u32,
@@ -258,6 +263,7 @@ impl VoiceReceiver {
             decoder: VoiceDecoder::new()?,
             resampler: MonoResampler::new(CODEC_RATE, output_rate)?,
             pcm: vec![0.0; FRAME_SAMPLES],
+            merge_pcm: vec![0.0; FRAME_SAMPLES],
             volume: 1.0,
             stats: ReceiverStats::default(),
             speech_left: 0,
@@ -301,6 +307,25 @@ impl VoiceReceiver {
                 None
             }
             Playout::Packet(p) => Some(self.decode(&p, DecodeKind::Normal)),
+            Playout::Merge(a, b) => {
+                // Two frames in one tick. Both are decoded (the decoder's state must
+                // see every packet); a silent first frame is left out, otherwise the
+                // tick fades from the first into the second: 40 ms of sound in 20 ms
+                // without a cut in the waveform.
+                self.decode(&a, DecodeKind::Normal);
+                let silent = level_db(&self.pcm) < SKIP_SILENT_DB;
+                std::mem::swap(&mut self.pcm, &mut self.merge_pcm);
+                let kind = self.decode(&b, DecodeKind::Normal);
+                if !silent {
+                    let n = self.pcm.len() as f32;
+                    for (i, (second, first)) in self.pcm.iter_mut().zip(&self.merge_pcm).enumerate()
+                    {
+                        let w = i as f32 / n;
+                        *second = first * (1.0 - w) + *second * w;
+                    }
+                }
+                Some(kind)
+            }
             Playout::Fec(p) => Some(self.decode(&p, DecodeKind::Fec)),
             Playout::Lost => Some(self.decode(&[], DecodeKind::Concealed)),
         };
@@ -412,6 +437,48 @@ mod tests {
         tx.push_samples(&chunk(20, true, &mut phase), |_| n += 1)
             .unwrap();
         assert_eq!(n, 40);
+    }
+
+    #[test]
+    fn delay_correction_does_not_cut_the_waveform() {
+        let mut tx = VoiceSender::new(CODEC_RATE, EncoderConfig::default()).unwrap();
+        let mut rx = VoiceReceiver::new(CODEC_RATE, JitterConfig::default()).unwrap();
+        let mut phase = 0.0;
+        let mut out = Vec::new();
+        let mut t = 0u64;
+        let mut send = |rx: &mut VoiceReceiver, t: u64| {
+            tx.push_samples(&chunk(1, true, &mut phase), |f| {
+                rx.push_packet_at(f.seq, f.timestamp, f.payload.to_vec(), t)
+            })
+            .unwrap();
+        };
+        for _ in 0..30 {
+            send(&mut rx, t);
+            rx.pull_frame(&mut out).unwrap();
+            t += 20;
+        }
+        // The network delivers 200 ms at once. The buffer first keeps that much delay
+        // (the path just proved it can stall) and gives it back once the path has been
+        // calm for a while: that is the correction under test.
+        for _ in 0..10 {
+            send(&mut rx, t);
+        }
+        let settled = out.len();
+        for _ in 0..300 {
+            send(&mut rx, t);
+            rx.pull_frame(&mut out).unwrap();
+            t += 20;
+        }
+        let s = rx.stats();
+        assert!(s.jitter.dropped >= 5, "the delay was not corrected: {s:?}");
+        assert_eq!(s.jitter.concealed + s.jitter.fec, 0, "{s:?}");
+        // A 440 Hz tone at 0.3 moves ≈ 0.017 per sample; a frame cut out of it jumps by
+        // up to 0.6. Blended frames stay continuous.
+        let jump = out[settled - FRAME_SAMPLES..]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(jump < 0.08, "discontinuity of {jump} in the played signal");
     }
 
     #[test]
