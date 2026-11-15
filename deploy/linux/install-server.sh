@@ -112,6 +112,7 @@ TURBO_PANCAKE_TLS_KEY=$ETC/tls/server.key
 TURBO_PANCAKE_DATABASE_URL=postgres://turbo_pancake:$DB_PASS@127.0.0.1/turbo_pancake
 TURBO_PANCAKE_LOG_JSON=true
 TURBO_PANCAKE_UPDATE_DIR=/var/lib/turbo-pancake/update
+TURBO_PANCAKE_MEDIA_PROCESS=true
 EOF
 )
 chgrp turbo-pancake "$ETC/server.env"

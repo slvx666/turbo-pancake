@@ -36,6 +36,11 @@ struct Args {
     /// preview layer and are told why. Default: unlimited.
     #[arg(long, env = "TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS")]
     max_high_egress_mbps: Option<u32>,
+    /// Run the media SFU in a worker process of its own (this binary's `sfu-worker`
+    /// subcommand), restarted if it fails: a fault in the media code then ends calls,
+    /// not the server.
+    #[arg(long, env = "TURBO_PANCAKE_MEDIA_PROCESS")]
+    media_process: bool,
     /// PostgreSQL URL of the messenger (accounts, messages). Without it the server runs
     /// calls only. Keep credentials in the environment, not on the command line.
     #[arg(long, env = "TURBO_PANCAKE_DATABASE_URL", hide_env_values = true)]
@@ -83,6 +88,14 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// The media SFU as a worker of a running server (started by the server itself with
+    /// `--media-process`; talks over its standard input and output).
+    SfuWorker {
+        #[arg(long)]
+        udp_bind: Option<std::net::SocketAddr>,
+        #[arg(long)]
+        max_high_egress_kbps: Option<u32>,
+    },
     /// Check the messenger database (`TURBO_PANCAKE_DATABASE_URL`) for consistency, e.g.
     /// after a restore: prints a JSON report, exit code 1 when an invariant is broken.
     /// Read-only; does not run migrations.
@@ -139,7 +152,7 @@ fn certificates(cmd: Cmd) -> anyhow::Result<()> {
                 out.display()
             );
         }
-        Cmd::CheckDb => unreachable!("handled in main"),
+        Cmd::CheckDb | Cmd::SfuWorker { .. } => unreachable!("handled in main"),
         Cmd::RenewCert { names, dir, days } => {
             let ca = std::fs::read_to_string(dir.join("ca.pem"))?;
             let ca_key = std::fs::read_to_string(dir.join("ca.key"))?;
@@ -172,6 +185,25 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.command {
         Some(Cmd::CheckDb) => return check_db(args.database_url.as_deref()).await,
+        Some(Cmd::SfuWorker {
+            udp_bind,
+            max_high_egress_kbps,
+        }) => {
+            // Standard output carries the protocol: nothing else may be written there.
+            let config = turbo_pancake_media_sfu::SfuConfig {
+                udp_bind,
+                max_high_egress_kbps,
+            };
+            return tokio::task::spawn_blocking(move || {
+                turbo_pancake_media_sfu::remote::run_worker(
+                    config,
+                    std::io::stdin(),
+                    std::io::stdout(),
+                )
+            })
+            .await?
+            .map_err(Into::into);
+        }
         Some(cmd) => return certificates(cmd),
         None => {}
     }
@@ -232,6 +264,15 @@ async fn main() -> anyhow::Result<()> {
         media_udp_port: args.media_port,
         public_ips: args.public_ips,
         max_high_egress_kbps: args.max_high_egress_mbps.map(|m| m.saturating_mul(1000)),
+        media_worker: if args.media_process {
+            let exe = std::env::current_exe()?;
+            Some(vec![
+                exe.to_string_lossy().into_owned(),
+                "sfu-worker".into(),
+            ])
+        } else {
+            None
+        },
         database_url: args.database_url,
         anonymous_calls,
         tls,

@@ -130,6 +130,7 @@ environment variable; `turbo-pancake-app-server --help` lists them.
 | `TURBO_PANCAKE_HASH_CONCURRENCY` | half the CPUs, 1..=4 | Argon2id hashes at once, 19 MiB each |
 | `TURBO_PANCAKE_HASH_QUEUE` | 64 | logins waiting for a hash slot (≤ 10 s); beyond: `503` + `Retry-After` |
 | `TURBO_PANCAKE_MAX_TCP_CONNECTIONS` | 4096 | open TCP/TLS connections; the unit allows 65536 descriptors |
+| `TURBO_PANCAKE_MEDIA_PROCESS` | off (`install-server.sh` sets `true`) | run the media SFU as a worker process of the server (`sfu-worker`), restarted if it fails: a fault in the media code ends calls for a few seconds, not the server. `GET /v1/media-stats` → `worker_starts` above 1 means it was restarted — look for the reason in the log |
 | `TURBO_PANCAKE_MAX_HIGH_EGRESS_MBPS` | unlimited | budget for watched full-quality shares (spec §5.3); set it below the measured uplink minus voice and previews |
 | `TURBO_PANCAKE_UPDATE_DIR` | installer: `/var/lib/turbo-pancake/update` | signed client updates (section 5) |
 | `TURBO_PANCAKE_ANONYMOUS_CALLS` | only on loopback | keep off on a public server |

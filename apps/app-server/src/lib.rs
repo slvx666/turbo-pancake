@@ -33,7 +33,7 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
-use turbo_pancake_media_sfu::{Sfu, SfuConfig};
+use turbo_pancake_media_sfu::{MediaSfu, RemoteSfu, Sfu, SfuConfig};
 
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -60,6 +60,11 @@ pub struct Config {
     pub public_ips: Vec<IpAddr>,
     /// High-layer screen share budget to viewers, kbit/s (`None` = unlimited).
     pub max_high_egress_kbps: Option<u32>,
+    /// Run the SFU in a worker process (spec §3: isolated media service): this command
+    /// line, started with its standard input and output as pipes, must run
+    /// `media_sfu::remote::run_worker` (the server binary's `sfu-worker` subcommand).
+    /// The worker's own options are appended. `None`: the SFU is a thread of the server.
+    pub media_worker: Option<Vec<String>>,
     /// PostgreSQL URL of the messenger; `None` = calls only, messenger API answers 503.
     pub database_url: Option<String>,
     /// Database connections in the pool.
@@ -104,6 +109,7 @@ impl Default for Config {
             media_udp_port: None,
             public_ips: Vec::new(),
             max_high_egress_kbps: None,
+            media_worker: None,
             database_url: None,
             database_pool: 16,
             anonymous_calls: true,
@@ -128,7 +134,7 @@ pub struct AppState {
     pub hub: Arc<signaling::Hub>,
     pub connections: Arc<Semaphore>,
     /// Media forwarding; `None` only if it failed to start.
-    pub sfu: Option<Arc<Sfu>>,
+    pub sfu: Option<Arc<MediaSfu>>,
     /// Default-route address of this machine, announced as a UDP candidate.
     pub lan_ip: Option<IpAddr>,
     /// Messenger database (`None` = messenger disabled).
@@ -220,14 +226,25 @@ impl AppState {
                 .then_some(SocketAddr::new(udp_ip, udp_port)),
             max_high_egress_kbps: self.config.max_high_egress_kbps,
         };
-        let sfu = Sfu::start(cfg.clone()).or_else(|e| {
+        let worker = self.config.media_worker.clone();
+        let start = move |cfg: &SfuConfig| -> std::io::Result<MediaSfu> {
+            match &worker {
+                None => Sfu::start(cfg.clone()).map(MediaSfu::Local),
+                Some(command) => start_media_worker(command, cfg).map(MediaSfu::Remote),
+            }
+        };
+        let sfu = start(&cfg).or_else(|e| {
             tracing::warn!(port = udp_port, error = %e, "UDP media unavailable, tunnel only");
             cfg.udp_bind = None;
-            Sfu::start(cfg)
+            start(&cfg)
         });
         match sfu {
             Ok(sfu) => {
-                tracing::info!(udp_port = ?sfu.udp_port(), "media SFU started");
+                tracing::info!(
+                    udp_port = ?sfu.udp_port(),
+                    own_process = sfu.worker_starts().is_some(),
+                    "media SFU started"
+                );
                 if let Some((recv, send)) = sfu.udp_buffers()
                     && recv.min(send) < turbo_pancake_media_transport::MEDIA_SOCKET_BUFFER
                 {
@@ -247,6 +264,34 @@ impl AppState {
         self.lan_ip = turbo_pancake_media_transport::default_route_ip(ip.is_ipv6()).ok();
         self
     }
+}
+
+/// Starts the SFU as a worker process: `command` plus the worker's options, with pipes
+/// for its standard input and output. Its standard error is this process's (worker
+/// messages end up in the same log).
+fn start_media_worker(command: &[String], cfg: &SfuConfig) -> std::io::Result<RemoteSfu> {
+    let Some((program, args)) = command.split_first() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty media worker command",
+        ));
+    };
+    let mut args: Vec<String> = args.to_vec();
+    if let Some(addr) = cfg.udp_bind {
+        args.extend(["--udp-bind".into(), addr.to_string()]);
+    }
+    if let Some(kbps) = cfg.max_high_egress_kbps {
+        args.extend(["--max-high-egress-kbps".into(), kbps.to_string()]);
+    }
+    let program = program.clone();
+    RemoteSfu::start(move || {
+        std::process::Command::new(&program)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+    })
 }
 
 /// Schema migrations (`migrations/`), embedded in the binary.
@@ -343,6 +388,9 @@ async fn media_stats(State(state): State<AppState>) -> impl IntoResponse {
         "tunnel_in": s.tunnel_in,
         "tunnel_out": s.tunnel_out,
         "dropped_commands": s.dropped_commands,
+        // Media worker processes started so far (null: the SFU runs inside the server);
+        // above 1 the media service was restarted after a failure.
+        "worker_starts": sfu.worker_starts(),
     }))
     .into_response()
 }

@@ -39,8 +39,10 @@ turbo-pancake/
 └─ docs/                      this file, API, TESTING, STAGES, ADMIN, BACKUP, ADR/
 ```
 
-Differences from the spec's example layout (§15): the SFU is a library run inside
-`app-server` (ADR 0007), not a separate `apps/media-sfu` process; `domain` / `auth` / `chat`
+Differences from the spec's example layout (§15): the SFU is a library, run either as a
+thread of `app-server` or — with `--media-process`, the deployed default — as a worker
+process of the same binary that the server supervises and restarts (ADR 0020), not a
+separate `apps/media-sfu` program; `domain` / `auth` / `chat`
 / `storage` are modules of `app-server` and `messenger-client`, not crates of their own.
 
 ## Runtime components
@@ -140,3 +142,4 @@ WebSocket + protobuf envelopes (`ClientEnvelope` / `ServerEnvelope`), versioned 
 | 0017 | Per-user installer |
 | 0018 | Opaque windows, audio-class scheduling, adaptive voice resilience |
 | 0019 | The share window shows pictures from the GPU (own swap chain, no CPU copy) |
+| 0020 | The SFU can run as a supervised worker process of the server |

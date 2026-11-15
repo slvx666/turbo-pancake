@@ -38,6 +38,7 @@
 //! capture clock as RTP timestamps.
 
 pub mod layer;
+pub mod remote;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -58,6 +59,7 @@ use turbo_pancake_media_transport::video::starts_keyframe;
 use turbo_pancake_media_transport::{TUNNEL_CLIENT, TUNNEL_SERVER, init_crypto};
 
 pub use layer::{Layer, LayerChoice, LayerReason, NetworkPolicy};
+pub use remote::{MediaSfu, RemoteSfu};
 
 pub type PeerId = String;
 
@@ -120,6 +122,9 @@ pub trait PeerSink: Send + 'static {
     /// The worst packet loss (0–1) on the way from the server to any *other* member of
     /// the room: what this member's voice has to survive. Sent when it changes.
     fn listeners_loss(&mut self, _loss: f32) {}
+    /// The member's media session ended on the server side without a `leave` (the media
+    /// worker process was lost, `remote`); the sink is dropped right after.
+    fn closed(&mut self) {}
 }
 
 /// How a member's datagrams travel.

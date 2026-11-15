@@ -584,3 +584,71 @@ async fn connection_limit_rejects_excess_upgrades() {
         .unwrap_err();
     assert!(err.to_string().contains("503"), "{err}");
 }
+
+/// The SFU as a worker process of the server binary (`--media-process`): a media session
+/// is negotiated through the worker and the statistics name it.
+#[tokio::test]
+async fn media_runs_in_a_worker_process() {
+    use turbo_pancake_media_transport::call::{
+        AudioOut, CallConfig, CallDriver, CallEvent, LocalSignal, MediaLink, Role,
+    };
+    let addr = start(Config {
+        media_udp: false,
+        media_worker: Some(vec![
+            env!("CARGO_BIN_EXE_turbo-pancake-app-server").into(),
+            "sfu-worker".into(),
+        ]),
+        ..Config::default()
+    })
+    .await;
+    let stats = http_get(addr, "/v1/media-stats").await;
+    assert!(stats.starts_with("HTTP/1.1 200"), "{stats}");
+    assert!(stats.contains("\"worker_starts\":1"), "{stats}");
+
+    let mut a = Client::hello(addr, "a").await;
+    a.join("r").await;
+    // A real offer from the client's call stack (media through the WebSocket).
+    turbo_pancake_media_transport::init_crypto();
+    let (_to_client, inbound) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
+    let (_audio, outgoing) = std::sync::mpsc::sync_channel::<AudioOut>(4);
+    let link = MediaLink::Tunnel {
+        inbound,
+        outbound: Box::new(|_| {}),
+    };
+    let config = CallConfig::new(Role::Offerer, "127.0.0.1:0".parse().unwrap());
+    let (driver, events) = CallDriver::start_with(config, link, outgoing, |_| {}).unwrap();
+    let CallEvent::Signal(LocalSignal::Offer(sdp)) = events
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+    else {
+        panic!("expected an offer")
+    };
+    let rid = a
+        .send(C::MediaOffer(v1::MediaOffer {
+            room_id: "r".into(),
+            sdp,
+            transport: v1::MediaTransport::Websocket as i32,
+            dialed_ip: String::new(),
+        }))
+        .await;
+    let answer = loop {
+        let (r, body) = a.recv().await;
+        if let S::MediaAnswer(ans) = body {
+            assert_eq!(r, rid);
+            break ans;
+        }
+    };
+    assert_eq!(answer.room_id, "r");
+    assert!(answer.sdp.contains("m=audio"), "{}", answer.sdp);
+    driver.stop();
+    // The worker reports the member (statistics cross the pipe every 500 ms).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let stats = http_get(addr, "/v1/media-stats").await;
+        if stats.contains("\"peers\":1") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{stats}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
