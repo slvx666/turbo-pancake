@@ -6961,7 +6961,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-app-server"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6995,7 +6995,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-bench"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -7016,7 +7016,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-desktop"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "futures-util",
  "prost",
@@ -7041,7 +7041,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-installer"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "turbo-pancake-setup",
  "turbo-pancake-update",
@@ -7050,7 +7050,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-launcher"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "turbo-pancake-setup",
  "turbo-pancake-update",
@@ -7060,7 +7060,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-media-audio"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "cpal",
  "opus",
@@ -7075,7 +7075,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-media-probe"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "cpal",
@@ -7084,7 +7084,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-media-sfu"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "socket2",
  "str0m",
@@ -7093,7 +7093,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-media-transport"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "prost",
  "socket2",
@@ -7105,7 +7105,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-media-video"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "thiserror 2.0.21",
  "windows",
@@ -7114,7 +7114,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-messenger-client"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "futures-util",
  "prost",
@@ -7133,14 +7133,14 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-pg-test"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "windows",
 ]
 
 [[package]]
 name = "turbo-pancake-protocol"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "prost",
  "prost-build",
@@ -7150,7 +7150,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-screen-probe"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -7161,7 +7161,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-setup"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "thiserror 2.0.21",
  "turbo-pancake-update",
@@ -7170,7 +7170,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-tls"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "rcgen",
  "rustls",
@@ -7182,7 +7182,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-update"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -7198,7 +7198,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-update-tool"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -7208,7 +7208,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-pancake-win-icon"
-version = "0.1.0"
+version = "0.1.4"
 
 [[package]]
 name = "typed-index-collections"
