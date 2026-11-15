@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer};
 
-use crate::device::{StreamHealth, open_capture, open_playback};
+use crate::device::{StreamHealth, open_capture, open_playback_wide};
 use crate::dsp::{DSP_AVAILABLE, DspConfig, DspStats, VoiceDsp};
 use crate::pipeline::{ReceiverStats, VoiceReceiver, VoiceSender};
 use crate::resample::MonoResampler;
@@ -78,6 +78,9 @@ impl InputStream {
 
 /// An open output stream: mono f32 samples pushed into `samples` are played.
 pub struct OutputStream {
+    /// Stereo output: the side signal (L − R) / 2 for the samples in `samples`, which is
+    /// then the mid; written in step with it. `None`: the device plays mono.
+    pub side: Option<Producer<f32>>,
     pub samples: Producer<f32>,
     pub sample_rate: u32,
     pub device_name: String,
@@ -94,12 +97,19 @@ impl OutputStream {
         guard: impl Any,
     ) -> Self {
         Self {
+            side: None,
             samples,
             sample_rate,
             device_name,
             health,
             _guard: Box::new(guard),
         }
+    }
+
+    /// Adds the ring for the side signal of a stereo device.
+    pub fn with_side(mut self, side: Option<Producer<f32>>) -> Self {
+        self.side = side;
+        self
     }
 }
 
@@ -141,14 +151,15 @@ impl AudioIo for CpalIo {
         device: Option<&str>,
         ring_ms: u32,
     ) -> Result<OutputStream, AudioError> {
-        let (playback, ring) = open_playback(device, ring_ms)?;
+        let (playback, ring, side) = open_playback_wide(device, ring_ms, true)?;
         Ok(OutputStream::new(
             ring,
             playback.sample_rate,
             playback.device_name.clone(),
             playback.health.clone(),
             playback,
-        ))
+        )
+        .with_side(side))
     }
 }
 
@@ -316,9 +327,14 @@ impl Limiter {
         Self { gain: 1.0 }
     }
 
-    /// Returns whether the tick was turned down.
-    fn process(&mut self, frame: &mut [f32]) -> bool {
-        let peak = frame.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    /// Returns whether the tick was turned down. `side` is the side signal of a
+    /// stereo mix (`frame` its mid): the louder channel is at most |mid| + |side|, and
+    /// both get the same gain so the stereo image does not move.
+    fn process(&mut self, frame: &mut [f32], side: &mut [f32]) -> bool {
+        let peak = frame
+            .iter()
+            .zip(side.iter())
+            .fold(0.0f32, |m, (v, s)| m.max(v.abs() + s.abs()));
         let needed = if peak > Self::CEILING {
             Self::CEILING / peak
         } else {
@@ -336,7 +352,7 @@ impl Limiter {
         if from == 1.0 && to == 1.0 {
             return false;
         }
-        for (i, s) in frame.iter_mut().enumerate() {
+        for (i, (s, d)) in frame.iter_mut().zip(side.iter_mut()).enumerate() {
             let g = if i < ramp {
                 from + (to - from) * (i as f32 / ramp as f32)
             } else {
@@ -344,6 +360,7 @@ impl Limiter {
             };
             // The clamp only catches a peak inside the attack ramp.
             *s = (*s * g).clamp(-1.0, 1.0);
+            *d *= g;
         }
         self.gain = to;
         true
@@ -356,6 +373,7 @@ enum Command {
     SetInput(Option<String>),
     SetOutput(Option<String>),
     SetPeerVolume(PeerId, f32),
+    SetPeerStereo(PeerId, bool),
     RemovePeer(PeerId),
     SetEncoder(EncoderConfig),
     SetDsp(DspConfig),
@@ -383,6 +401,7 @@ impl AudioEngine {
         let status = Arc::new(Mutex::new(EngineStatus::default()));
         let sender = VoiceSender::new(CODEC_RATE, config.encoder)?;
         let out_resampler = MonoResampler::new(CODEC_RATE, CODEC_RATE)?;
+        let side_resampler = MonoResampler::new(CODEC_RATE, CODEC_RATE)?;
         let dsp = VoiceDsp::new(config.dsp)?;
         let worker_status = status.clone();
         let worker_dropped = dropped.clone();
@@ -396,6 +415,10 @@ impl AudioEngine {
                     dsp,
                     receivers: HashMap::new(),
                     volumes: HashMap::new(),
+                    stereo_peers: Default::default(),
+                    mix_side: vec![0.0; FRAME_SAMPLES],
+                    device_side: Vec::with_capacity(FRAME_SAMPLES * 4),
+                    side_resampler,
                     input: None,
                     output: None,
                     out_resampler,
@@ -480,6 +503,13 @@ impl AudioEngine {
         self.send(Command::SetPeerVolume(peer, volume))
     }
 
+    /// Declares a peer's stream stereo (a share's system audio) before or while it
+    /// plays: it is then decoded with both channels and played in stereo where the
+    /// output device has them. Voice streams stay mono.
+    pub fn set_peer_stereo(&self, peer: PeerId, stereo: bool) -> Result<(), AudioError> {
+        self.send(Command::SetPeerStereo(peer, stereo))
+    }
+
     /// Drops the peer's jitter buffer and decoder (participant left).
     pub fn remove_peer(&self, peer: PeerId) -> Result<(), AudioError> {
         self.send(Command::RemovePeer(peer))
@@ -526,6 +556,12 @@ struct Worker {
     receivers: HashMap<PeerId, VoiceReceiver>,
     /// Volumes survive receiver removal by the transport and apply to new receivers.
     volumes: HashMap<PeerId, f32>,
+    /// Peers whose streams are stereo.
+    stereo_peers: std::collections::HashSet<PeerId>,
+    /// Side signal of the mix (`mix` is its mid) and its device-rate copy.
+    mix_side: Vec<f32>,
+    device_side: Vec<f32>,
+    side_resampler: MonoResampler,
     input: Option<InputStream>,
     output: Option<OutputStream>,
     out_resampler: MonoResampler,
@@ -635,6 +671,18 @@ impl Worker {
                     self.receive();
                     self.receivers.remove(&peer);
                     self.volumes.remove(&peer);
+                    self.stereo_peers.remove(&peer);
+                }
+                Ok(Command::SetPeerStereo(peer, stereo)) => {
+                    let changed = if stereo {
+                        self.stereo_peers.insert(peer)
+                    } else {
+                        self.stereo_peers.remove(&peer)
+                    };
+                    // A receiver in the other mode starts over with the right decoder.
+                    if changed {
+                        self.receivers.remove(&peer);
+                    }
                 }
                 Ok(Command::SetDsp(cfg)) => {
                     self.dsp.set_config(cfg);
@@ -699,6 +747,7 @@ impl Worker {
         }
         match result.and_then(|s| {
             self.out_resampler = MonoResampler::new(CODEC_RATE, s.sample_rate)?;
+            self.side_resampler = MonoResampler::new(CODEC_RATE, s.sample_rate)?;
             Ok(s)
         }) {
             Ok(mut s) => {
@@ -706,6 +755,10 @@ impl Worker {
                 let silence = (s.sample_rate * self.config.prefill_ms / 1000) as usize;
                 for _ in 0..silence.min(s.samples.slots()) {
                     let _ = s.samples.push(0.0);
+                    // In step with the mid ring from the first sample on.
+                    if let Some(side) = s.side.as_mut() {
+                        let _ = side.push(0.0);
+                    }
                 }
                 self.st.output = Some(ActiveDevice {
                     name: s.device_name.clone(),
@@ -810,7 +863,8 @@ impl Worker {
                     self.incoming_dropped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                match VoiceReceiver::new(CODEC_RATE, self.config.jitter) {
+                let stereo = self.stereo_peers.contains(&p.peer);
+                match VoiceReceiver::with_channels(CODEC_RATE, self.config.jitter, stereo) {
                     Ok(mut rx) => {
                         rx.set_volume(self.volumes.get(&p.peer).copied().unwrap_or(1.0));
                         self.receivers.insert(p.peer, rx);
@@ -832,14 +886,20 @@ impl Worker {
     /// is played, so it is also the echo canceller's far-end reference.
     fn mix_tick(&mut self, to_speaker: bool) -> Result<(), AudioError> {
         self.mix.fill(0.0);
+        self.mix_side.fill(0.0);
         for rx in self.receivers.values_mut() {
             self.peer_pcm.clear();
             rx.pull_frame(&mut self.peer_pcm)?;
             for (m, s) in self.mix.iter_mut().zip(&self.peer_pcm) {
                 *m += s;
             }
+            if let Some(side) = rx.side() {
+                for (m, s) in self.mix_side.iter_mut().zip(side) {
+                    *m += s;
+                }
+            }
         }
-        if self.limiter.process(&mut self.mix) {
+        if self.limiter.process(&mut self.mix, &mut self.mix_side) {
             self.st.limited_ticks += 1;
         }
         if to_speaker {
@@ -878,7 +938,22 @@ impl Worker {
             let Some(out) = self.output.as_mut() else {
                 return Ok(());
             };
-            let n = self.device_pcm.len().min(out.samples.slots());
+            let mut n = self.device_pcm.len().min(out.samples.slots());
+            if let Some(side) = out.side.as_mut() {
+                // The same number of samples into both rings, always.
+                self.device_side.clear();
+                self.side_resampler
+                    .process(&self.mix_side, &mut self.device_side)?;
+                self.device_side.resize(self.device_pcm.len(), 0.0);
+                n = n.min(side.slots());
+                if let Ok(mut chunk) = side.write_chunk(n) {
+                    let (a, b) = chunk.as_mut_slices();
+                    for (dst, &s) in a.iter_mut().chain(b.iter_mut()).zip(&self.device_side) {
+                        *dst = s;
+                    }
+                    chunk.commit_all();
+                }
+            }
             if let Ok(mut chunk) = out.samples.write_chunk(n) {
                 let (a, b) = chunk.as_mut_slices();
                 for (dst, &s) in a.iter_mut().chain(b.iter_mut()).zip(&self.device_pcm) {
@@ -938,7 +1013,7 @@ mod tests {
             .map(|i| 0.5 * (i as f32 * 0.05).sin())
             .collect();
         let before = frame.clone();
-        assert!(!l.process(&mut frame));
+        assert!(!l.process(&mut frame, &mut vec![0.0; FRAME_SAMPLES]));
         assert_eq!(frame, before);
     }
 
@@ -951,12 +1026,13 @@ mod tests {
                 .map(|i| 3.0 * ((n * FRAME_SAMPLES + i) as f32 * 0.05).sin())
                 .collect()
         };
+        let mut none = vec![0.0; FRAME_SAMPLES];
         let mut first = loud(0);
-        assert!(l.process(&mut first));
+        assert!(l.process(&mut first, &mut none));
         assert!(first.iter().all(|s| s.abs() <= 1.0));
         // From the second tick on the wave keeps its shape: scaled, not flattened.
         let mut second = loud(1);
-        l.process(&mut second);
+        l.process(&mut second, &mut none);
         let peak = second.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!((peak - Limiter::CEILING).abs() < 0.01, "peak {peak}");
         let flat = second.iter().filter(|s| s.abs() >= 0.999).count();
@@ -965,7 +1041,7 @@ mod tests {
         let mut ticks = 0;
         loop {
             let mut quiet = vec![0.1f32; FRAME_SAMPLES];
-            if !l.process(&mut quiet) {
+            if !l.process(&mut quiet, &mut none) {
                 break;
             }
             ticks += 1;

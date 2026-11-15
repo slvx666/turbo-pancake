@@ -23,6 +23,8 @@ use crate::engine::{AudioIo, InputStream, OutputStream};
 pub struct SimDevice {
     pub id: String,
     pub rate: u32,
+    /// Output device with two channels (takes a side signal next to the mid).
+    pub stereo: bool,
 }
 
 impl SimDevice {
@@ -30,7 +32,14 @@ impl SimDevice {
         Self {
             id: id.to_owned(),
             rate,
+            stereo: false,
         }
+    }
+
+    /// A speaker with a left and a right channel.
+    pub fn stereo(mut self) -> Self {
+        self.stereo = true;
+        self
     }
 }
 
@@ -49,6 +58,9 @@ pub struct SimState {
     pub played_loud: AtomicU64,
     /// Peak of the last 100 ms played (f32 bits).
     recent_peak: AtomicU32,
+    /// Stereo speakers: peaks of the left and right channel in the last 100 ms.
+    recent_left: AtomicU32,
+    recent_right: AtomicU32,
     unavailable: Mutex<HashSet<String>>,
     healths: Mutex<Vec<(String, Arc<StreamHealth>)>>,
     pub muted_inputs: AtomicBool,
@@ -57,6 +69,14 @@ pub struct SimState {
 }
 
 impl SimState {
+    /// Peaks of the left and right channel of a stereo speaker (last 100 ms).
+    pub fn recent_stereo_peaks(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.recent_left.load(Ordering::Relaxed)),
+            f32::from_bits(self.recent_right.load(Ordering::Relaxed)),
+        )
+    }
+
     pub fn recent_peak(&self) -> f32 {
         f32::from_bits(self.recent_peak.load(Ordering::Relaxed))
     }
@@ -248,19 +268,35 @@ impl AudioIo for SimIo {
     ) -> Result<OutputStream, AudioError> {
         let dev = self.pick(&self.outputs, device)?;
         let (producer, mut consumer) = RingBuffer::new((dev.rate * ring_ms / 1000) as usize);
+        let (side_producer, mut side) = if dev.stereo {
+            let (p, c) = RingBuffer::<f32>::new((dev.rate * ring_ms / 1000) as usize);
+            (Some(p), Some(c))
+        } else {
+            (None, None)
+        };
         let health = Arc::new(StreamHealth::default());
         let stop = Arc::new(AtomicBool::new(false));
         let st = self.state.clone();
         let h = health.clone();
         let window = (dev.rate / 10) as usize;
         let (mut in_window, mut peak) = (0usize, 0.0f32);
+        let (mut left, mut right) = (0.0f32, 0.0f32);
         let thread = device_thread(dev.rate, stop.clone(), st.clone(), move |due| {
             h.callbacks.fetch_add(1, Ordering::Relaxed);
             let mut loud = 0;
             let mut echo = st.echo.lock().unwrap();
             for _ in 0..due {
                 let s: f32 = match consumer.pop() {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        let s: f32 = s;
+                        // One side sample per mid sample, like a real stereo device.
+                        if let Some(side) = side.as_mut() {
+                            let d: f32 = side.pop().unwrap_or(0.0);
+                            left = left.max((s + d).abs());
+                            right = right.max((s - d).abs());
+                        }
+                        s
+                    }
                     Err(_) => {
                         h.xruns.fetch_add(1, Ordering::Relaxed);
                         0.0
@@ -279,15 +315,18 @@ impl AudioIo for SimIo {
                 in_window += 1;
                 if in_window >= window {
                     st.recent_peak.store(peak.to_bits(), Ordering::Relaxed);
+                    st.recent_left.store(left.to_bits(), Ordering::Relaxed);
+                    st.recent_right.store(right.to_bits(), Ordering::Relaxed);
                     in_window = 0;
                     peak = 0.0;
+                    (left, right) = (0.0, 0.0);
                 }
             }
             st.played.fetch_add(due as u64, Ordering::Relaxed);
             st.played_loud.fetch_add(loud, Ordering::Relaxed);
         });
         self.register(&dev, &health, false);
-        Ok(OutputStream::new(
+        Ok::<_, AudioError>(OutputStream::new(
             producer,
             dev.rate,
             dev.id.clone(),
@@ -300,6 +339,7 @@ impl AudioIo for SimIo {
                 input: false,
             },
         ))
+        .map(|o: OutputStream| o.with_side(side_producer))
     }
 }
 

@@ -251,23 +251,59 @@ pub struct VoiceReceiver {
     pcm: Vec<f32>,
     /// The first of two frames played in one tick (delay correction).
     merge_pcm: Vec<f32>,
+    /// Stereo stream: the decoded interleaved frame, and the side signal (L − R) / 2 of
+    /// the current tick and of the first of two merged frames. `pcm` then holds the mid
+    /// signal (L + R) / 2 — exactly what a mono decoder plays.
+    stereo: Option<Stereo>,
     volume: f32,
     stats: ReceiverStats,
     speech_left: u32,
 }
 
+struct Stereo {
+    wide: Vec<f32>,
+    side: Vec<f32>,
+    merge_side: Vec<f32>,
+}
+
 impl VoiceReceiver {
     pub fn new(output_rate: u32, config: JitterConfig) -> Result<Self, AudioError> {
+        Self::with_channels(output_rate, config, false)
+    }
+
+    /// `stereo`: the stream is stereo (a share's system audio). The frames from
+    /// [`Self::pull_frame`] are then its mid signal and [`Self::side`] its side signal,
+    /// so `left = mid + side`, `right = mid − side`; a mono listener plays the mid alone.
+    pub fn with_channels(
+        output_rate: u32,
+        config: JitterConfig,
+        stereo: bool,
+    ) -> Result<Self, AudioError> {
         Ok(Self {
             jitter: JitterBuffer::new(config),
-            decoder: VoiceDecoder::new()?,
+            decoder: VoiceDecoder::with_channels(stereo)?,
             resampler: MonoResampler::new(CODEC_RATE, output_rate)?,
             pcm: vec![0.0; FRAME_SAMPLES],
             merge_pcm: vec![0.0; FRAME_SAMPLES],
+            stereo: stereo.then(|| Stereo {
+                wide: vec![0.0; FRAME_SAMPLES * 2],
+                side: vec![0.0; FRAME_SAMPLES],
+                merge_side: vec![0.0; FRAME_SAMPLES],
+            }),
             volume: 1.0,
             stats: ReceiverStats::default(),
             speech_left: 0,
         })
+    }
+
+    pub fn is_stereo(&self) -> bool {
+        self.stereo.is_some()
+    }
+
+    /// The side signal of the tick last rendered by [`Self::pull_frame`], at
+    /// [`CODEC_RATE`] and after the local volume; `None` for a mono stream.
+    pub fn side(&self) -> Option<&[f32]> {
+        self.stereo.as_ref().map(|s| s.side.as_slice())
     }
 
     /// Local playback gain for this peer (does not affect what the peer sends).
@@ -304,6 +340,9 @@ impl VoiceReceiver {
             Playout::Buffering => {
                 self.stats.buffering_ticks += 1;
                 self.pcm.fill(0.0);
+                if let Some(st) = &mut self.stereo {
+                    st.side.fill(0.0);
+                }
                 None
             }
             Playout::Packet(p) => Some(self.decode(&p, DecodeKind::Normal)),
@@ -315,13 +354,21 @@ impl VoiceReceiver {
                 self.decode(&a, DecodeKind::Normal);
                 let silent = level_db(&self.pcm) < SKIP_SILENT_DB;
                 std::mem::swap(&mut self.pcm, &mut self.merge_pcm);
+                if let Some(st) = &mut self.stereo {
+                    std::mem::swap(&mut st.side, &mut st.merge_side);
+                }
                 let kind = self.decode(&b, DecodeKind::Normal);
                 if !silent {
-                    let n = self.pcm.len() as f32;
-                    for (i, (second, first)) in self.pcm.iter_mut().zip(&self.merge_pcm).enumerate()
-                    {
-                        let w = i as f32 / n;
-                        *second = first * (1.0 - w) + *second * w;
+                    let fade = |second: &mut [f32], first: &[f32]| {
+                        let n = second.len() as f32;
+                        for (i, (second, first)) in second.iter_mut().zip(first).enumerate() {
+                            let w = i as f32 / n;
+                            *second = first * (1.0 - w) + *second * w;
+                        }
+                    };
+                    fade(&mut self.pcm, &self.merge_pcm);
+                    if let Some(st) = &mut self.stereo {
+                        fade(&mut st.side, &st.merge_side);
                     }
                 }
                 Some(kind)
@@ -343,27 +390,44 @@ impl VoiceReceiver {
             peak = peak.max(s.abs());
         }
         self.stats.last_peak = peak;
+        if let Some(st) = &mut self.stereo {
+            for s in &mut st.side {
+                *s *= self.volume;
+            }
+        }
         self.resampler.process(&self.pcm, out)?;
         Ok(kind)
     }
 
     fn decode(&mut self, packet: &[u8], kind: DecodeKind) -> DecodeKind {
-        let res = match kind {
-            DecodeKind::Normal => self.decoder.decode(packet, &mut self.pcm),
-            DecodeKind::Fec => self.decoder.decode_fec(packet, &mut self.pcm),
-            DecodeKind::Concealed => self.decoder.conceal(&mut self.pcm),
+        let decoder = &mut self.decoder;
+        let buf: &mut [f32] = match &mut self.stereo {
+            Some(st) => &mut st.wide,
+            None => &mut self.pcm,
         };
-        match res {
+        let res = match kind {
+            DecodeKind::Normal => decoder.decode(packet, buf),
+            DecodeKind::Fec => decoder.decode_fec(packet, buf),
+            DecodeKind::Concealed => decoder.conceal(buf),
+        };
+        let kind = match res {
             Ok(n) if n == FRAME_SAMPLES => kind,
             Ok(_) | Err(_) => {
                 // Corrupt or unexpected frame size: render concealment instead.
                 self.stats.decode_errors += 1;
-                if self.decoder.conceal(&mut self.pcm).is_err() {
-                    self.pcm.fill(0.0);
+                if decoder.conceal(buf).is_err() {
+                    buf.fill(0.0);
                 }
                 DecodeKind::Concealed
             }
+        };
+        if let Some(st) = &mut self.stereo {
+            for (i, lr) in st.wide.as_chunks::<2>().0.iter().enumerate() {
+                self.pcm[i] = (lr[0] + lr[1]) * 0.5;
+                st.side[i] = (lr[0] - lr[1]) * 0.5;
+            }
         }
+        kind
     }
 }
 
@@ -479,6 +543,50 @@ mod tests {
             .map(|w| (w[1] - w[0]).abs())
             .fold(0.0f32, f32::max);
         assert!(jump < 0.08, "discontinuity of {jump} in the played signal");
+    }
+
+    #[test]
+    fn a_stereo_stream_keeps_its_channels_apart() {
+        // Left: 440 Hz tone, right: silence — as a share's system audio would send it.
+        let mut enc =
+            opus::Encoder::new(CODEC_RATE, opus::Channels::Stereo, opus::Application::Audio)
+                .unwrap();
+        enc.set_bitrate(opus::Bitrate::Bits(96_000)).unwrap();
+        let mut stereo =
+            VoiceReceiver::with_channels(CODEC_RATE, JitterConfig::default(), true).unwrap();
+        let mut mono = VoiceReceiver::new(CODEC_RATE, JitterConfig::default()).unwrap();
+        assert!(stereo.is_stereo() && !mono.is_stereo() && mono.side().is_none());
+        let mut phase = 0.0;
+        let mut packet = vec![0u8; MAX_PACKET];
+        let (mut left, mut right, mut mid_mono) = (0.0f32, 0.0f32, 0.0f32);
+        for n in 0..60u16 {
+            let tone = chunk(1, true, &mut phase);
+            let frame: Vec<f32> = tone.iter().flat_map(|s| [*s, 0.0]).collect();
+            let len = enc.encode_float(&frame, &mut packet).unwrap();
+            let t = u64::from(n) * 20;
+            stereo.push_packet(n, packet[..len].to_vec(), t);
+            mono.push_packet(n, packet[..len].to_vec(), t);
+            let (mut mid, mut down) = (Vec::new(), Vec::new());
+            stereo.pull_frame(&mut mid).unwrap();
+            mono.pull_frame(&mut down).unwrap();
+            if n >= 20 {
+                let side = stereo.side().unwrap();
+                let l: Vec<f32> = mid.iter().zip(side).map(|(m, s)| m + s).collect();
+                let r: Vec<f32> = mid.iter().zip(side).map(|(m, s)| m - s).collect();
+                left += crate::testsignal::rms(&l);
+                right += crate::testsignal::rms(&r);
+                mid_mono += crate::testsignal::rms(&down);
+            }
+        }
+        let (left, right, mid_mono) = (left / 40.0, right / 40.0, mid_mono / 40.0);
+        // The tone is on the left only; the mono listener hears half of it.
+        assert!(left > 0.15, "left {left}");
+        assert!(right < left * 0.1, "right {right} vs left {left}");
+        assert!(
+            (mid_mono - left / 2.0).abs() < left * 0.15,
+            "mono {mid_mono} left {left}"
+        );
+        assert_eq!(stereo.stats().decode_errors, 0);
     }
 
     #[test]

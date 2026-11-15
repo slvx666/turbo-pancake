@@ -384,3 +384,98 @@ fn echo_canceller_breaks_the_audio_loop() {
     eprintln!("echo leak with AEC3 + NS: {leak:.1} dB");
     assert!(leak < -20.0, "{leak:.1} dB");
 }
+
+/// A share's system audio (stereo, the sound on the left only) next to a mono voice, on
+/// a stereo speaker at another rate than the codec's: the share stays on its side, the
+/// voice plays in the middle, and a mono speaker gets the downmix.
+#[test]
+fn stereo_share_audio_plays_in_stereo_and_voice_stays_centred() {
+    const SHARE: u64 = 21;
+    let feed = |stereo_speaker: bool, share: bool| -> (f32, f32, f32) {
+        let speaker = SimDevice::new("spk-44k", 44_100);
+        let io = SimIo::new(
+            vec![SimDevice::new("mic-48k", 48_000)],
+            vec![if stereo_speaker {
+                speaker.stereo()
+            } else {
+                speaker
+            }],
+        );
+        let state = io.state();
+        let cfg = EngineConfig {
+            muted: true,
+            dsp: DSP_OFF,
+            ..EngineConfig::default()
+        };
+        let (engine, link) = AudioEngine::start(io, cfg).unwrap();
+        engine.set_peer_stereo(SHARE, true).unwrap();
+        let mut stereo =
+            opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::Audio).unwrap();
+        stereo.set_bitrate(opus::Bitrate::Bits(96_000)).unwrap();
+        let mut voice = VoiceSender::new(48_000, EncoderConfig::default()).unwrap();
+        let mut packet = vec![0u8; 1275];
+        let start = Instant::now();
+        let (mut peaks, mut mono_peak) = ((0.0f32, 0.0f32), 0.0f32);
+        for n in 0..100u32 {
+            if let Some(wait) = (start + Duration::from_millis(u64::from(n) * 20))
+                .checked_duration_since(Instant::now())
+            {
+                std::thread::sleep(wait);
+            }
+            let tone: Vec<f32> = (0..FRAME_SAMPLES)
+                .map(|i| {
+                    let t = (n as usize * FRAME_SAMPLES + i) as f32 / 48_000.0;
+                    0.3 * (std::f32::consts::TAU * 440.0 * t).sin()
+                })
+                .collect();
+            if share {
+                let frame: Vec<f32> = tone.iter().flat_map(|s| [*s, 0.0]).collect();
+                let len = stereo.encode_float(&frame, &mut packet).unwrap();
+                link.incoming.push(IncomingPacket {
+                    peer: SHARE,
+                    seq: n as u16,
+                    timestamp: n * FRAME_SAMPLES as u32,
+                    payload: packet[..len].to_vec(),
+                    arrival: Instant::now(),
+                });
+            } else {
+                voice
+                    .push_samples(&tone, |f| {
+                        link.incoming.push(IncomingPacket {
+                            peer: PEER,
+                            seq: f.seq,
+                            timestamp: f.timestamp,
+                            payload: f.payload.to_vec(),
+                            arrival: Instant::now(),
+                        });
+                    })
+                    .unwrap();
+            }
+            if n >= 50 {
+                let (l, r) = state.recent_stereo_peaks();
+                peaks = (peaks.0.max(l), peaks.1.max(r));
+                mono_peak = mono_peak.max(state.recent_peak());
+            }
+        }
+        let st = engine.status();
+        assert!(
+            st.peers.iter().all(|p| p.stats.decode_errors == 0),
+            "{st:?}"
+        );
+        engine.stop();
+        (peaks.0, peaks.1, mono_peak)
+    };
+    // The share on a stereo speaker: left only.
+    let (left, right, _) = feed(true, true);
+    assert!(left > 0.2, "left {left}");
+    assert!(right < left * 0.15, "right {right} vs left {left}");
+    // A voice on the same speaker: the same in both channels.
+    let (left, right, _) = feed(true, false);
+    assert!(
+        left > 0.2 && (left - right).abs() < 0.02,
+        "voice {left} / {right}"
+    );
+    // The share on a mono speaker: half the level of its one loud channel.
+    let (_, _, mono) = feed(false, true);
+    assert!((0.1..0.2).contains(&mono), "mono downmix {mono}");
+}

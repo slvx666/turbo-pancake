@@ -143,16 +143,31 @@ pub enum DecodeKind {
 
 pub struct VoiceDecoder {
     inner: Decoder,
+    /// Samples of one decoded frame over all channels (interleaved).
+    frame_len: usize,
 }
 
 impl VoiceDecoder {
     pub fn new() -> Result<Self, AudioError> {
+        Self::with_channels(false)
+    }
+
+    /// `stereo`: decode to interleaved left/right (a share's system audio); a mono
+    /// decoder plays a stereo stream as its downmix.
+    pub fn with_channels(stereo: bool) -> Result<Self, AudioError> {
+        let (channels, n) = if stereo {
+            (Channels::Stereo, 2)
+        } else {
+            (Channels::Mono, 1)
+        };
         Ok(Self {
-            inner: Decoder::new(CODEC_RATE, Channels::Mono)?,
+            inner: Decoder::new(CODEC_RATE, channels)?,
+            frame_len: FRAME_SAMPLES * n,
         })
     }
 
-    /// Decodes one packet into `out` (must hold [`FRAME_SAMPLES`]).
+    /// Decodes one packet into `out` (must hold one frame of every channel); returns
+    /// the samples per channel.
     pub fn decode(&mut self, packet: &[u8], out: &mut [f32]) -> Result<usize, AudioError> {
         Ok(self.inner.decode_float(packet, out, false)?)
     }
@@ -161,14 +176,14 @@ impl VoiceDecoder {
     pub fn decode_fec(&mut self, next_packet: &[u8], out: &mut [f32]) -> Result<usize, AudioError> {
         Ok(self
             .inner
-            .decode_float(next_packet, &mut out[..FRAME_SAMPLES], true)?)
+            .decode_float(next_packet, &mut out[..self.frame_len], true)?)
     }
 
     /// Generates one concealment frame.
     pub fn conceal(&mut self, out: &mut [f32]) -> Result<usize, AudioError> {
         Ok(self
             .inner
-            .decode_float(&[], &mut out[..FRAME_SAMPLES], false)?)
+            .decode_float(&[], &mut out[..self.frame_len], false)?)
     }
 }
 

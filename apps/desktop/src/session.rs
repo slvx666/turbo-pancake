@@ -1267,6 +1267,8 @@ impl Core {
                 let _ = a.engine.remove_peer(PeerId::from(old));
             }
             if let (Some(ssrc), Some(a)) = (audio, &self.audio) {
+                // System audio is sent in stereo (voice streams are mono).
+                let _ = a.engine.set_peer_stereo(PeerId::from(ssrc), true);
                 a.accepted.lock().unwrap().insert(ssrc);
                 let _ = a
                     .engine

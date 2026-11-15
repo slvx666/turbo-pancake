@@ -229,6 +229,24 @@ pub fn open_playback(
     id: Option<&str>,
     ring_ms: u32,
 ) -> Result<(Playback, Producer<f32>), AudioError> {
+    let (playback, mid, _) = open_playback_wide(id, ring_ms, false)?;
+    Ok((playback, mid))
+}
+
+/// An open speaker: the stream, the ring for the mid (or mono) signal and, on a stereo
+/// device, the ring for the side signal.
+pub type WidePlayback = (Playback, Producer<f32>, Option<Producer<f32>>);
+
+/// [`open_playback`] for stereo content: with `stereo` and a device of two or more
+/// channels the second ring takes the *side* signal for the samples in the first (the
+/// mid): left = mid + side, right = mid − side, further channels stay silent. Both rings
+/// must be written in step (the same number of samples); a missing side sample plays as
+/// 0, i.e. mono. A mono device gets no side ring and plays the mid.
+pub fn open_playback_wide(
+    id: Option<&str>,
+    ring_ms: u32,
+    stereo: bool,
+) -> Result<WidePlayback, AudioError> {
     let device = find_device(id, false)?;
     let supported = device
         .default_output_config()
@@ -236,13 +254,21 @@ pub fn open_playback(
     let config = supported.config();
     let rate = config.sample_rate;
     let channels = config.channels;
-    let (producer, consumer) = RingBuffer::new((rate * ring_ms / 1000).max(1024) as usize);
+    let ring = (rate * ring_ms / 1000).max(1024) as usize;
+    let (producer, consumer) = RingBuffer::new(ring);
+    let (side_producer, side) = if stereo && channels >= 2 {
+        let (p, c) = RingBuffer::new(ring);
+        (Some(p), Some(c))
+    } else {
+        (None, None)
+    };
     let health = Arc::new(StreamHealth::default());
+    let h = health.clone();
     let stream = match supported.sample_format() {
-        SampleFormat::F32 => build_playback::<f32>(&device, config, consumer, health.clone()),
-        SampleFormat::I16 => build_playback::<i16>(&device, config, consumer, health.clone()),
-        SampleFormat::I32 => build_playback::<i32>(&device, config, consumer, health.clone()),
-        SampleFormat::U16 => build_playback::<u16>(&device, config, consumer, health.clone()),
+        SampleFormat::F32 => build_playback::<f32>(&device, config, consumer, side, h),
+        SampleFormat::I16 => build_playback::<i16>(&device, config, consumer, side, h),
+        SampleFormat::I32 => build_playback::<i32>(&device, config, consumer, side, h),
+        SampleFormat::U16 => build_playback::<u16>(&device, config, consumer, side, h),
         other => Err(AudioError::Device(format!(
             "unsupported output format {other:?}"
         ))),
@@ -259,6 +285,7 @@ pub fn open_playback(
             health,
         },
         producer,
+        side_producer,
     ))
 }
 
@@ -266,6 +293,7 @@ fn build_playback<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     mut consumer: Consumer<f32>,
+    mut side: Option<Consumer<f32>>,
     health: Arc<StreamHealth>,
 ) -> Result<cpal::Stream, AudioError>
 where
@@ -284,8 +312,20 @@ where
                 if let Ok(chunk) = consumer.read_chunk(n) {
                     let (a, b) = chunk.as_slices();
                     for &s in a.iter().chain(b.iter()) {
-                        if let Some(frame) = out.next() {
-                            frame.fill(T::from_sample(s));
+                        let Some(frame) = out.next() else {
+                            break;
+                        };
+                        match side.as_mut() {
+                            // One side sample per mid sample keeps the rings in step.
+                            Some(side) => {
+                                let d = side.pop().unwrap_or(0.0);
+                                frame.fill(T::EQUILIBRIUM);
+                                frame[0] = T::from_sample((s + d).clamp(-1.0, 1.0));
+                                if let Some(right) = frame.get_mut(1) {
+                                    *right = T::from_sample((s - d).clamp(-1.0, 1.0));
+                                }
+                            }
+                            None => frame.fill(T::from_sample(s)),
                         }
                     }
                     chunk.commit_all();
