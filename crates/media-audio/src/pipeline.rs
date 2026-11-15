@@ -244,13 +244,92 @@ impl ReceiverStats {
 /// Below this level (dBFS) a frame removed to shorten the delay is simply left out.
 const SKIP_SILENT_DB: f32 = -55.0;
 
+/// Removing sound to shorten the delay: one stretch of `lag` samples is taken out of
+/// the queued signal by fading over `fade` samples from the signal into itself `lag`
+/// samples later. With `lag` = one pitch period of a voiced sound both sides of the
+/// fade are the same waveform, so nothing is heard; noise and silence hide any fade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cut {
+    lag: usize,
+    fade: usize,
+}
+
+impl Cut {
+    /// Pitch periods looked for: 2 ms (500 Hz) to 15 ms (67 Hz).
+    const MIN_LAG: usize = (CODEC_RATE / 500) as usize;
+    const MAX_LAG: usize = (CODEC_RATE / 1000 * 15) as usize;
+    /// Samples compared (and faded): 8 ms.
+    const WINDOW: usize = (CODEC_RATE / 125) as usize;
+    /// What is removed at once where no period is found (noise, silence): 5 ms.
+    const PLAIN: usize = (CODEC_RATE / 200) as usize;
+
+    /// The cut that removes at most `excess` samples from the front part of `q`, or
+    /// `None` when there is nothing to remove (or not enough signal to fade over).
+    fn find(q: &[f32], excess: usize) -> Option<Cut> {
+        if excess == 0 || q.len() < Self::WINDOW * 2 {
+            return None;
+        }
+        let fade = Self::WINDOW;
+        let room = q.len() - fade;
+        let max_lag = excess.min(Self::MAX_LAG).min(room);
+        // What is left is shorter than any pitch period: take it out as it is.
+        if max_lag < Self::MIN_LAG {
+            return Some(Cut {
+                lag: excess.min(room),
+                fade,
+            });
+        }
+        let head = &q[..fade];
+        let energy: f32 = head.iter().map(|v| v * v).sum();
+        let plain = Cut {
+            lag: excess.min(Self::PLAIN).min(room),
+            fade,
+        };
+        if energy < 1e-6 * fade as f32 {
+            return Some(plain);
+        }
+        let mut best = (0.0f32, 0usize);
+        for lag in Self::MIN_LAG..=max_lag {
+            let later = &q[lag..lag + fade];
+            let (mut dot, mut e2) = (0.0f32, 0.0f32);
+            for (a, b) in head.iter().zip(later) {
+                dot += a * b;
+                e2 += b * b;
+            }
+            let c = dot / (energy * e2).sqrt().max(1e-9);
+            if c > best.0 {
+                best = (c, lag);
+            }
+        }
+        // Voiced: the waveform repeats after `lag`. Otherwise it is noise-like.
+        Some(if best.0 >= 0.6 {
+            Cut { lag: best.1, fade }
+        } else {
+            plain
+        })
+    }
+
+    fn apply(self, q: &mut Vec<f32>) {
+        if q.len() < self.lag + self.fade {
+            return;
+        }
+        for i in 0..self.fade {
+            let w = i as f32 / self.fade as f32;
+            q[i] = q[i] * (1.0 - w) + q[i + self.lag] * w;
+        }
+        q.drain(self.fade..self.fade + self.lag);
+    }
+}
+
 pub struct VoiceReceiver {
     jitter: JitterBuffer,
     decoder: VoiceDecoder,
     resampler: MonoResampler,
     pcm: Vec<f32>,
-    /// The first of two frames played in one tick (delay correction).
-    merge_pcm: Vec<f32>,
+    /// Sound decoded but not played yet while the delay is being shortened: after two
+    /// frames arrived for one tick, one frame's worth waits here and is taken out a
+    /// pitch period per tick ([`Cut`]). Empty otherwise.
+    queue: Vec<f32>,
     /// Stereo stream: the decoded interleaved frame, and the side signal (L − R) / 2 of
     /// the current tick and of the first of two merged frames. `pcm` then holds the mid
     /// signal (L + R) / 2 — exactly what a mono decoder plays.
@@ -263,7 +342,8 @@ pub struct VoiceReceiver {
 struct Stereo {
     wide: Vec<f32>,
     side: Vec<f32>,
-    merge_side: Vec<f32>,
+    /// The side signal's part of [`VoiceReceiver::queue`] (cut at the same places).
+    queue: Vec<f32>,
 }
 
 impl VoiceReceiver {
@@ -284,11 +364,11 @@ impl VoiceReceiver {
             decoder: VoiceDecoder::with_channels(stereo)?,
             resampler: MonoResampler::new(CODEC_RATE, output_rate)?,
             pcm: vec![0.0; FRAME_SAMPLES],
-            merge_pcm: vec![0.0; FRAME_SAMPLES],
+            queue: Vec::with_capacity(FRAME_SAMPLES * 3),
             stereo: stereo.then(|| Stereo {
                 wide: vec![0.0; FRAME_SAMPLES * 2],
                 side: vec![0.0; FRAME_SAMPLES],
-                merge_side: vec![0.0; FRAME_SAMPLES],
+                queue: Vec::with_capacity(FRAME_SAMPLES * 3),
             }),
             volume: 1.0,
             stats: ReceiverStats::default(),
@@ -298,6 +378,11 @@ impl VoiceReceiver {
 
     pub fn is_stereo(&self) -> bool {
         self.stereo.is_some()
+    }
+
+    /// Samples decoded but held back while the delay is being shortened (0 normally).
+    pub fn pending_samples(&self) -> usize {
+        self.queue.len()
     }
 
     /// The side signal of the tick last rendered by [`Self::pull_frame`], at
@@ -347,35 +432,25 @@ impl VoiceReceiver {
             }
             Playout::Packet(p) => Some(self.decode(&p, DecodeKind::Normal)),
             Playout::Merge(a, b) => {
-                // Two frames in one tick. Both are decoded (the decoder's state must
-                // see every packet); a silent first frame is left out, otherwise the
-                // tick fades from the first into the second: 40 ms of sound in 20 ms
-                // without a cut in the waveform.
+                // Two frames for one tick: the buffer is too deep. Both are decoded
+                // (the decoder's state must see every packet). A silent first frame is
+                // simply left out; otherwise it waits in front of the second one and the
+                // surplus is taken out of the sound a pitch period at a time, below.
                 self.decode(&a, DecodeKind::Normal);
-                let silent = level_db(&self.pcm) < SKIP_SILENT_DB;
-                std::mem::swap(&mut self.pcm, &mut self.merge_pcm);
-                if let Some(st) = &mut self.stereo {
-                    std::mem::swap(&mut st.side, &mut st.merge_side);
-                }
-                let kind = self.decode(&b, DecodeKind::Normal);
-                if !silent {
-                    let fade = |second: &mut [f32], first: &[f32]| {
-                        let n = second.len() as f32;
-                        for (i, (second, first)) in second.iter_mut().zip(first).enumerate() {
-                            let w = i as f32 / n;
-                            *second = first * (1.0 - w) + *second * w;
-                        }
-                    };
-                    fade(&mut self.pcm, &self.merge_pcm);
+                if level_db(&self.pcm) >= SKIP_SILENT_DB {
+                    self.queue.extend_from_slice(&self.pcm);
                     if let Some(st) = &mut self.stereo {
-                        fade(&mut st.side, &st.merge_side);
+                        st.queue.extend_from_slice(&st.side);
                     }
                 }
-                Some(kind)
+                Some(self.decode(&b, DecodeKind::Normal))
             }
             Playout::Fec(p) => Some(self.decode(&p, DecodeKind::Fec)),
             Playout::Lost => Some(self.decode(&[], DecodeKind::Concealed)),
         };
+        if !self.queue.is_empty() {
+            self.shorten();
+        }
         // Concealment extrapolates the last sound: it is not speech.
         let heard = matches!(kind, Some(DecodeKind::Normal | DecodeKind::Fec));
         if heard && level_db(&self.pcm) >= SPEECH_DB {
@@ -397,6 +472,34 @@ impl VoiceReceiver {
         }
         self.resampler.process(&self.pcm, out)?;
         Ok(kind)
+    }
+
+    /// Plays from the queue while it holds surplus sound: this tick's frame goes to its
+    /// end, at most one [`Cut`] shortens it, and its first 20 ms are what plays now.
+    fn shorten(&mut self) {
+        self.queue.extend_from_slice(&self.pcm);
+        let cut = Cut::find(&self.queue, self.queue.len() - FRAME_SAMPLES);
+        if let Some(cut) = cut {
+            cut.apply(&mut self.queue);
+        }
+        self.pcm.copy_from_slice(&self.queue[..FRAME_SAMPLES]);
+        self.queue.drain(..FRAME_SAMPLES);
+        if let Some(st) = &mut self.stereo {
+            st.queue.extend_from_slice(&st.side);
+            if let Some(cut) = cut {
+                cut.apply(&mut st.queue);
+            }
+            // The two queues are cut alike; a difference would be a logic error, and
+            // the side signal is then dropped rather than played out of step.
+            if st.queue.len() == self.queue.len() + FRAME_SAMPLES {
+                st.side.copy_from_slice(&st.queue[..FRAME_SAMPLES]);
+                st.queue.drain(..FRAME_SAMPLES);
+            } else {
+                st.side.fill(0.0);
+                st.queue.clear();
+                st.queue.resize(self.queue.len(), 0.0);
+            }
+        }
     }
 
     fn decode(&mut self, packet: &[u8], kind: DecodeKind) -> DecodeKind {
@@ -536,6 +639,20 @@ mod tests {
         let s = rx.stats();
         assert!(s.jitter.dropped >= 5, "the delay was not corrected: {s:?}");
         assert_eq!(s.jitter.concealed + s.jitter.fec, 0, "{s:?}");
+        // All the surplus sound was taken out again.
+        assert_eq!(rx.pending_samples(), 0);
+        // The tone keeps its level through the correction: whole pitch periods were
+        // removed, not two frames faded into each other out of phase.
+        let level = |w: &[f32]| (w.iter().map(|v| v * v).sum::<f32>() / w.len() as f32).sqrt();
+        let nominal = level(&out[settled - 4 * FRAME_SAMPLES..settled]);
+        let lowest = out[settled..]
+            .chunks(240)
+            .map(level)
+            .fold(f32::MAX, f32::min);
+        assert!(
+            lowest > nominal * 0.9,
+            "level dipped to {lowest} (nominal {nominal})"
+        );
         // A 440 Hz tone at 0.3 moves ≈ 0.017 per sample; a frame cut out of it jumps by
         // up to 0.6. Blended frames stay continuous.
         let jump = out[settled - FRAME_SAMPLES..]
@@ -587,6 +704,40 @@ mod tests {
             "mono {mid_mono} left {left}"
         );
         assert_eq!(stereo.stats().decode_errors, 0);
+    }
+
+    #[test]
+    fn a_cut_removes_one_period_of_a_voiced_sound_and_at_most_the_surplus() {
+        // 200 Hz "voice": period 240 samples, with a harmonic so the period is unique.
+        let wave = |n: usize| -> Vec<f32> {
+            (0..n)
+                .map(|i| {
+                    let t = i as f32 / CODEC_RATE as f32;
+                    0.3 * (std::f32::consts::TAU * 200.0 * t).sin()
+                        + 0.1 * (std::f32::consts::TAU * 400.0 * t).sin()
+                })
+                .collect()
+        };
+        let mut q = wave(1920);
+        let cut = Cut::find(&q, 960).expect("something to remove");
+        assert_eq!(cut.lag % 240, 0, "a whole number of periods: {cut:?}");
+        let before = q.clone();
+        cut.apply(&mut q);
+        assert_eq!(q.len(), 1920 - cut.lag);
+        // The result is the same periodic wave, seamlessly.
+        let worst = q
+            .iter()
+            .zip(&before)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 0.01, "the wave changed by {worst}");
+        // Never more than the surplus, even if a period is longer.
+        let c = Cut::find(&before, 100).expect("small surplus");
+        assert!(c.lag <= 100, "{c:?}");
+        // Silence: a plain short cut. Nothing to remove: none.
+        let silent = vec![0.0f32; 1920];
+        assert_eq!(Cut::find(&silent, 960).map(|c| c.lag), Some(Cut::PLAIN));
+        assert_eq!(Cut::find(&before, 0), None);
     }
 
     #[test]

@@ -9,7 +9,8 @@
 //!   shrinks again on a calm network. Excess delay is removed one frame at a time, which
 //!   also absorbs sender/receiver clock drift: a hole is skipped for free, otherwise two
 //!   consecutive frames are handed out for one tick ([`Playout::Merge`]) and the receiver
-//!   blends them, so the correction is not a cut in the sound.
+//!   takes the surplus out of the sound a pitch period at a time, so the correction is
+//!   neither a cut nor a blur.
 //! * Transit times use the RTP timestamp, not the sequence number: a sender with voice
 //!   activation stops sending in pauses and continues the sequence numbers afterwards, so
 //!   only the timestamp shows the gap. A packet whose timestamp jumped ahead of its
@@ -58,7 +59,7 @@ pub enum Playout {
     /// The packet for this tick.
     Packet(Vec<u8>),
     /// Too much delay: this tick's packet and the next one, to be played within one tick
-    /// (the receiver drops the first if it is silent, else blends the two).
+    /// (the receiver drops the first if it is silent, else shortens the pair).
     Merge(Vec<u8>, Vec<u8>),
     /// This tick's packet is missing but the next one is here: decode it with FEC.
     Fec(Vec<u8>),
