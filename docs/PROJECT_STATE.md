@@ -7,7 +7,55 @@ Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the o
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; target server PASS incl. reboot; owner-assisted pending: real uplink with remote clients, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-15, second part (the open items of the audit: repair window, listeners' loss feedback, stereo share audio, pitch-period delay correction, GPU presentation in the share window, SFU worker process, session module split; ADR 0019, 0020); before: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-15 — the open items of the audit (owner: "fix everything you wrote about")
+
+Work on `main` (owner decision), in the background at idle priority while the machine was
+in use. One commit per item; each was checked before it was pushed.
+
+* **Video repair window (issues 31, 49):** str0m vendored (`third_party/str0m`, MIT) with
+  `MAX_MISORDER` 100 → 1024 packets (≈ 450 ms at 1440p120 instead of 43 ms). Media tests
+  green; no test injects a delay, so the gain itself is argued, not measured.
+* **Listeners' loss → sender (issue 51):** the SFU keeps each member's downlink loss
+  (receiver reports) and tells every member the worst one among the others
+  (`VoiceFeedback`, ServerEnvelope 35, API.md, contract test); the client's `LossAdapter`
+  takes the worse of that and its own uplink. `tests/screen.rs`: a listener with 15 %
+  downlink loss → the sender is told, the listener is not told its own.
+* **Stereo share audio (issue 34):** mid/side. The receiver decodes both channels; the
+  mid takes the unchanged mono path, the side a second ring that stereo devices add back.
+  Limiter gain shared; voice stays centred. Unit test (channels kept apart, mono listener
+  hears the downmix) and an engine test on a simulated stereo speaker at 44.1 kHz.
+* **Delay correction (issue 51):** the surplus frame is no longer blended into its
+  neighbour; it waits in a queue and whole pitch periods are removed (autocorrelation
+  2–15 ms, plain 5 ms cuts in noise / silence), mid and side alike. Test: a tone keeps
+  > 90 % of its level through a correction and the queue drains.
+* **GPU presentation (issues 29, 32, 48; ADR 0019):** in the share window every decoded
+  surface is drawn by the D3D11 video processor into a swap chain on a child window
+  (`media_video::win::Presenter`, `desktop::video_surface`); no CPU copy, no UI thread.
+  `tests/present.rs` reads the drawn back buffer back (colours, scaling, bars) on the
+  real GPU in a window that is never shown. Trial (`s7-renderer-video-trial.ps1
+  -ShareWindow`, release clients, invisible desktop): 2560×1440 viewer CPU 158 % → 14 %
+  of a core, decode + show 6.7 → 0.57 ms; 1080p 19 %. The view embedded in the main
+  window keeps the CPU path (Slint popups would be covered by a native child).
+* **SFU worker process (issue 50; ADR 0020):** `media_sfu::remote`; `--media-process` /
+  `TURBO_PANCAKE_MEDIA_PROCESS` (set by `install-server.sh`), `worker_starts` in
+  `/v1/media-stats`. `tests/remote.rs`: voice through the worker, the worker killed, both
+  members told, a new worker serves new members. Server test with the server binary as
+  its own worker.
+* **Client structure (issue 52):** `session.rs` → `session/{mod,share,watch,media,events}.rs`
+  by a mechanical move of whole methods (no code change); `mod.rs` 1210 lines.
+* **Correction of the audit report:** TURN is not needed for this topology (issue 51).
+* **Mistakes in this part:** a test of mine assumed `-Qualities a,b` reaches the trial
+  script as two values (it arrives as one string: run per quality); a sed that did not
+  match made a re-run report the previous run's log — caught because the error text was
+  unchanged; new lints (`never_loop`, `type_complexity`, `chunks_exact`) fixed before
+  each commit.
+* **Checks:** final `regression.ps1 -Full` at idle priority on the complete tree: **19 / 19 PASS in 24.7 min** (`benchmarks/results/audit-followup-regression-windows-2026-11-15.md`): fmt, Clippy `-D warnings`, tests **235 passed, 0 failed, 4 ignored, 1 filtered**, 59 binaries; release build; 7 load scenarios; native trials tray / instance / layout / S6 chat-call / reconnect / update / installer / E2E. Under this load one timing test (`session.rs::two_sessions_call_through_the_server`) once took the WebSocket fallback instead of UDP during a per-item run; alone it passed 3 of 3 and it passed in the final run.
+* **UNVERIFIED / owner-assisted:** as before, everything on a real screen and by ear;
+  120 pictures a second end to end (the dev GPU was busy with the owner's game: the
+  sharer's encoder delivered 60, the viewer showed all of them); the SFU worker on the
+  Linux target server; a release build for the owner's server.
 
 ## Session log 2026-11-15 — audit and fixes (owner request, ADR 0018)
 
@@ -1066,30 +1114,27 @@ performance results for the target hardware (RTX 4070 Super / M4).
     window attribute + DWM blur-behind + partial software repaint). If it still happens,
     note what preceded it (sleep, monitor change, full screen, game) and whether moving
     the mouse brings pieces back; `SLINT_BACKEND=winit-femtovg` is the comparison run.
-48. **Viewer picture path is the limit for 1440p120:** decoded frames are read back,
-    converted on the CPU and scaled by the software renderer on the UI thread; the
-    picture timer is 16 ms, so at most ≈ 60 fps are shown (S7: 130 % of a core at
-    1440p120). Needs the GPU path (texture import with the OpenGL renderer or an own
-    swap chain) and a display to verify it on.
-49. **str0m `MAX_MISORDER = 100` (issue 31) is a constant, not a setting:** widening the
-    repair window needs a vendored patch or our own NACK/RTX. Open.
-50. **SFU isolation:** one thread inside `app-server` for all rooms (spec §3 asks for an
-    isolated media service); with `panic = "abort"` a panic there ends the chats too. Its
-    `expect`s are removed; a separate process is open work. Per-packet work scans every
-    member (fine at the measured loads, see S8).
-51. **Voice resilience sees only the sender's own path** (uplink loss from the server's
-    reports, own downlink loss); a listener with a bad downlink is covered only by the
-    10 % default. A per-listener worst-loss report from the SFU is the exact signal.
-    Audio is not retransmitted. TURN is not needed for this topology (the client dials a
-    public ICE-lite server; where UDP is blocked the WebSocket tunnel carries the media,
-    which is what TURN over TCP would do). Delay correction blends frames; a
-    time-stretcher would be inaudible. Playout keeps the jitter target plus 40 ms of
-    device prefill (latency not measured mouth-to-ear).
-52. **Client structure:** `session.rs` (≈ 2200 lines, one `Core`) mixes signaling, call
-    control, share, viewing and adaptation; `main.rs` carries ≈ 60 trial flags in the
-    production binary. Refactoring candidates, no defect known.
-53. **`CLAUDE.local.md` (untracked) still says the branch is local-only;** the branch is
-    pushed and equal to `main` since 2026-11-09. The owner's file, not edited here.
+48. **Viewer picture path: fixed for the share window (ADR 0019),** which draws from the
+    GPU. The view embedded in the main window still converts on the CPU (≈ 60 pictures a
+    second at most, software-scaled on the UI thread): watch at full rate in the share
+    window. 120 pictures a second end to end UNVERIFIED (see the session log).
+49. **str0m repair window: widened in a vendored copy** (`third_party/str0m`, 1024
+    packets). Drop the copy when upstream makes it a setting. The effect at real round
+    trip times is not measured (no delay injection in the tests).
+50. **SFU isolation: done as an option (ADR 0020),** on for deployments made with
+    `install-server.sh`. Still one thread per worker (issue 25); the Linux run with the
+    worker is owner-assisted; clients learn of a restarted worker by timeout only.
+51. **Voice:** the listeners' downlink loss now reaches the sender; delay correction
+    removes pitch periods. Left: audio is not retransmitted; playout keeps the jitter
+    target plus 40 ms of device prefill (latency not measured mouth-to-ear); the echo
+    canceller's reference is the mono mid of a stereo share (a listener on speakers may
+    leak a little of the share's side signal back). TURN is not needed for this topology
+    (the client dials a public ICE-lite server; where UDP is blocked the WebSocket tunnel
+    carries the media, which is what TURN over TCP would do).
+52. **Client structure:** the session is split into modules; `main.rs` still carries
+    ≈ 60 trial flags in the production binary (they are what the background trials use).
+53. `CLAUDE.local.md` was updated on 2026-11-15 (commits go to `main`, background work
+    rules); nothing open.
 18. **Windows MAX_PATH:** the bundled APM (meson/abseil) release build fails with LNK1181 when the
     cargo target dir is long (`D:	urbo-pancake	urbo-pancake	arget`, CI run 41454787623;
     debug passed). CI uses `CARGO_TARGET_DIR=D:/t` on Windows; locally `D:/turbo-pancake-target`
