@@ -1,4 +1,4 @@
-# S7 step 7 (ADR 0002 renderer decision): cost of watching a full-size share per renderer.
+﻿# S7 step 7 (ADR 0002 renderer decision): cost of watching a full-size share per renderer.
 # Anonymous loopback server; A shares a generated picture (no screen capture) at a fixed
 # quality, B watches the high layer in a -Window sized window. Both run on an isolated
 # invisible desktop (no focus, no input, simulated audio). For B over the steady part of
@@ -6,7 +6,9 @@
 # and private bytes at the end.
 param([string]$Target = '', [string[]]$Backends = @('winit-software','winit-femtovg'),
       [string[]]$Qualities = @('qhd120','fhd60'), [string]$Window = '1600,900',
-      [int]$Seconds = 20, [string]$Out = '')
+      [int]$Seconds = 20, [string]$Out = '',
+      # Watch in the separate share window: pictures are drawn from the GPU there (ADR 0019).
+      [switch]$ShareWindow)
 $ErrorActionPreference = 'Stop'
 $workspacePath = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 if (-not $Target) { $Target = Join-Path $workspacePath 't/release' }
@@ -91,7 +93,7 @@ try {
         $room = "s7v-$q-$backend"
         $common = @('--server',"ws://127.0.0.1:$port/v1/signal",'--room',$room,'--no-activate','--simulate-audio','--mute','--remote-volume','0','--share-no-audio','--call-log','--multi-instance')
         $la = Join-Path $work "a-$q-$backend.log"; $lb = Join-Path $work "b-$q-$backend.log"
-        $b = $native.Start($desktopExe,(Quote-Args ($common + @('--profile','s7v-b','--name','Viewer-B','--watch','--watch-layer','high','--window-size',$Window,'--smoke-exit-after-ms',"$($ms + 4000)"))),$workspacePath,$lb)
+        $b = $native.Start($desktopExe,(Quote-Args ($common + @('--profile','s7v-b','--name','Viewer-B','--watch','--watch-layer','high','--window-size',$Window,'--smoke-exit-after-ms',"$($ms + 4000)") + $(if ($ShareWindow) { @('--share-window') } else { @() }))),$workspacePath,$lb)
         Start-Sleep -Milliseconds 1000
         $a = $native.Start($desktopExe,(Quote-Args ($common + @('--profile','s7v-a','--name','Sharer-A','--share','synthetic','--share-quality',$q,'--fixed-quality','--smoke-exit-after-ms',"$($ms + 2000)"))),$workspacePath,$la)
         # Steady part: from 6 s after the share starts for 10 s.
@@ -108,8 +110,10 @@ try {
         $fps = P50 ($steady | ForEach-Object { [double]$_.Groups[4].Value })
         $dec = P50 ($steady | ForEach-Object { [double]$_.Groups[5].Value })
         $view = $steady[-1].Groups[3].Value
+        $gpu = ([regex]::Matches((Read-Log $lb),' gpu_present=true')).Count
+        if ($ShareWindow -and $gpu -lt 5) { throw "$q/$backend : pictures were not presented from the GPU in the share window" }
         $renderer = [regex]::Match((Read-Log $lb),'TURBO_PANCAKE_FIRST_FRAME \d+ (\S+)').Groups[1].Value
-        $summary += "$q $backend ($renderer): view=$view shown_fps_p50=$fps decode_ms_p50=$dec viewer_cpu=$([Math]::Round($cpu,1)) % of one core WS=$([Math]::Round($m.WorkingSetSize.ToUInt64()/1MB,1)) MiB private=$([Math]::Round($m.PrivateUsage.ToUInt64()/1MB,1)) MiB samples=$($steady.Count)"
+        $summary += "$q $backend ($renderer): view=$view shown_fps_p50=$fps decode_ms_p50=$dec viewer_cpu=$([Math]::Round($cpu,1)) % of one core WS=$([Math]::Round($m.WorkingSetSize.ToUInt64()/1MB,1)) MiB private=$([Math]::Round($m.PrivateUsage.ToUInt64()/1MB,1)) MiB samples=$($steady.Count) gpu_present_reports=$gpu"
     } }
     $summary += "S7 renderer video trial PASS; window=$Window; generated picture, fixed quality, high layer; anonymous loopback; invisible desktop; foreground_samples=$($native.ForegroundSamples)"
     if ($Out) { $summary | Set-Content -Encoding utf8 $Out }

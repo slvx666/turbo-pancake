@@ -12,4 +12,5 @@ pub mod session;
 pub mod tray;
 pub mod ui_scale;
 pub mod updater;
+pub mod video_surface;
 pub mod view;

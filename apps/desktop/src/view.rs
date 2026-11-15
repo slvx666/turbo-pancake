@@ -236,10 +236,10 @@ pub fn render(s: &Snapshot) -> CallView {
             v.width,
             v.height,
             v.fps,
-            if v.hardware_decoder {
-                "аппаратный"
-            } else {
-                "программный"
+            match (v.hardware_decoder, v.gpu_present) {
+                (true, true) => "аппаратный, вывод через GPU",
+                (true, false) => "аппаратный",
+                (false, _) => "программный",
             },
             if v.latency_ms_p50 > 0.0 {
                 format!(" · задержка {:.0} мс", v.latency_ms_p50)
@@ -551,7 +551,7 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
     ));
     if let Some(v) = &s.viewer {
         line.push_str(&format!(
-            " view={}x{} view_fps={:.1} shown={} decoded={} assembled={} view_dropped={} decode_errors={} view_kf_requests={} decode_ms_p50={:.2} latency_ms_p50={:.1} latency_ms_p95={:.1} hw_decoder={}",
+            " view={}x{} view_fps={:.1} shown={} decoded={} assembled={} view_dropped={} decode_errors={} view_kf_requests={} decode_ms_p50={:.2} latency_ms_p50={:.1} latency_ms_p95={:.1} hw_decoder={} gpu_present={}",
             v.width,
             v.height,
             v.fps,
@@ -565,6 +565,7 @@ pub fn log_line(s: &Snapshot, elapsed_ms: u128) -> String {
             v.latency_ms_p50,
             v.latency_ms_p95,
             v.hardware_decoder,
+            v.gpu_present,
         ));
     }
     if let Some(err) = &s.last_error {

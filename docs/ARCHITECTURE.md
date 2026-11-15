@@ -90,7 +90,8 @@ mic → ring → resample 48 kHz → APM (AEC3, NS) → mute/gate → Opus (48 k
 Windows.Graphics.Capture → D3D11 video processor (scale, NV12) → H.264 MFT (hardware, low
 latency, CBR) → pacer → RTP → SFU → (high layer to the viewer of the share, low layer as
 previews) → frame assembler (NACK repairs, keyframe requests) → H.264 decoder (DXVA) →
-NV12 → RGBA on the CPU → newest picture → Slint image
+NV12 → RGBA on the CPU → newest picture → Slint image (main window)
+      or → D3D11 video processor → swap chain of the share window (ADR 0019)
 ```
 
 Two layers per share (ADR 0011); the high layer adapts bitrate, then size, then rate. A
@@ -98,8 +99,9 @@ share whose pipeline stops on its own (resolution change, device lost) is restar
 three times a minute. System audio: WASAPI process loopback excluding our own process
 tree, Opus stereo 96 kbit/s on its own stream.
 
-Known limits of this path are listed in `PROJECT_STATE.md` (viewer shows at most ≈ 60 fps
-through the CPU path; the repair window of str0m; system audio plays mono).
+In the share window every decoded picture is drawn from the GPU; the view embedded in
+the main window keeps the CPU path (≈ 60 pictures a second at most). System audio plays
+in stereo on stereo devices (mid/side rings next to the mono voice path).
 
 ## Windows
 
@@ -137,3 +139,4 @@ WebSocket + protobuf envelopes (`ClientEnvelope` / `ServerEnvelope`), versioned 
 | 0016 | Signed updates with staged install and rollback |
 | 0017 | Per-user installer |
 | 0018 | Opaque windows, audio-class scheduling, adaptive voice resilience |
+| 0019 | The share window shows pictures from the GPU (own swap chain, no CPU copy) |

@@ -15,7 +15,14 @@ use super::encoder::memory_buffer;
 use super::{ID3D11Device, ID3D11Texture2D, OsContext, device_manager};
 use crate::{DecodedFrame, VideoError};
 
+/// Takes a decoded picture while it is still on the GPU: the decoder's NV12 texture, the
+/// slice of it that holds the picture and the visible size. `true`: taken (shown) — the
+/// picture is then not copied to the CPU and its [`DecodedFrame::nv12`] stays empty.
+/// The texture must not be kept after the call returns.
+pub type SurfaceSink = Box<dyn FnMut(&ID3D11Texture2D, u32, (u32, u32)) -> bool>;
+
 pub struct H264Decoder {
+    surface_sink: Option<SurfaceSink>,
     transform: IMFTransform,
     dxva: bool,
     provides_samples: bool,
@@ -71,6 +78,7 @@ impl H264Decoder {
                 .os("decoder input type")?;
 
             let mut decoder = Self {
+                surface_sink: None,
                 transform,
                 dxva: manager.is_some(),
                 provides_samples: false,
@@ -98,6 +106,17 @@ impl H264Decoder {
     /// True when the decoder runs on the GPU (DXVA).
     pub fn is_hardware(&self) -> bool {
         self.dxva
+    }
+
+    /// The device the pictures are decoded on (DXVA only).
+    pub fn device(&self) -> Option<&ID3D11Device> {
+        self.device.as_ref()
+    }
+
+    /// Pictures decoded on the GPU are offered to `sink` first (see [`SurfaceSink`]);
+    /// `None` restores the CPU copy for every picture.
+    pub fn set_surface_sink(&mut self, sink: Option<SurfaceSink>) {
+        self.surface_sink = sink;
     }
 
     fn choose_output_type(&mut self) -> Result<(), VideoError> {
@@ -241,6 +260,16 @@ impl H264Decoder {
                     .os("decoded surface")?;
                 let surface = ID3D11Texture2D::from_raw(raw);
                 let index = dxgi.GetSubresourceIndex().os("subresource index")?;
+                if let Some(sink) = self.surface_sink.as_mut()
+                    && sink(&surface, index, self.visible)
+                {
+                    return Ok(DecodedFrame {
+                        width: w as u32,
+                        height: h as u32,
+                        timestamp: sample.GetSampleTime().unwrap_or(0),
+                        nv12: Vec::new(),
+                    });
+                }
                 let mut desc = D3D11_TEXTURE2D_DESC::default();
                 surface.GetDesc(&mut desc);
                 let size = (desc.Width, desc.Height);

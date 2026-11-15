@@ -71,7 +71,8 @@ use turbo_pancake_media_video::adapt::{Adapter, Rung};
 use turbo_pancake_media_video::{ScreenShare, ShareConfig, ShareStats, VideoError};
 
 use crate::screen::{
-    PictureSlot, PreviewDecoder, PreviewSlots, PreviewStats, Viewer, ViewerStats, rtp_time,
+    PictureSlot, PresentTarget, PreviewDecoder, PreviewSlots, PreviewStats, Viewer, ViewerStats,
+    rtp_time,
 };
 use turbo_pancake_protocol::{self as proto, v1};
 use v1::{client_envelope::Body as C, server_envelope::Body as S};
@@ -329,6 +330,7 @@ type EngineStarter =
 pub struct Session {
     commands: mpsc::Sender<Command>,
     picture: PictureSlot,
+    present: Arc<PresentTarget>,
     previews: PreviewSlots,
     thread: Option<JoinHandle<()>>,
 }
@@ -348,6 +350,8 @@ impl Session {
         let start_engine: EngineStarter = Box::new(move |cfg| AudioEngine::start(io(), cfg));
         let picture = PictureSlot::default();
         let core_picture = picture.clone();
+        let present = Arc::new(PresentTarget::default());
+        let core_present = present.clone();
         let previews = PreviewSlots::default();
         let core_previews = previews.clone();
         let thread = std::thread::Builder::new()
@@ -355,6 +359,7 @@ impl Session {
             .spawn(move || {
                 let mut core = Core::new(config, start_engine, Box::new(on_update));
                 core.picture = core_picture;
+                core.present = core_present;
                 core.preview_slots = core_previews;
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -370,6 +375,7 @@ impl Session {
         Ok(Self {
             commands: tx,
             picture,
+            present,
             previews,
             thread: Some(thread),
         })
@@ -378,6 +384,11 @@ impl Session {
     /// The newest preview pictures, by preview SSRC (`ShareView::preview_ssrc`).
     pub fn previews(&self) -> PreviewSlots {
         self.previews.clone()
+    }
+
+    /// Where the watched share may be drawn from the GPU (the UI names the window).
+    pub fn present_target(&self) -> Arc<PresentTarget> {
+        self.present.clone()
     }
 
     /// The newest picture of the watched share (the UI takes it out).
@@ -557,6 +568,7 @@ struct Core {
     watched_ssrc: Arc<AtomicU32>,
     viewer_route: Arc<Mutex<Option<SyncSender<VideoIn>>>>,
     keyframes: Arc<Mutex<Option<KeyframeRequester>>>,
+    present: Arc<PresentTarget>,
     picture: PictureSlot,
 }
 
@@ -632,6 +644,7 @@ impl Core {
             watched_ssrc: Arc::default(),
             viewer_route: Arc::default(),
             keyframes: Arc::default(),
+            present: Arc::default(),
             picture: PictureSlot::default(),
         }
     }
@@ -1199,7 +1212,11 @@ impl Core {
             return;
         };
         if self.viewer.is_none() {
-            match Viewer::start(self.picture.clone(), self.keyframes.clone()) {
+            match Viewer::start(
+                self.picture.clone(),
+                self.keyframes.clone(),
+                self.present.clone(),
+            ) {
                 Ok(v) => {
                     *self.viewer_route.lock().unwrap() = Some(v.sender());
                     self.viewer = Some(v);

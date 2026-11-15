@@ -42,6 +42,40 @@ pub struct Picture {
 /// The newest decoded picture; the UI takes it, older ones are overwritten unseen.
 pub type PictureSlot = Arc<Mutex<Option<Picture>>>;
 
+/// Where the viewer may draw decoded pictures from the GPU instead of handing them to the
+/// UI as RGBA: a native window (`video_surface::VideoSurface`), named by the UI. While
+/// pictures are presented there, nothing is copied to the CPU and no [`Picture`] is made.
+#[derive(Debug, Default)]
+pub struct PresentTarget {
+    window: std::sync::atomic::AtomicIsize,
+    active: AtomicBool,
+    presented: std::sync::atomic::AtomicU64,
+}
+
+impl PresentTarget {
+    /// The native window handle to present into; 0 = none (pictures go to the UI).
+    pub fn set_window(&self, hwnd: isize) {
+        self.window.store(hwnd, Ordering::Relaxed);
+        if hwnd == 0 {
+            self.active.store(false, Ordering::Relaxed);
+        }
+    }
+
+    pub fn window(&self) -> isize {
+        self.window.load(Ordering::Relaxed)
+    }
+
+    /// Pictures are being presented into the window (the last one was).
+    pub fn active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    /// Pictures presented from the GPU so far.
+    pub fn presented(&self) -> u64 {
+        self.presented.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ViewerStats {
     pub packets: u64,
@@ -63,6 +97,8 @@ pub struct ViewerStats {
     pub latency_ms_p50: f64,
     pub latency_ms_p95: f64,
     pub hardware_decoder: bool,
+    /// Pictures are drawn from the GPU into the share window (no CPU copy, no UI thread).
+    pub gpu_present: bool,
     pub error: Option<String>,
 }
 
@@ -96,6 +132,7 @@ impl Viewer {
     pub fn start(
         slot: PictureSlot,
         keyframes: Arc<Mutex<Option<KeyframeRequester>>>,
+        target: Arc<PresentTarget>,
     ) -> std::io::Result<Self> {
         let (tx, rx) = sync_channel(VIEWER_QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
@@ -105,6 +142,7 @@ impl Viewer {
             rx,
             slot,
             keyframes,
+            target,
             stop: stop.clone(),
             reset: reset.clone(),
             stats: stats.clone(),
@@ -168,6 +206,19 @@ trait PictureDecoder {
     /// Decodes one access unit; returns decoded (width, height, NV12, RTP timestamp).
     fn decode(&mut self, data: &[u8], timestamp: u32) -> Result<Vec<Nv12Picture>, String>;
     fn hardware(&self) -> bool;
+    /// Draws decoded pictures into the native window `hwnd` from the GPU from now on;
+    /// pictures shown that way come back from `decode` with empty `nv12`. `false`: not
+    /// possible (software decoding, no swap chain) — pictures keep coming as NV12.
+    /// `failed` is set when presenting stops working later.
+    fn present_to(
+        &mut self,
+        _hwnd: isize,
+        _target: &Arc<PresentTarget>,
+        _failed: &Arc<AtomicBool>,
+    ) -> bool {
+        false
+    }
+    fn stop_presenting(&mut self) {}
 }
 
 #[cfg(windows)]
@@ -209,6 +260,43 @@ impl PictureDecoder for OsDecoder {
     fn hardware(&self) -> bool {
         self.inner.is_hardware()
     }
+
+    fn present_to(
+        &mut self,
+        hwnd: isize,
+        target: &Arc<PresentTarget>,
+        failed: &Arc<AtomicBool>,
+    ) -> bool {
+        use turbo_pancake_media_video::win::Presenter;
+        let Some(device) = self.inner.device().cloned() else {
+            return false;
+        };
+        let Ok(mut presenter) = Presenter::new(&device, hwnd) else {
+            return false;
+        };
+        let (target, failed) = (target.clone(), failed.clone());
+        self.inner
+            .set_surface_sink(Some(Box::new(move |surface, index, visible| {
+                match presenter.present(surface, index, visible) {
+                    Ok(true) => {
+                        target.active.store(true, Ordering::Relaxed);
+                        target.presented.fetch_add(1, Ordering::Relaxed);
+                        true
+                    }
+                    // No area right now (minimised): this picture goes the CPU way.
+                    Ok(false) => false,
+                    Err(_) => {
+                        failed.store(true, Ordering::Relaxed);
+                        false
+                    }
+                }
+            })));
+        true
+    }
+
+    fn stop_presenting(&mut self) {
+        self.inner.set_surface_sink(None);
+    }
 }
 
 fn os_decoder() -> Result<Box<dyn PictureDecoder>, String> {
@@ -226,6 +314,7 @@ struct Worker {
     rx: Receiver<VideoIn>,
     slot: PictureSlot,
     keyframes: Arc<Mutex<Option<KeyframeRequester>>>,
+    target: Arc<PresentTarget>,
     stop: Arc<AtomicBool>,
     reset: Arc<AtomicBool>,
     stats: Arc<Mutex<ViewerStats>>,
@@ -250,7 +339,28 @@ impl Worker {
         let mut last_publish = Instant::now();
         let (mut decode_ms, mut latency_ms) = (Vec::new(), Vec::new());
         let mut window_shown = 0u64;
+        // The window the decoder was last asked to present into (0 = none), and whether
+        // presenting there broke.
+        let mut bound = 0isize;
+        let present_failed = Arc::new(AtomicBool::new(false));
         while !self.stop.load(Ordering::Relaxed) {
+            let want = self.target.window();
+            if present_failed.swap(false, Ordering::Relaxed) {
+                if let Some(d) = decoder.as_mut() {
+                    d.stop_presenting();
+                }
+                self.target.active.store(false, Ordering::Relaxed);
+            }
+            if want != bound {
+                bound = want;
+                if let Some(d) = decoder.as_mut() {
+                    d.stop_presenting();
+                    self.target.active.store(false, Ordering::Relaxed);
+                    if want != 0 {
+                        d.present_to(want, &self.target, &present_failed);
+                    }
+                }
+            }
             if self.reset.swap(false, Ordering::Relaxed) {
                 assembler.reset();
                 last_keyframe = Instant::now();
@@ -260,6 +370,9 @@ impl Worker {
                 // A new stream may need its own decoder state (size, SPS).
                 if decoder.is_some() {
                     decoder = os_decoder().ok();
+                    // The new decoder presents again from the next round on.
+                    bound = 0;
+                    self.target.active.store(false, Ordering::Relaxed);
                 }
             }
             let mut frames = Vec::new();
@@ -294,8 +407,19 @@ impl Worker {
                     Ok(pictures) => {
                         decode_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
                         st.frames_decoded += pictures.len() as u64;
-                        if let Some(p) = pictures.into_iter().last() {
-                            newest = Some(p);
+                        for p in pictures {
+                            if p.nv12.is_empty() {
+                                // Already on screen (GPU): every decoded picture is.
+                                let late = now_rtp().wrapping_sub(p.timestamp) as i32;
+                                if (0..90_000 * 10).contains(&late) {
+                                    latency_ms.push(f64::from(late) / 90.0);
+                                }
+                                st.frames_shown += 1;
+                                window_shown += 1;
+                                (st.width, st.height) = (p.width, p.height);
+                            } else {
+                                newest = Some(p);
+                            }
                         }
                     }
                     Err(e) => {
@@ -359,6 +483,7 @@ impl Worker {
             }
             if last_publish.elapsed() >= Duration::from_millis(500) {
                 st.fps = window_shown as f64 / last_publish.elapsed().as_secs_f64();
+                st.gpu_present = self.target.active();
                 st.frames_dropped = assembler.stats.frames_dropped;
                 st.decode_ms_p50 = percentile(&mut decode_ms, 0.5);
                 st.latency_ms_p50 = percentile(&mut latency_ms, 0.5);

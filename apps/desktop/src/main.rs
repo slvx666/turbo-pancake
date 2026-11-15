@@ -92,12 +92,14 @@ use slint::winit_030::{CustomApplicationHandler, EventResult};
 use turbo_pancake_desktop::app_settings::{self, AppSettings};
 use turbo_pancake_desktop::instance;
 use turbo_pancake_desktop::screen::PictureSlot;
+use turbo_pancake_desktop::screen::PresentTarget;
 use turbo_pancake_desktop::screen::PreviewSlots;
 use turbo_pancake_desktop::session::{
     Command, CommandSender, Session, SessionConfig, Snapshot, TransportPref, WatchLayer,
 };
 use turbo_pancake_desktop::tray::{Tray, TrayEvent};
 use turbo_pancake_desktop::ui_scale;
+use turbo_pancake_desktop::video_surface::VideoSurface;
 use turbo_pancake_desktop::view::{self, MemberView, ShareRowView};
 use turbo_pancake_media_audio::{CpalIo, DspConfig, device};
 use turbo_pancake_media_video::{MonitorInfo, ShareConfig, ShareSource};
@@ -467,15 +469,64 @@ fn share_config(
 /// Switches the compositor's blend-with-the-desktop mode off for a live window
 /// (`opaque.rs`); `false` while the window does not exist yet.
 fn make_opaque(window: &slint::Window) -> bool {
+    native_handle(window).is_some_and(turbo_pancake_desktop::opaque::disable_blur_behind)
+}
+
+/// The native (Win32) handle of a live window.
+fn native_handle(window: &slint::Window) -> Option<isize> {
     use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     window
         .with_winit_window(|w| match w.window_handle().map(|h| h.as_raw()) {
-            Ok(RawWindowHandle::Win32(h)) => {
-                turbo_pancake_desktop::opaque::disable_blur_behind(h.hwnd.get())
-            }
-            _ => false,
+            Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+            _ => None,
         })
-        .unwrap_or(false)
+        .flatten()
+}
+
+/// Height of the share window's own bar (title, buttons) above the picture, logical px.
+const SHARE_BAR: f32 = 36.0;
+
+/// Keeps the GPU surface of the share window in step with that window: created when the
+/// window exists, laid out under its bar, shown only while pictures really arrive on the
+/// GPU path (otherwise the Slint image under it shows them), gone with the window.
+fn sync_video_surface(
+    main: &MainWindow,
+    share: Option<&ShareWindow>,
+    surface: &mut Option<VideoSurface>,
+    target: &PresentTarget,
+) {
+    let Some(sw) = share else {
+        if surface.take().is_some() {
+            target.set_window(0);
+        }
+        return;
+    };
+    if surface.is_none()
+        && let Some(parent) = native_handle(sw.window())
+    {
+        *surface = VideoSurface::new(parent);
+        if let Some(s) = surface.as_ref() {
+            target.set_window(s.hwnd());
+        }
+    }
+    let Some(s) = surface.as_ref() else {
+        return;
+    };
+    let size = sw.window().size();
+    let bar = (SHARE_BAR * sw.window().scale_factor()).round() as i32;
+    s.place(0, bar, size.width as i32, size.height as i32 - bar);
+    let active = target.active();
+    s.show(active);
+    if active {
+        // No CPU pictures arrive now: the status text is refreshed here.
+        let info = main.get_viewer_info();
+        if sw.get_info() != info {
+            sw.set_info(info);
+        }
+        if !sw.get_has_picture() {
+            sw.set_has_picture(true);
+        }
+    }
 }
 
 /// After the main window was shown again or the system may have dropped its surface:
@@ -570,9 +621,11 @@ fn show_pictures(
     slot: PictureSlot,
     previews: PreviewSlots,
     share_window: ShareWindowSlot,
+    target: std::sync::Arc<PresentTarget>,
 ) -> slint::Timer {
     let timer = slint::Timer::default();
     let weak = window.as_weak();
+    let mut surface: Option<VideoSurface> = None;
     let mut last_serial = 0;
     let mut preview_serials: std::collections::HashMap<i32, u64> = Default::default();
     timer.start(
@@ -606,6 +659,7 @@ fn show_pictures(
                 }
                 None => {}
             }
+            sync_video_surface(&w, sw.as_ref(), &mut surface, &target);
             drop(sw);
             // The watched share ended: its window closes.
             if w.get_watching().is_empty() && w.get_share_window_open() {
@@ -1259,9 +1313,15 @@ fn main() -> Result<(), slint::PlatformError> {
         )
     });
     let share_window: ShareWindowSlot = Rc::default();
-    let _pictures = session
-        .as_ref()
-        .map(|s| show_pictures(&window, s.picture(), s.previews(), share_window.clone()));
+    let _pictures = session.as_ref().map(|s| {
+        show_pictures(
+            &window,
+            s.picture(),
+            s.previews(),
+            share_window.clone(),
+            s.present_target(),
+        )
+    });
     {
         let (weak, slot) = (window.as_weak(), share_window.clone());
         window.on_open_share_window(move |fullscreen| {

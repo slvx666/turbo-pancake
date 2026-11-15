@@ -5,11 +5,13 @@
 pub mod capture;
 mod decoder;
 mod encoder;
+mod present;
 mod share;
 
 pub use capture::monitors;
-pub use decoder::H264Decoder;
+pub use decoder::{H264Decoder, SurfaceSink};
 pub use encoder::{EncoderInput, H264Encoder, hardware_encoder_names};
+pub use present::{Presenter, letterbox};
 pub use share::ScreenShare;
 
 use std::sync::Once;

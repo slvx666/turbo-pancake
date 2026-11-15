@@ -369,6 +369,8 @@ pub struct DecodedFrame {
     pub height: u32,
     pub timestamp: i64,
     /// `width * height` luma bytes followed by `width * height / 2` interleaved UV bytes.
+    /// Empty when the picture was shown from the GPU and never copied (Windows
+    /// `SurfaceSink`).
     pub nv12: Vec<u8>,
 }
 
