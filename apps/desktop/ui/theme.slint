@@ -1,30 +1,252 @@
-// Shared colours (Discord-like dark/light) and the small icon button.
+// Design system: colour tokens (dark/light), sizes, icons and the styled controls the
+// rest of the UI is built from. An original look (warm accent from the app icon,
+// dense dark layout) — no third-party art: every icon below is a hand-written path.
 
 export global Theme {
     in-out property <bool> dark: true;
-    out property <color> bg-tertiary: dark ? #1e1f22 : #e3e5e8;
-    out property <color> bg-secondary: dark ? #2b2d31 : #f2f3f5;
-    out property <color> bg-primary: dark ? #313338 : #ffffff;
-    out property <color> text-normal: dark ? #dbdee1 : #313338;
-    out property <color> text-muted: dark ? #949ba4 : #5c5e66;
-    out property <color> accent: #5865f2;
-    out property <color> separator: dark ? #26282c : #d4d7dc;
+
+    // Surfaces, from the deepest to the raised ones.
+    out property <color> bg-base: dark ? #16171b : #e3e5e9;
+    out property <color> bg-sidebar: dark ? #1d1e23 : #eff0f3;
+    out property <color> bg-content: dark ? #25262c : #ffffff;
+    out property <color> bg-elevated: dark ? #2e3037 : #ffffff;
+    out property <color> bg-input: dark ? #1a1b20 : #ebedf0;
+    out property <color> bg-floating: dark ? #0d0e11 : #1f2026;
+    out property <color> bg-stage: dark ? #121317 : #e9ebef;
+    out property <color> bg-tile: dark ? #24262c : #ffffff;
+    // Overlays: work on any surface.
+    out property <color> hover: dark ? #ffffff0d : #0000000b;
+    out property <color> pressed: dark ? #ffffff17 : #00000014;
+    out property <color> selected: dark ? #ffffff1a : #00000017;
+    out property <color> msg-hover: dark ? #0000001f : #00000007;
+    out property <color> backdrop: dark ? #000000b3 : #0b0c0f8c;
+
+    // Text levels.
+    out property <color> text-strong: dark ? #f3f4f6 : #121317;
+    out property <color> text-normal: dark ? #d7d9de : #2b2d33;
+    out property <color> text-muted: dark ? #9b9ea8 : #5d6069;
+    out property <color> text-faint: dark ? #6d707b : #8b8e97;
+    out property <color> text-on-accent: #ffffff;
+
+    // Accent (the icon's coral) and states.
+    out property <color> accent: #e8603c;
+    out property <color> accent-hover: #d4532f;
+    out property <color> accent-pressed: #bd4726;
+    out property <color> accent-soft: dark ? #e8603c2e : #e8603c1f;
+    out property <color> accent-text: dark ? #ff8f6b : #c2461f;
+    out property <color> success: #2ea866;
+    out property <color> success-hover: #258c55;
+    out property <color> success-text: dark ? #4fd18a : #1d7f49;
+    out property <color> warning: #d9930d;
+    out property <color> danger: #e5484d;
+    out property <color> danger-hover: #c93a3f;
+    out property <color> danger-text: dark ? #ff6b70 : #c62f35;
+    out property <color> danger-soft: dark ? #e5484d26 : #e5484d1a;
+    out property <color> offline: dark ? #80838d : #8b8e97;
+
+    // Lines and depth (the software renderer draws no blur: shadows are layered rims).
+    out property <color> separator: dark ? #ffffff0f : #0000001a;
+    out property <color> border: dark ? #ffffff14 : #0000001f;
+    out property <color> border-strong: dark ? #ffffff24 : #00000033;
+    out property <color> shadow: dark ? #00000066 : #0000001f;
+    out property <color> toggle-off: dark ? #4a4d57 : #c4c7ce;
+
+    // Kept names (older views and Rust-side expectations).
+    out property <color> bg-tertiary: bg-base;
+    out property <color> bg-secondary: bg-sidebar;
+    out property <color> bg-primary: bg-content;
+
+    // Radii, spacing, type.
+    out property <length> radius-sm: 4px;
+    out property <length> radius-md: 8px;
+    out property <length> radius-lg: 12px;
+    out property <length> radius-xl: 16px;
+    out property <length> space-xs: 4px;
+    out property <length> space-sm: 8px;
+    out property <length> space-md: 12px;
+    out property <length> space-lg: 16px;
+    out property <length> space-xl: 24px;
+    out property <length> font-xs: 11px;
+    out property <length> font-sm: 12px;
     out property <length> font-size: 14px;
+    out property <length> font-lg: 16px;
+    out property <length> font-xl: 20px;
+    out property <length> font-xxl: 24px;
+    out property <duration> fast: 120ms;
+    out property <duration> normal: 180ms;
+
+    // Avatar palette: the index comes from Rust (`chat::avatar_index`, 8 colours).
+    public pure function avatar(i: int) -> color {
+        if i == 1 { return #3d7be0; }
+        if i == 2 { return #8a57d6; }
+        if i == 3 { return #23966a; }
+        if i == 4 { return #c97a1c; }
+        if i == 5 { return #d24f7c; }
+        if i == 6 { return #1990a8; }
+        if i == 7 { return #5865d0; }
+        return #d65a35;
+    }
 }
 
-export component IconButton inherits Rectangle {
-    in property <string> label;
-    in property <string> tooltip;
+// Hand-written 24×24 icon paths (stroked unless an icon is drawn filled).
+export global Icons {
+    out property <string> mic: "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M5.5 11a6.5 6.5 0 0 0 13 0 M12 17.5V21 M8.5 21h7";
+    out property <string> mic-off: "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M5.5 11a6.5 6.5 0 0 0 13 0 M12 17.5V21 M8.5 21h7 M3.5 3.5l17 17";
+    // Filled handset.
+    out property <string> phone: "M7.1 3.2l2.3.3a1 1 0 0 1 .8.7l.9 3a1 1 0 0 1-.3 1.1l-1.5 1.3a12 12 0 0 0 5.1 5.1l1.3-1.5a1 1 0 0 1 1.1-.3l3 .9a1 1 0 0 1 .7.8l.3 2.3a2 2 0 0 1-1.9 2.3A16 16 0 0 1 4.8 5.1a2 2 0 0 1 2.3-1.9z";
+    // Filled handset lying down (hang up).
+    out property <string> phone-down: "M2.6 13.6c5.2-4.8 13.6-4.8 18.8 0a1.2 1.2 0 0 1 .1 1.6l-1.5 2a1 1 0 0 1-1.2.3l-3.1-1.2a1 1 0 0 1-.6-1l.1-2a10.5 10.5 0 0 0-6.4 0l.1 2a1 1 0 0 1-.6 1l-3.1 1.2a1 1 0 0 1-1.2-.3l-1.5-2a1.2 1.2 0 0 1 .1-1.6z";
+    out property <string> users: "M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M2.5 20a6.5 6.5 0 0 1 13 0 M15.5 4.3a3.5 3.5 0 0 1 0 6.4 M18 14.2a6.5 6.5 0 0 1 3.5 5.8";
+    out property <string> user-plus: "M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M2.5 20a6.5 6.5 0 0 1 13 0 M19 8v6 M16 11h6";
+    out property <string> ban: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M5.6 5.6l12.8 12.8";
+    out property <string> gear: "M19 9.7L19.2 10.5L21.9 10.4L21.9 13.6L19.2 13.5L19 14.3L18.6 15.3L18.2 16L20.1 17.9L17.9 20.1L16 18.2L15.3 18.6L14.3 19L13.5 19.2L13.6 21.9L10.4 21.9L10.5 19.2L9.7 19L8.7 18.6L8 18.2L6.1 20.1L3.9 17.9L5.8 16L5.4 15.3L5 14.3L4.8 13.5L2.1 13.6L2.1 10.4L4.8 10.5L5 9.7L5.4 8.7L5.8 8L3.9 6.1L6.1 3.9L8 5.8L8.7 5.4L9.7 5L10.5 4.8L10.4 2.1L13.6 2.1L13.5 4.8L14.3 5L15.3 5.4L16 5.8L17.9 3.9L20.1 6.1L18.2 8L18.6 8.7Z M15 12a3 3 0 1 1-6 0 3 3 0 1 1 6 0z";
+    out property <string> sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z M12 2.5v2 M12 19.5v2 M2.5 12h2 M19.5 12h2 M5.3 5.3l1.4 1.4 M17.3 17.3l1.4 1.4 M5.3 18.7l1.4-1.4 M17.3 6.7l1.4-1.4";
+    out property <string> moon: "M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z";
+    out property <string> logout: "M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5 M9.5 16.5L5 12l4.5-4.5 M5 12h11";
+    out property <string> plus: "M12 5v14 M5 12h14";
+    out property <string> search: "M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z M15.5 15.5L20 20";
+    out property <string> reply: "M9.5 7L4.5 12l5 5 M4.5 12h9a6 6 0 0 1 6 6v1";
+    out property <string> edit: "M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17z M14.5 7.5l2 2";
+    out property <string> trash: "M4 7h16 M9.5 7V4.5h5V7 M6 7l1 13h10l1-13 M10 11v5.5 M14 11v5.5";
+    out property <string> retry: "M19.5 12a7.5 7.5 0 1 1-2.2-5.3 M19.5 4v4.5H15";
+    out property <string> close: "M6 6l12 12 M18 6L6 18";
+    out property <string> check: "M5 12.5l4.5 4.5L19 7.5";
+    out property <string> checks: "M2.5 12.5l4.5 4.5 9-9.5 M12 16l1 1 9-9.5";
+    out property <string> alert: "M12 8.5v4.5 M12 16.5v.2 M10.3 4l-8 14a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0z";
+    out property <string> info: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M12 11v5.5 M12 7.6v.2";
+    out property <string> screen: "M3.5 5h17a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-17a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M8.5 20.5h7 M12 16.5v4";
+    out property <string> screen-share: "M3.5 5h17a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-17a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M8.5 20.5h7 M12 16.5v4 M12 13.5V8.5 M9.5 11L12 8.5l2.5 2.5";
+    out property <string> screen-off: "M3.5 5h17a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-17a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M8.5 20.5h7 M12 16.5v4 M9.5 8.5l5 5 M14.5 8.5l-5 5";
+    out property <string> sliders: "M4 7h9 M17 7h3 M4 17h3 M11 17h9 M15 5v4 M9 15v4";
+    out property <string> volume: "M4 9.5h3.5L12 5.5v13l-4.5-4H4z M15.5 9a4 4 0 0 1 0 6 M18 6.5a7.5 7.5 0 0 1 0 11";
+    out property <string> menu: "M4 6.5h16 M4 12h16 M4 17.5h16";
+    out property <string> chevron-down: "M6.5 9.5l5.5 5.5 5.5-5.5";
+    out property <string> chevron-up: "M6.5 14.5l5.5-5.5 5.5 5.5";
+    out property <string> chevron-left: "M14.5 6.5L9 12l5.5 5.5";
+    out property <string> chevron-right: "M9.5 6.5L15 12l-5.5 5.5";
+    out property <string> arrow-down: "M12 4.5v15 M6 13.5l6 6 6-6";
+    out property <string> fullscreen: "M4 9V4h5 M20 9V4h-5 M4 15v5h5 M20 15v5h-5";
+    out property <string> fullscreen-exit: "M9 4v5H4 M15 4v5h5 M9 20v-5H4 M15 20v-5h5";
+    out property <string> popout: "M14 4h6v6 M20 4l-8.5 8.5 M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10";
+    out property <string> eye-off: "M3.5 3.5l17 17 M10.4 5.6A9.6 9.6 0 0 1 12 5.5c5.5 0 9 6.5 9 6.5a16 16 0 0 1-2.7 3.4 M6.4 7.4C4.1 9 3 12 3 12s3.5 6.5 9 6.5a8.6 8.6 0 0 0 4.3-1.1 M9.9 9.9a3 3 0 0 0 4.2 4.2";
+    out property <string> bell: "M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z M10 20.5a2 2 0 0 0 4 0";
+    out property <string> palette: "M12 3a9 9 0 1 0 0 18c1.4 0 2-.9 2-1.9 0-1.4-1.2-1.8-1.2-3 0-1 .8-1.6 1.9-1.6H17a4 4 0 0 0 4-4C21 6.4 17 3 12 3z M7.5 11.5v.1 M10 7.5v.1 M14.5 7.5v.1";
+    out property <string> app: "M4.5 4.5h6v6h-6z M13.5 4.5h6v6h-6z M4.5 13.5h6v6h-6z M13.5 13.5h6v6h-6z";
+    out property <string> hash: "M9.5 4L8 20 M16 4l-1.5 16 M4.5 9h16 M3.5 15h16";
+    out property <string> chat: "M5 4.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-8l-5 4v-4H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z";
+    out property <string> signal: "M5 19v-3 M10 19v-7 M15 19V8 M20 19V4";
+    out property <string> send: "M4.5 12L20 4.5 16 20l-4-6.5z M12 13.5L20 4.5";
+    out property <string> lock: "M6.5 10.5h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3";
+    out property <string> crown: "M4 17.5L3 7.5l5 4 4-6.5 4 6.5 5-4-1 10z M4 20.5h16";
+    out property <string> download: "M12 4v11 M7 10.5l5 5 5-5 M4.5 19.5h15";
+    out property <string> power: "M12 3.5v8 M7 6.5a7.5 7.5 0 1 0 10 0";
+    out property <string> speaker: "M4 9.5h3.5L12 5.5v13l-4.5-4H4z M15.5 9a4 4 0 0 1 0 6";
+}
+
+// One icon drawn from a path above.
+export component Icon inherits Rectangle {
+    in property <string> icon;
+    in property <brush> tint: Theme.text-muted;
+    in property <bool> filled;
+    in property <length> size: 20px;
+    in property <length> stroke: max(1.4px, root.size * 0.085);
+    width: root.size;
+    height: root.size;
+    accessible-role: none;
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        fill: root.filled ? root.tint : transparent;
+        stroke: root.filled ? transparent : root.tint;
+        stroke-width: root.filled ? 0px : root.stroke;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+// Tooltip shared by all icon buttons; drawn once by the window (never clipped).
+export global Tip {
+    in-out property <string> text;
+    in-out property <bool> shown;
+    in-out property <bool> below;
+    in-out property <length> ax;
+    in-out property <length> ay;
+    in-out property <length> aw;
+    in-out property <length> ah;
+    in-out property <int> serial;
+}
+
+// The tooltip bubble (placed by MainWindow above everything).
+export component TooltipLayer inherits Rectangle {
+    in property <length> area-width;
+    in property <length> area-height;
+    property <bool> place-below: Tip.below || Tip.ay - 40px < 4px;
+    if Tip.shown && Tip.text != "": bubble := Rectangle {
+        x: max(4px, min(root.area-width - self.width - 4px, Tip.ax + Tip.aw / 2 - self.width / 2));
+        y: root.place-below ? Tip.ay + Tip.ah + 8px : Tip.ay - self.height - 8px;
+        width: tip-text.preferred-width + 20px;
+        height: tip-text.preferred-height + 12px;
+        border-radius: 6px;
+        background: Theme.bg-floating;
+        border-width: 1px;
+        border-color: #ffffff12;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { delay: 300ms; duration: 90ms; }
+        tip-text := Text {
+            text: Tip.text;
+            color: #f1f2f4;
+            font-size: 12px;
+            font-weight: 600;
+            accessible-role: none;
+        }
+    }
+}
+
+// What a styled button looks like.
+export enum ButtonKind { secondary, primary, danger, ghost, success, link }
+
+export component AppButton inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <ButtonKind> kind: ButtonKind.secondary;
+    in property <bool> enabled: true;
+    in property <bool> small;
+    in property <bool> stretch-text;
     callback clicked;
-    width: 32px;
-    height: 32px;
-    border-radius: 4px;
-    background: touch.has-hover || focus.has-focus ? (Theme.dark ? #3f4147 : #d7d9dc) : transparent;
+    property <bool> hovered: touch.has-hover && root.enabled;
+    property <bool> down: touch.pressed && root.enabled;
+    property <color> base: root.kind == ButtonKind.primary ? Theme.accent
+        : root.kind == ButtonKind.danger ? Theme.danger
+        : root.kind == ButtonKind.success ? Theme.success
+        : root.kind == ButtonKind.secondary ? (Theme.dark ? #3a3c44 : #e3e5e9)
+        : transparent;
+    property <color> hover-bg: root.kind == ButtonKind.primary ? Theme.accent-hover
+        : root.kind == ButtonKind.danger ? Theme.danger-hover
+        : root.kind == ButtonKind.success ? Theme.success-hover
+        : root.kind == ButtonKind.secondary ? (Theme.dark ? #44474f : #d8dbe0)
+        : root.kind == ButtonKind.link ? transparent : Theme.hover;
+    property <color> fg: root.kind == ButtonKind.secondary ? Theme.text-strong
+        : root.kind == ButtonKind.ghost ? Theme.text-normal
+        : root.kind == ButtonKind.link ? Theme.accent-text
+        : Theme.text-on-accent;
+    min-height: root.small ? 28px : 36px;
+    min-width: layout.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: root.small ? 6px : 8px;
+    background: root.down ? root.hover-bg.darker(0.12) : root.hovered ? root.hover-bg : root.base;
+    opacity: root.enabled ? 1 : 0.45;
+    animate background { duration: Theme.fast; }
     accessible-role: button;
-    accessible-label: tooltip;
-    accessible-action-default => { root.clicked(); }
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
     focus := FocusScope {
+        enabled: root.enabled;
         key-pressed(event) => {
             if (event.text == " " || event.text == "\n") {
                 root.clicked();
@@ -34,13 +256,543 @@ export component IconButton inherits Rectangle {
         }
     }
     touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
-    Text {
+    // Keyboard focus ring.
+    if focus.has-focus: Rectangle {
+        border-radius: root.border-radius + 2px;
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
+        border-width: 2px;
+        border-color: Theme.accent-text;
+    }
+    layout := HorizontalLayout {
+        padding-left: root.kind == ButtonKind.link ? 2px : (root.small ? 10px : 16px);
+        padding-right: root.kind == ButtonKind.link ? 2px : (root.small ? 10px : 16px);
+        spacing: 6px;
+        alignment: center;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            icon: root.icon;
+            size: root.small ? 15px : 17px;
+            tint: root.fg;
+        }
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-size: root.small ? 12px : 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+    }
+}
+
+// Square or round icon button with a tooltip on hover.
+export component IconButton inherits Rectangle {
+    in property <string> icon;
+    // Text glyph used when there is no icon.
+    in property <string> label;
+    in property <string> tooltip;
+    in property <bool> tooltip-below;
+    in property <bool> enabled: true;
+    // Toggled on (e.g. a panel that is open).
+    in property <bool> active;
+    // Red when "active" (muted microphone) and on hover for destructive buttons.
+    in property <bool> danger;
+    in property <bool> filled;
+    in property <length> size: 32px;
+    in property <length> icon-size: 20px;
+    in property <bool> round;
+    in property <color> tint: Theme.text-muted;
+    callback clicked;
+    property <int> my-serial: -1;
+    property <bool> hovered: touch.has-hover && root.enabled;
+    width: root.size;
+    height: root.size;
+    border-radius: root.round ? root.size / 2 : 6px;
+    background: touch.pressed && root.enabled ? Theme.pressed
+        : root.active && root.danger ? Theme.danger-soft
+        : root.hovered || focus.has-focus ? Theme.hover
+        : root.active ? Theme.selected : transparent;
+    opacity: root.enabled ? 1 : 0.4;
+    animate background { duration: Theme.fast; }
+    accessible-role: button;
+    accessible-label: root.tooltip != "" ? root.tooltip : root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            Tip.shown = false;
+            root.clicked();
+        }
+        changed has-hover => {
+            if self.has-hover && root.tooltip != "" {
+                Tip.serial += 1;
+                root.my-serial = Tip.serial;
+                Tip.text = root.tooltip;
+                Tip.ax = root.absolute-position.x;
+                Tip.ay = root.absolute-position.y;
+                Tip.aw = root.width;
+                Tip.ah = root.height;
+                Tip.below = root.tooltip-below;
+                Tip.shown = true;
+            } else if !self.has-hover && Tip.serial == root.my-serial {
+                Tip.shown = false;
+            }
+        }
+    }
+    if root.icon != "": Icon {
+        icon: root.icon;
+        size: root.icon-size;
+        filled: root.filled;
+        tint: root.active && root.danger ? Theme.danger-text
+            : root.hovered && root.danger ? Theme.danger-text
+            : root.hovered || root.active ? Theme.text-strong : root.tint;
+        animate tint { duration: Theme.fast; }
+    }
+    if root.icon == "": Text {
         text: root.label;
-        color: Theme.text-muted;
+        color: root.hovered ? Theme.text-strong : root.tint;
         font-size: 15px;
         horizontal-alignment: center;
         vertical-alignment: center;
+        accessible-role: none;
     }
+}
+
+// Big round control (call bar, incoming call).
+export enum RoundKind { neutral, off, danger, success, accent }
+
+export component RoundButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> tooltip;
+    in property <RoundKind> kind: RoundKind.neutral;
+    in property <bool> enabled: true;
+    in property <bool> filled;
+    in property <length> size: 48px;
+    callback clicked;
+    property <int> my-serial: -1;
+    property <bool> hovered: touch.has-hover && root.enabled;
+    property <color> base: root.kind == RoundKind.danger ? Theme.danger
+        : root.kind == RoundKind.success ? Theme.success
+        : root.kind == RoundKind.accent ? Theme.accent
+        : root.kind == RoundKind.off ? (Theme.dark ? #f2f3f5 : #2b2d33)
+        : (Theme.dark ? #30333a : #ffffff);
+    property <color> fg: root.kind == RoundKind.off ? (Theme.dark ? #c62f35 : #ff8a8d)
+        : root.kind == RoundKind.neutral ? Theme.text-strong : #ffffff;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: touch.pressed && root.enabled ? root.base.darker(0.25)
+        : root.hovered ? root.base.darker(0.12) : root.base;
+    border-width: root.kind == RoundKind.neutral ? 1px : 0px;
+    border-color: Theme.border;
+    opacity: root.enabled ? 1 : 0.4;
+    animate background { duration: Theme.fast; }
+    accessible-role: button;
+    accessible-label: root.tooltip;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            Tip.shown = false;
+            root.clicked();
+        }
+        changed has-hover => {
+            if self.has-hover && root.tooltip != "" {
+                Tip.serial += 1;
+                root.my-serial = Tip.serial;
+                Tip.text = root.tooltip;
+                Tip.ax = root.absolute-position.x;
+                Tip.ay = root.absolute-position.y;
+                Tip.aw = root.width;
+                Tip.ah = root.height;
+                Tip.below = false;
+                Tip.shown = true;
+            } else if !self.has-hover && Tip.serial == root.my-serial {
+                Tip.shown = false;
+            }
+        }
+    }
+    if focus.has-focus: Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: Theme.accent-text;
+    }
+    Icon {
+        icon: root.icon;
+        filled: root.filled;
+        size: root.size * 0.46;
+        tint: root.fg;
+    }
+}
+
+// On/off switch.
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback toggled(bool);
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.checked ? Theme.success : Theme.toggle-off;
+    opacity: root.enabled ? 1 : 0.45;
+    animate background { duration: Theme.normal; }
+    accessible-role: switch;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.flip(); }
+    forward-focus: focus;
+    public function flip() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.flip();
+                return accept;
+            }
+            reject
+        }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.flip(); }
+    }
+    if focus.has-focus: Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-radius: self.height / 2;
+        border-width: 2px;
+        border-color: Theme.accent-text;
+    }
+    Rectangle {
+        x: root.checked ? root.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: #ffffff;
+        animate x { duration: Theme.normal; easing: ease-out; }
+        if root.checked: Icon {
+            icon: Icons.check;
+            size: 12px;
+            stroke: 2px;
+            tint: Theme.success;
+        }
+    }
+}
+
+// A labelled settings row with a switch on the right; the whole row toggles it.
+export component ToggleRow inherits Rectangle {
+    in property <string> text;
+    in property <string> description;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+    callback toggled(bool);
+    min-height: row.preferred-height;
+    border-radius: 8px;
+    background: touch.has-hover && root.enabled ? Theme.hover : transparent;
+    animate background { duration: Theme.fast; }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { switch.flip(); }
+    }
+    row := HorizontalLayout {
+        padding: 10px;
+        spacing: 16px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.text;
+                color: root.enabled ? Theme.text-strong : Theme.text-muted;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                color: Theme.text-muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            switch := Toggle {
+                label: root.text;
+                enabled: root.enabled;
+                checked <=> root.checked;
+                toggled(on) => { root.toggled(on); }
+            }
+        }
+    }
+}
+
+// Small rounded count / status label.
+export component Pill inherits Rectangle {
+    in property <string> text;
+    in property <color> bg: Theme.danger;
+    in property <color> text-color: #ffffff;
+    in property <length> font-size: 11px;
+    height: root.font-size + 7px;
+    width: max(self.height, label.preferred-width + 10px);
+    border-radius: self.height / 2;
+    background: root.bg;
+    label := Text {
+        text: root.text;
+        color: root.text-color;
+        font-size: root.font-size;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// "ДИАЛОГИ И ГРУППЫ"-style caption.
+export component SectionHeader inherits Text {
+    color: Theme.text-muted;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+// Initials on a stable colour; groups get a rounded square and a people glyph;
+// presence as a dot cut out of the avatar's corner.
+export component Avatar inherits Rectangle {
+    in property <string> initials;
+    in property <int> color-index;
+    in property <bool> group;
+    in property <length> size: 32px;
+    // 0 none, 1 online, 2 offline.
+    in property <int> presence;
+    // The surface behind the avatar (the cut-out ring takes its colour).
+    in property <color> ring-color: Theme.bg-sidebar;
+    width: root.size;
+    height: root.size;
+    accessible-role: none;
+    Rectangle {
+        border-radius: root.group ? root.size * 0.3 : root.size / 2;
+        background: Theme.avatar(root.color-index);
+        if !root.group || root.size < 28px: Text {
+            text: root.initials;
+            color: #ffffff;
+            font-size: root.size * (root.initials.character-count > 1 ? 0.36 : 0.42);
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if root.group && root.size >= 28px: Icon {
+            icon: Icons.users;
+            size: root.size * 0.55;
+            tint: #ffffff;
+            stroke: max(1.5px, root.size * 0.06);
+        }
+    }
+    if root.presence > 0: Rectangle {
+        property <length> d: max(10px, root.size * 0.36);
+        x: root.width - self.d + 2px;
+        y: root.height - self.d + 2px;
+        width: self.d;
+        height: self.d;
+        border-radius: self.d / 2;
+        background: root.ring-color;
+        accessible-role: text;
+        accessible-label: root.presence == 1 ? "в сети" : "не в сети";
+        Rectangle {
+            width: parent.d - 5px;
+            height: parent.d - 5px;
+            border-radius: self.width / 2;
+            background: root.presence == 1 ? Theme.success : root.ring-color;
+            border-width: root.presence == 1 ? 0px : max(2px, self.width * 0.28);
+            border-color: Theme.offline;
+        }
+    }
+}
+
+// Single-line text field in the app's style (search, forms): scrolls with the cursor
+// like the standard LineEdit, with a placeholder, an optional leading icon and a
+// copy/paste context menu.
+export component Field inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <string> icon;
+    in property <InputType> input-type: InputType.text;
+    in property <bool> enabled: true;
+    in property <length> field-height: 40px;
+    in property <color> field-background: Theme.bg-input;
+    out property <bool> has-focus: input.has-focus;
+    callback accepted(string);
+    callback edited(string);
+    property <length> margin: 4px;
+    height: root.field-height;
+    min-width: 60px;
+    border-radius: 8px;
+    background: root.field-background;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : (touch.has-hover && root.enabled ? Theme.border-strong : Theme.border);
+    opacity: root.enabled ? 1 : 0.55;
+    animate border-color { duration: Theme.fast; }
+    forward-focus: input;
+    accessible-role: none;
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+    HorizontalLayout {
+        padding-left: root.icon != "" ? 10px : 12px;
+        padding-right: 10px;
+        spacing: 8px;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            icon: root.icon;
+            size: 16px;
+            tint: Theme.text-faint;
+        }
+        clip-area := Rectangle {
+            clip: true;
+            horizontal-stretch: 1;
+            min-width: 1px;
+            placeholder := Text {
+                width: 100%;
+                height: 100%;
+                vertical-alignment: center;
+                text: input.text == "" && input.preedit-text == "" ? root.placeholder : "";
+                color: Theme.text-faint;
+                font-size: input.font-size;
+                overflow: elide;
+                accessible-role: none;
+            }
+            ContextMenuArea {
+                enabled: root.enabled;
+                Menu {
+                    MenuItem {
+                        title: "Вырезать";
+                        enabled: root.input-type != InputType.password;
+                        activated => { input.cut(); }
+                    }
+                    MenuItem {
+                        title: "Копировать";
+                        enabled: root.input-type != InputType.password;
+                        activated => { input.copy(); }
+                    }
+                    MenuItem {
+                        title: "Вставить";
+                        activated => { input.paste(); }
+                    }
+                    MenuItem {
+                        title: "Выделить всё";
+                        activated => { input.select-all(); }
+                    }
+                }
+                input := TextInput {
+                    property <length> computed-x;
+                    x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+                    width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                    height: 100%;
+                    vertical-alignment: center;
+                    single-line: true;
+                    enabled: root.enabled;
+                    input-type: root.input-type;
+                    color: Theme.text-strong;
+                    font-size: 14px;
+                    selection-background-color: Theme.accent.with-alpha(0.45);
+                    selection-foreground-color: Theme.text-strong;
+                    accessible-placeholder-text: root.placeholder;
+                    cursor-position-changed(cursor-position) => {
+                        if cursor-position.x + self.computed-x < root.margin {
+                            self.computed-x = - cursor-position.x + root.margin;
+                        } else if cursor-position.x + self.computed-x > parent.width - root.margin - self.text-cursor-width {
+                            self.computed-x = parent.width - cursor-position.x - root.margin - self.text-cursor-width;
+                        }
+                    }
+                    accepted => { root.accepted(self.text); }
+                    edited => { root.edited(self.text); }
+                }
+            }
+        }
+    }
+}
+
+// A card: raised surface with a hairline rim and a layered soft shadow (also drawn by
+// the software renderer, which has no blur).
+export component Card inherits Rectangle {
+    in property <length> radius: 12px;
+    in property <color> fill: Theme.bg-elevated;
+    in property <bool> shadow: true;
+    border-radius: root.radius;
+    if root.shadow: Rectangle {
+        x: -3px;
+        y: -1px;
+        width: root.width + 6px;
+        height: root.height + 7px;
+        border-radius: root.radius + 3px;
+        background: Theme.shadow.transparentize(0.65);
+    }
+    if root.shadow: Rectangle {
+        x: -1px;
+        y: 0px;
+        width: root.width + 2px;
+        height: root.height + 3px;
+        border-radius: root.radius + 1px;
+        background: Theme.shadow.transparentize(0.4);
+    }
+    Rectangle {
+        border-radius: root.radius;
+        background: root.fill;
+        border-width: 1px;
+        border-color: Theme.border;
+    }
+    @children
 }

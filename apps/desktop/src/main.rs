@@ -367,6 +367,8 @@ fn show_members(w: &MainWindow, members: Vec<MemberView>) {
     let rows: Vec<MemberRow> = members
         .into_iter()
         .map(|m| MemberRow {
+            initials: turbo_pancake_desktop::chat::initials(&m.name).into(),
+            avatar: turbo_pancake_desktop::chat::avatar_index(&m.peer_id),
             peer_id: m.peer_id.into(),
             name: m.name.into(),
             speaking: m.speaking,
