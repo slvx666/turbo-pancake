@@ -12,4 +12,4 @@ pub mod engine;
 pub mod service;
 
 pub use engine::{Changes, ConversationView, Engine, MessageState, MessageView, ReplyView};
-pub use service::{Command, Service, ServiceConfig, Status, Update};
+pub use service::{Command, IncomingMessage, Service, ServiceConfig, Status, Update};

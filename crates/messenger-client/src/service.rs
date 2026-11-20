@@ -174,6 +174,19 @@ pub enum Update {
     },
     /// A command failed (shown to the user; never contains secrets).
     Error(String),
+    /// A live new message from someone else (not from this account, not an edit or a
+    /// deletion, not loaded by a resync): the cue for notifications and sounds. Sent
+    /// after the views it changed.
+    Incoming(IncomingMessage),
+}
+
+/// See [`Update::Incoming`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct IncomingMessage {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub author_name: String,
+    pub body: String,
 }
 
 pub struct Service {
@@ -781,11 +794,16 @@ impl Worker {
                 {
                     self.emit(Update::CallEvent(c.clone()));
                 }
+                let incoming = self.engine.as_ref().and_then(|e| incoming(e, &body));
                 let r = match self.engine.as_mut() {
                     Some(e) => e.on_event(body).await,
                     None => return,
                 };
-                self.settle(r);
+                if self.settle(r)
+                    && let Some(m) = incoming
+                {
+                    self.emit(Update::Incoming(m));
+                }
             }
             Some(Ok(Message::Close(_))) | None | Some(Err(_)) => self.disconnected(),
             Some(Ok(_)) => {}
@@ -804,6 +822,30 @@ impl Worker {
             self.disconnected();
         }
     }
+}
+
+/// A `message.created` event that is new to this device and written by someone else.
+fn incoming(engine: &Engine, body: &S) -> Option<IncomingMessage> {
+    let S::MessageCreated(e) = body else {
+        return None;
+    };
+    let m = e.message.as_ref()?;
+    if m.author_id == engine.me.user_id || m.deleted {
+        return None;
+    }
+    // At or below the applied cursor: a duplicate or already fetched by a resync.
+    let known = engine
+        .cache
+        .conversation(&m.conversation_id)
+        .ok()
+        .flatten()
+        .is_some_and(|c| m.change_seq <= c.applied_change_seq);
+    (!known).then(|| IncomingMessage {
+        conversation_id: m.conversation_id.clone(),
+        message_id: m.message_id.clone(),
+        author_name: m.author_display_name.clone(),
+        body: m.body.clone(),
+    })
 }
 
 /// Directory name for one server's caches (no address in clear: it may be a private IP).

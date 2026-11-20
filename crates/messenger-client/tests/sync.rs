@@ -11,7 +11,8 @@ use tokio::sync::mpsc;
 use turbo_pancake_app_server::Config;
 use turbo_pancake_app_server::ratelimit::Limits;
 use turbo_pancake_messenger_client::{
-    Command, ConversationView, MessageState, MessageView, Service, ServiceConfig, Status, Update,
+    Command, ConversationView, IncomingMessage, MessageState, MessageView, Service, ServiceConfig,
+    Status, Update,
 };
 use turbo_pancake_protocol::v1;
 
@@ -76,6 +77,8 @@ struct Client {
     calls: Vec<v1::ConversationCall>,
     ready: Option<v1::CallParticipation>,
     errors: Vec<String>,
+    /// Live messages from others (notification cues).
+    incoming: Vec<IncomingMessage>,
 }
 
 fn cache_dir(name: &str) -> PathBuf {
@@ -117,6 +120,7 @@ impl Client {
             calls: Vec::new(),
             ready: None,
             errors: Vec::new(),
+            incoming: Vec::new(),
         }
     }
 
@@ -152,6 +156,7 @@ impl Client {
                 self.closed.push(conversation_id);
             }
             Update::Error(e) => self.errors.push(e),
+            Update::Incoming(m) => self.incoming.push(m),
         }
     }
 
@@ -254,6 +259,11 @@ async fn exchange_receipts_edit_delete_and_presence() {
                 .is_some_and(|m| m.state == MessageState::Delivered)
         })
         .await;
+    bob.until("live incoming cue", |c| c.incoming.len() == 1)
+        .await;
+    assert_eq!(bob.incoming[0].conversation_id, conv);
+    assert_eq!(bob.incoming[0].author_name, "ALICE");
+    assert_eq!(bob.incoming[0].body, "привет 👋");
 
     // bob opens it: read on both sides; replies.
     bob.cmd(Command::Open {
@@ -313,6 +323,13 @@ async fn exchange_receipts_edit_delete_and_presence() {
             .is_some_and(|r| r.deleted)
     })
     .await;
+
+    // Edits and deletions are no new messages; own messages never are.
+    assert_eq!(bob.incoming.len(), 1, "bob: alice's one message");
+    alice
+        .until("bob's reply cue", |c| c.incoming.len() == 1)
+        .await;
+    assert_eq!(alice.incoming[0].body, "hi!");
 
     // bob closes the app: alice sees him offline.
     bob.stop().await;
