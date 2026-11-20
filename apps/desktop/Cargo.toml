@@ -64,6 +64,8 @@ windows = { version = "0.62", features = [
 [dev-dependencies]
 turbo-pancake-app-server = { path = "../app-server" }
 turbo-pancake-pg-test.workspace = true
+# examples/ui_snapshot.rs: offscreen UI pictures (PNG).
+png = "0.18"
 
 [build-dependencies]
 turbo-pancake-win-icon.workspace = true
