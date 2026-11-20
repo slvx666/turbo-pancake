@@ -1035,6 +1035,7 @@ fn start_session(
                 w.set_connection_status(v.connection.into());
             }
             w.set_in_room(v.in_room);
+            w.set_call_phase(v.phase as i32);
             w.set_call_title(v.title.into());
             w.set_call_detail(if w.get_signed_in() && !has_room {
                 "Начните звонок из личного или группового диалога".into()

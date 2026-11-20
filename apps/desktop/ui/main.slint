@@ -3,7 +3,7 @@
 // the right, user panel at the bottom-left. No server/channel rail by design.
 
 import { ComboBox, Slider, Palette, ScrollView } from "std-widgets.slint";
-import { Theme, Icons, Icon, IconButton, AppButton, ButtonKind, RoundButton, RoundKind, Toggle, ToggleRow, Pill, SectionHeader, Avatar, Field, Card, Tip, TooltipLayer } from "theme.slint";
+import { Theme, Icons, Icon, IconButton, AppButton, ButtonKind, RoundButton, RoundKind, CallControl, Toggle, ToggleRow, Pill, SectionHeader, Avatar, Field, Card, Tip, TooltipLayer } from "theme.slint";
 import { ConversationRow, MessageRow, GroupMemberRow, Sidebar, AuthPanel, ChatPanel, EmptyArt } from "chat.slint";
 export { Theme, ConversationRow, MessageRow, GroupMemberRow }
 
@@ -237,37 +237,44 @@ component MemberTile inherits Rectangle {
             x: 8px;
             y: parent.height - self.height - 8px;
             width: min(parent.width - 16px, plate.preferred-width);
-            height: 24px;
-            border-radius: 6px;
-            background: #000000a0;
+            height: 28px;
+            border-radius: 7px;
+            background: root.speaking ? Theme.success : #000000a8;
+            animate background { duration: 150ms; }
             plate := HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 5px;
+                padding-left: 9px;
+                padding-right: 9px;
+                spacing: 6px;
                 if root.muted: Icon {
                     y: (parent.height - self.height) / 2;
                     icon: Icons.mic-off;
-                    size: 13px;
+                    size: 15px;
                     tint: #ff8a8d;
                 }
                 Text {
-                    text: root.name + (root.is-self ? " (вы)" : "");
+                    text: root.name + (root.is-self ? " (вы)" : "") + (root.speaking ? " · говорит" : "");
                     color: #ffffff;
-                    font-size: 12px;
+                    font-size: 13px;
                     font-weight: 600;
                     vertical-alignment: center;
                     overflow: elide;
                 }
             }
         }
-        if hover.has-hover && root.info != "": Text {
-            x: 10px;
-            y: 8px;
-            width: parent.width - 20px;
-            text: root.info;
-            color: Theme.text-muted;
-            font-size: 11px;
-            overflow: elide;
+        // Microphone off: a red mark in the corner, seen from across the room.
+        if root.muted: Rectangle {
+            x: parent.width - self.width - 10px;
+            y: 10px;
+            width: 34px;
+            height: 34px;
+            border-radius: 17px;
+            background: Theme.danger;
+            Icon {
+                icon: Icons.mic-off;
+                size: 19px;
+                stroke: 2px;
+                tint: #ffffff;
+            }
         }
         // Per-member volume on hover.
         if !root.is-self && hover.has-hover: Rectangle {
@@ -350,18 +357,35 @@ component ShareCard inherits Rectangle {
                     }
                 }
                 Text {
-                    text: root.share.watching ? "Смотрите крупно" : (root.previews-visible ? "Миниатюра…" : "Миниатюры скрыты");
+                    text: root.share.watching ? "Вы смотрите этот экран" : (root.previews-visible ? "Загружается…" : "Миниатюры скрыты");
                     color: #8b8e97;
-                    font-size: 11px;
+                    font-size: 12px;
                     horizontal-alignment: center;
+                    wrap: word-wrap;
                 }
             }
             Pill {
                 x: 6px;
                 y: 6px;
-                text: "LIVE";
+                text: "В ЭФИРЕ";
                 font-size: 10px;
                 bg: Theme.danger;
+            }
+            // Hover: say what a click does.
+            if touch.has-hover: Rectangle {
+                background: #00000080;
+                Rectangle {
+                    width: hint.preferred-width + 24px;
+                    height: 30px;
+                    border-radius: 15px;
+                    background: root.share.watching ? #ffffff : Theme.accent;
+                    hint := Text {
+                        text: root.share.watching ? "Перестать смотреть" : "Смотреть";
+                        color: root.share.watching ? #16171b : #ffffff;
+                        font-size: 13px;
+                        font-weight: 700;
+                    }
+                }
             }
         }
         HorizontalLayout {
@@ -374,13 +398,13 @@ component ShareCard inherits Rectangle {
                     text: root.share.name;
                     color: Theme.text-strong;
                     font-weight: 600;
-                    font-size: 12px;
+                    font-size: 13px;
                     overflow: elide;
                 }
                 Text {
-                    text: root.share.info;
-                    color: Theme.text-muted;
-                    font-size: 10px;
+                    text: root.share.watching ? "вы смотрите" : root.share.info;
+                    color: root.share.watching ? Theme.accent-text : Theme.text-muted;
+                    font-size: 11px;
                     overflow: elide;
                 }
             }
@@ -459,48 +483,91 @@ component CallView inherits Rectangle {
     callback open-share-window(bool);
 
     in-out property <bool> voice-panel-open;
+    // 0 not in a call, 1 connecting, 2 waiting for the others, 3 talking,
+    // 4 reconnecting, 5 failed / ended (`view::CallPhase`).
+    in property <int> phase;
     property <bool> share-menu-open;
     property <bool> details-open;
     property <bool> show-people: !root.compact || root.call-tab == 0;
     property <bool> show-screens: !root.compact || root.call-tab == 1;
+    // How long the conversation goes on (counted here; starts when someone answers).
+    property <int> seconds;
+    Timer {
+        interval: 1s;
+        running: root.in-room && (root.phase == 3 || root.phase == 4);
+        triggered => { root.seconds += 1; }
+    }
+    changed in-room => {
+        if !root.in-room {
+            root.seconds = 0;
+        }
+    }
+    property <string> duration: (root.seconds >= 3600 ? floor(root.seconds / 3600) + ":" + (mod(floor(root.seconds / 60), 60) < 10 ? "0" : "") : "")
+        + mod(floor(root.seconds / 60), 60) + ":" + (mod(root.seconds, 60) < 10 ? "0" : "") + mod(root.seconds, 60);
+    // One plain sentence for where the call is, and its colour.
+    property <string> status: !root.in-room ? "Вы не в звонке"
+        : root.phase == 1 ? "Подключаемся…"
+        : root.phase == 2 ? (root.managed ? "Звоним… ждём ответа" : "Ждём второго участника")
+        : root.phase == 4 ? "Связь пропала — восстанавливаем"
+        : root.phase == 5 ? "Звонок завершён"
+        : "Идёт звонок · " + root.duration;
+    property <color> status-color: !root.in-room ? Theme.text-muted
+        : root.phase == 3 ? Theme.success-text
+        : root.phase == 5 ? Theme.danger-text
+        : Theme.warning;
     background: Theme.bg-stage;
 
     VerticalLayout {
-        // Header.
+        // Header: who the call is with and, in one coloured line, where it is.
         Rectangle {
-            height: 52px;
+            height: 60px;
             background: Theme.bg-content;
             HorizontalLayout {
                 padding-left: 16px;
                 padding-right: 10px;
-                spacing: 10px;
+                spacing: 12px;
                 Rectangle {
                     y: (parent.height - self.height) / 2;
-                    width: 30px;
-                    height: 30px;
-                    border-radius: 9px;
-                    background: root.in-room ? Theme.success : Theme.hover;
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 18px;
+                    background: root.in-room ? (root.phase == 3 ? Theme.success : Theme.warning) : Theme.hover;
                     Icon {
-                        icon: Icons.volume;
-                        size: 17px;
+                        icon: Icons.phone;
+                        filled: true;
+                        size: 19px;
                         tint: root.in-room ? #ffffff : Theme.text-muted;
                     }
                 }
                 VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 1;
+                    spacing: 2px;
                     Text {
                         text: root.title;
                         color: Theme.text-strong;
-                        font-size: 15px;
+                        font-size: 16px;
                         font-weight: 700;
                         overflow: elide;
                     }
-                    if root.detail != "": Text {
-                        text: root.detail;
-                        color: Theme.text-muted;
-                        font-size: 12px;
-                        overflow: elide;
+                    HorizontalLayout {
+                        spacing: 7px;
+                        Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            width: 9px;
+                            height: 9px;
+                            border-radius: 4.5px;
+                            background: root.status-color;
+                        }
+                        Text {
+                            text: root.status;
+                            color: root.status-color;
+                            font-size: 14px;
+                            font-weight: 600;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            accessible-role: text;
+                        }
                     }
                 }
                 if root.compact: HorizontalLayout {
@@ -509,7 +576,7 @@ component CallView inherits Rectangle {
                     padding-bottom: 10px;
                     spacing: 4px;
                     AppButton {
-                        text: "Звонок";
+                        text: "Участники";
                         small: true;
                         kind: root.call-tab == 0 ? ButtonKind.primary : ButtonKind.ghost;
                         clicked => { root.call-tab = 0; }
@@ -519,16 +586,6 @@ component CallView inherits Rectangle {
                         small: true;
                         kind: root.call-tab == 1 ? ButtonKind.primary : ButtonKind.ghost;
                         clicked => { root.call-tab = 1; }
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: Icons.sliders;
-                        tooltip: root.voice-panel-open ? "Скрыть настройки голоса" : "Настройки голоса";
-                        tooltip-below: true;
-                        active: root.voice-panel-open;
-                        clicked => { root.voice-panel-open = !root.voice-panel-open; }
                     }
                 }
             }
@@ -564,6 +621,82 @@ component CallView inherits Rectangle {
                                 font-size: 12px;
                                 wrap: word-wrap;
                                 horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                    // The own microphone is off: nobody hears you (the most common surprise).
+                    if root.in-room && root.muted: Rectangle {
+                        border-radius: 10px;
+                        background: Theme.danger-soft;
+                        border-width: 1px;
+                        border-color: Theme.danger.transparentize(0.6);
+                        accessible-role: text;
+                        accessible-label: "Ваш микрофон выключен — вас не слышат";
+                        HorizontalLayout {
+                            padding: 10px;
+                            padding-left: 14px;
+                            spacing: 12px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.mic-off;
+                                size: 22px;
+                                tint: Theme.danger-text;
+                            }
+                            Text {
+                                text: "Ваш микрофон выключен — вас не слышат";
+                                color: Theme.danger-text;
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                            AppButton {
+                                text: "Включить микрофон";
+                                icon: Icons.mic;
+                                kind: ButtonKind.danger;
+                                clicked => {
+                                    root.muted = false;
+                                    root.mute-changed(false);
+                                }
+                            }
+                        }
+                    }
+                    // The own screen goes out to everybody.
+                    if root.in-room && root.sharing: Rectangle {
+                        border-radius: 10px;
+                        background: Theme.accent-soft;
+                        border-width: 1px;
+                        border-color: Theme.accent.transparentize(0.6);
+                        HorizontalLayout {
+                            padding: 10px;
+                            padding-left: 14px;
+                            spacing: 10px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.screen-share;
+                                size: 22px;
+                                tint: Theme.accent-text;
+                            }
+                            Text {
+                                text: "Вы показываете свой экран — его видят все в звонке";
+                                color: Theme.text-strong;
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                            AppButton {
+                                text: "Настроить";
+                                kind: ButtonKind.ghost;
+                                clicked => { root.share-menu-open = true; }
+                            }
+                            AppButton {
+                                text: "Остановить показ";
+                                icon: Icons.screen-off;
+                                kind: ButtonKind.primary;
+                                clicked => { root.stop-share(); }
                             }
                         }
                     }
@@ -651,44 +784,42 @@ component CallView inherits Rectangle {
                                 spacing: 8px;
                                 Pill {
                                     y: (parent.height - self.height) / 2;
-                                    text: "LIVE";
+                                    text: "В ЭФИРЕ";
                                     font-size: 10px;
                                     bg: Theme.danger;
                                 }
                                 Text {
-                                    text: root.watching-name;
+                                    text: "Экран: " + root.watching-name;
                                     color: #ffffff;
+                                    font-size: 15px;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                     overflow: elide;
                                     horizontal-stretch: 1;
                                 }
-                                ComboBox {
+                                if !root.compact: ComboBox {
                                     width: 150px;
                                     model: ["Качество: авто", "Высокое", "Низкое"];
                                     current-index <=> root.layer-index;
                                     selected => { root.layer-selected(root.layer-index); }
                                 }
-                                IconButton {
+                                AppButton {
+                                    text: "На весь экран";
                                     icon: Icons.fullscreen;
-                                    tint: #e6e7ea;
-                                    tooltip: "Во весь экран";
-                                    tooltip-below: true;
+                                    small: true;
                                     clicked => { root.open-share-window(true); }
                                 }
-                                IconButton {
+                                if !root.compact: AppButton {
+                                    text: "В окне";
                                     icon: Icons.popout;
-                                    tint: #e6e7ea;
-                                    tooltip: root.share-window-open ? "Окно открыто" : "В отдельном окне";
-                                    tooltip-below: true;
+                                    small: true;
                                     enabled: !root.share-window-open;
                                     clicked => { root.open-share-window(false); }
                                 }
-                                IconButton {
-                                    icon: Icons.eye-off;
-                                    tint: #e6e7ea;
-                                    tooltip: "Не смотреть";
-                                    tooltip-below: true;
+                                AppButton {
+                                    text: "Закрыть";
+                                    icon: Icons.close;
+                                    small: true;
                                     clicked => { root.watch(""); }
                                 }
                             }
@@ -704,10 +835,21 @@ component CallView inherits Rectangle {
                     if root.show-screens && (root.shares.length > 0 || root.compact): HorizontalLayout {
                         spacing: 10px;
                         height: 28px;
-                        SectionHeader {
-                            text: "ТРАНСЛЯЦИИ — " + root.shares.length;
+                        Text {
+                            text: "Показывают экран: " + root.shares.length;
+                            color: Theme.text-strong;
+                            font-size: 14px;
+                            font-weight: 700;
+                            vertical-alignment: center;
                         }
-                        Rectangle { horizontal-stretch: 1; }
+                        Text {
+                            text: "нажмите, чтобы смотреть";
+                            color: Theme.text-muted;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
                         Text {
                             text: "Миниатюры";
                             color: Theme.text-muted;
@@ -721,6 +863,12 @@ component CallView inherits Rectangle {
                                 checked <=> root.previews-visible;
                                 toggled => { root.previews-changed(root.previews-visible, root.preview-page); }
                             }
+                        }
+                        if !root.compact: Text {
+                            text: "Размер";
+                            color: Theme.text-muted;
+                            font-size: 12px;
+                            vertical-alignment: center;
                         }
                         if !root.compact: Slider {
                             width: 110px;
@@ -751,8 +899,9 @@ component CallView inherits Rectangle {
                         }
                     }
                     if root.show-screens && root.in-room && root.shares.length == 0 && root.compact: Text {
-                        text: "Никто не показывает экран.";
+                        text: "Сейчас никто не показывает экран.";
                         color: Theme.text-muted;
+                        font-size: 15px;
                     }
                     if root.show-screens && root.shares.length > 0: grid := Flickable {
                         property <length> tile-w: root.tile-width * 1px;
@@ -782,8 +931,36 @@ component CallView inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border;
                         Text {
-                            text: "Выберите трансляцию";
+                            text: root.shares.length > 0 ? "Нажмите на экран выше, чтобы смотреть его крупно" : "Здесь появится экран, который кто-то покажет";
                             color: Theme.text-muted;
+                            font-size: 15px;
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                        }
+                    }
+                    // Not talking yet / link lost: one big sentence and what to do.
+                    if root.show-people && root.in-room && root.watching == "" && (root.phase == 1 || root.phase == 2 || root.phase == 4): VerticalLayout {
+                        spacing: 6px;
+                        padding-top: 8px;
+                        Text {
+                            text: root.phase == 1 ? "Подключаемся к звонку…"
+                                : root.phase == 4 ? "Связь пропала — восстанавливаем…"
+                                : root.managed ? "Звоним… ждём ответа" : "Ждём второго участника…";
+                            color: root.phase == 4 ? Theme.warning : Theme.text-strong;
+                            font-size: 22px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.phase == 1 ? "Это займёт пару секунд."
+                                : root.phase == 4 ? "Ничего нажимать не нужно: звонок продолжится сам."
+                                : root.managed ? "Разговор начнётся, как только собеседник ответит. Передумали — нажмите «Выйти из звонка» внизу."
+                                : "Разговор начнётся, как только второй участник войдёт в эту комнату.";
+                            color: Theme.text-muted;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
                         }
                     }
                     // Participants.
@@ -864,85 +1041,65 @@ component CallView inherits Rectangle {
                         }
                     }
                     if !root.in-room && !root.managed: Rectangle { vertical-stretch: 1; }
-                    // Control bar.
+                    // Control bar: every button has its name under it.
                     HorizontalLayout {
                         alignment: center;
-                        spacing: 12px;
+                        spacing: 10px;
                         padding-top: 4px;
-                        RoundButton {
+                        vertical-stretch: 0;
+                        CallControl {
                             icon: root.muted ? Icons.mic-off : Icons.mic;
                             kind: root.muted ? RoundKind.off : RoundKind.neutral;
-                            tooltip: root.muted ? "Включить микрофон" : "Выключить микрофон";
+                            text: root.muted ? "Включить микрофон" : "Выключить микрофон";
                             clicked => {
                                 root.muted = !root.muted;
                                 root.mute-changed(root.muted);
                             }
                         }
-                        HorizontalLayout {
-                            spacing: 2px;
-                            RoundButton {
-                                icon: root.sharing ? Icons.screen-off : Icons.screen-share;
-                                kind: root.sharing ? RoundKind.accent : RoundKind.neutral;
-                                tooltip: root.sharing ? "Остановить показ" : "Показать экран";
-                                enabled: root.in-room && root.monitors.length > 0;
-                                clicked => {
-                                    if root.sharing {
-                                        root.stop-share();
-                                    } else {
-                                        root.start-share(root.monitor-index, root.quality-index, root.adaptive);
-                                    }
-                                }
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                IconButton {
-                                    size: 24px;
-                                    icon-size: 16px;
-                                    round: true;
-                                    icon: root.share-menu-open ? Icons.chevron-down : Icons.chevron-up;
-                                    tooltip: "Параметры показа экрана";
-                                    active: root.share-menu-open;
-                                    clicked => { root.share-menu-open = !root.share-menu-open; }
+                        CallControl {
+                            icon: root.sharing ? Icons.screen-off : Icons.screen-share;
+                            kind: root.sharing ? RoundKind.accent : RoundKind.neutral;
+                            text: root.sharing ? "Остановить показ" : "Показать экран";
+                            enabled: root.in-room && root.monitors.length > 0;
+                            clicked => {
+                                if root.sharing {
+                                    root.stop-share();
+                                } else {
+                                    root.share-menu-open = !root.share-menu-open;
                                 }
                             }
                         }
-                        RoundButton {
+                        CallControl {
                             icon: Icons.sliders;
                             kind: root.voice-panel-open ? RoundKind.accent : RoundKind.neutral;
-                            tooltip: "Настройки голоса";
+                            text: "Настройки звука";
                             clicked => { root.voice-panel-open = !root.voice-panel-open; }
                         }
-                        RoundButton {
+                        CallControl {
                             icon: Icons.phone-down;
                             filled: true;
                             kind: RoundKind.danger;
-                            size: 48px;
-                            width: 64px;
-                            tooltip: root.managed ? "Завершить звонок" : "Выйти";
+                            button-width: 80px;
+                            text: root.managed ? "Выйти из звонка" : "Выйти";
                             enabled: root.managed ? root.has-participation : root.in-room;
                             clicked => { root.leave(); }
                         }
                     }
-                    Text {
-                        text: root.build-info;
-                        color: Theme.text-faint;
-                        font-size: 10px;
-                        horizontal-alignment: center;
-                    }
                 }
                 // Screen share options, above the control bar.
                 if root.share-menu-open: share-menu := Card {
-                    width: min(320px, stage.width - 24px);
-                    height: share-layout.preferred-height;
+                    width: min(360px, stage.width - 24px);
+                    height: min(share-layout.preferred-height, stage.height - 24px);
                     x: (stage.width - self.width) / 2;
-                    y: stage.height - self.height - 92px;
+                    y: max(12px, stage.height - self.height - 112px);
                     share-layout := VerticalLayout {
-                        padding: 14px;
+                        padding: 16px;
                         spacing: 8px;
                         HorizontalLayout {
                             Text {
-                                text: "Показ экрана";
+                                text: root.sharing ? "Показ экрана" : "Показать свой экран";
                                 color: Theme.text-strong;
+                                font-size: 17px;
                                 font-weight: 700;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
@@ -955,7 +1112,13 @@ component CallView inherits Rectangle {
                                 clicked => { root.share-menu-open = false; }
                             }
                         }
-                        FormLabel { text: "Монитор"; }
+                        Text {
+                            text: "Все в звонке увидят выбранный монитор целиком.";
+                            color: Theme.text-muted;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        FormLabel { text: "Какой монитор показать"; }
                         ComboBox {
                             model: root.monitors;
                             current-index <=> root.monitor-index;
@@ -993,11 +1156,30 @@ component CallView inherits Rectangle {
                             checked <=> root.share-audio;
                             toggled => { root.share-audio-changed(root.share-audio); }
                         }
-                        if root.share-info != "": Text {
+                        if root.sharing && root.share-info != "": Text {
                             text: root.share-info;
-                            color: Theme.text-muted;
+                            color: Theme.text-faint;
                             font-size: 11px;
                             wrap: word-wrap;
+                        }
+                        Rectangle { height: 4px; }
+                        if !root.sharing: AppButton {
+                            text: "Начать показ";
+                            icon: Icons.screen-share;
+                            kind: ButtonKind.primary;
+                            large: true;
+                            horizontal-stretch: 1;
+                            enabled: root.in-room && root.monitors.length > 0;
+                            clicked => {
+                                root.share-menu-open = false;
+                                root.start-share(root.monitor-index, root.quality-index, root.adaptive);
+                            }
+                        }
+                        if root.sharing: AppButton {
+                            text: "Готово";
+                            kind: ButtonKind.secondary;
+                            horizontal-stretch: 1;
+                            clicked => { root.share-menu-open = false; }
                         }
                     }
                 }
@@ -1017,7 +1199,7 @@ component CallView inherits Rectangle {
                         padding-left: 16px;
                         padding-right: 8px;
                         Text {
-                            text: "Настройки голоса";
+                            text: "Настройки звука";
                             color: Theme.text-strong;
                             font-size: 15px;
                             font-weight: 700;
@@ -1141,7 +1323,7 @@ component IncomingCall inherits Rectangle {
     // Swallow clicks on the backdrop.
     TouchArea { }
     Card {
-        width: min(340px, root.width - 32px);
+        width: min(400px, root.width - 32px);
         height: card-layout.preferred-height;
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
@@ -1178,57 +1360,40 @@ component IncomingCall inherits Rectangle {
                 }
             }
             Text {
-                text: "Входящий звонок";
+                text: "Вам звонит";
                 color: Theme.text-muted;
-                font-size: 13px;
+                font-size: 16px;
                 font-weight: 600;
                 horizontal-alignment: center;
             }
             Text {
                 text: root.caller;
                 color: Theme.text-strong;
-                font-size: 22px;
+                font-size: 28px;
                 font-weight: 700;
                 horizontal-alignment: center;
                 overflow: elide;
             }
-            Rectangle { height: 14px; }
+            Rectangle { height: 18px; }
             HorizontalLayout {
-                alignment: center;
-                spacing: 40px;
-                VerticalLayout {
-                    spacing: 6px;
-                    RoundButton {
-                        size: 56px;
-                        icon: Icons.phone-down;
-                        filled: true;
-                        kind: RoundKind.danger;
-                        tooltip: "Отклонить";
-                        clicked => { root.decline(); }
-                    }
-                    Text {
-                        text: "Отклонить";
-                        color: Theme.text-muted;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                    }
+                spacing: 12px;
+                AppButton {
+                    text: "Отклонить";
+                    icon: Icons.phone-down;
+                    icon-filled: true;
+                    kind: ButtonKind.danger;
+                    large: true;
+                    horizontal-stretch: 1;
+                    clicked => { root.decline(); }
                 }
-                VerticalLayout {
-                    spacing: 6px;
-                    RoundButton {
-                        size: 56px;
-                        icon: Icons.phone;
-                        filled: true;
-                        kind: RoundKind.success;
-                        tooltip: "Принять";
-                        clicked => { root.accept(); }
-                    }
-                    Text {
-                        text: "Принять";
-                        color: Theme.text-muted;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                    }
+                AppButton {
+                    text: "Принять";
+                    icon: Icons.phone;
+                    icon-filled: true;
+                    kind: ButtonKind.success;
+                    large: true;
+                    horizontal-stretch: 1;
+                    clicked => { root.accept(); }
                 }
             }
         }
@@ -1537,6 +1702,8 @@ export component MainWindow inherits Window {
     in-out property <string> room-text;
     in property <bool> in-room;
     in property <string> call-title: "Не в звонке";
+    // `view::CallPhase` as a number (0 not in a call … 5 ended).
+    in property <int> call-phase;
     in property <string> call-detail;
     in property <string> call-stats;
     in property <string> call-devices;
@@ -1729,12 +1896,12 @@ export component MainWindow inherits Window {
                 Text {
                     text: "Здесь начинаются разговоры";
                     color: Theme.text-strong;
-                    font-size: 20px;
+                    font-size: 22px;
                     font-weight: 700;
                     horizontal-alignment: center;
                 }
                 Text {
-                    text: "Выберите диалог слева или найдите собеседника по @username";
+                    text: "Нажмите на диалог в списке слева — или найдите человека через поиск «Найти по @username» вверху слева.";
                     color: Theme.text-muted;
                     horizontal-alignment: center;
                     wrap: word-wrap;
@@ -1782,6 +1949,7 @@ export component MainWindow inherits Window {
             voice-panel-open <=> root.voice-panel-open;
             room-text <=> root.room-text;
             in-room: root.in-room;
+            phase: root.call-phase;
             title: root.signed-in && root.active-call-title != "" ? root.active-call-title : root.call-title;
             detail: root.call-detail;
             stats: root.call-stats;

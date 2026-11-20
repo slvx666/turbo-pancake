@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../proto");
+    let proto_root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join("../../proto");
     let files = [
         "turbo_pancake/v1/api.proto",
         "turbo_pancake/v1/signaling.proto",

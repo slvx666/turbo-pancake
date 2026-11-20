@@ -215,6 +215,10 @@ export component AppButton inherits Rectangle {
     in property <ButtonKind> kind: ButtonKind.secondary;
     in property <bool> enabled: true;
     in property <bool> small;
+    // Big and easy to hit (incoming call, the main action of a panel).
+    in property <bool> large;
+    // The icon is a filled shape (the handsets).
+    in property <bool> icon-filled;
     in property <bool> stretch-text;
     callback clicked;
     property <bool> hovered: touch.has-hover && root.enabled;
@@ -233,10 +237,10 @@ export component AppButton inherits Rectangle {
         : root.kind == ButtonKind.ghost ? Theme.text-normal
         : root.kind == ButtonKind.link ? Theme.accent-text
         : Theme.text-on-accent;
-    min-height: root.small ? 28px : 36px;
+    min-height: root.large ? 52px : root.small ? 28px : 36px;
     min-width: layout.preferred-width;
     horizontal-stretch: 0;
-    border-radius: root.small ? 6px : 8px;
+    border-radius: root.large ? 12px : root.small ? 6px : 8px;
     background: root.down ? root.hover-bg.darker(0.12) : root.hovered ? root.hover-bg : root.base;
     opacity: root.enabled ? 1 : 0.45;
     animate background { duration: Theme.fast; }
@@ -271,20 +275,21 @@ export component AppButton inherits Rectangle {
         border-color: Theme.accent-text;
     }
     layout := HorizontalLayout {
-        padding-left: root.kind == ButtonKind.link ? 2px : (root.small ? 10px : 16px);
-        padding-right: root.kind == ButtonKind.link ? 2px : (root.small ? 10px : 16px);
-        spacing: 6px;
+        padding-left: root.kind == ButtonKind.link ? 2px : (root.large ? 22px : root.small ? 10px : 16px);
+        padding-right: root.kind == ButtonKind.link ? 2px : (root.large ? 22px : root.small ? 10px : 16px);
+        spacing: root.large ? 10px : 6px;
         alignment: center;
         if root.icon != "": Icon {
             y: (parent.height - self.height) / 2;
             icon: root.icon;
-            size: root.small ? 15px : 17px;
+            size: root.large ? 22px : root.small ? 15px : 17px;
+            filled: root.icon-filled;
             tint: root.fg;
         }
         Text {
             text: root.text;
             color: root.fg;
-            font-size: root.small ? 12px : 14px;
+            font-size: root.large ? 16px : root.small ? 12px : 14px;
             font-weight: 600;
             vertical-alignment: center;
             horizontal-alignment: center;
@@ -385,7 +390,9 @@ export enum RoundKind { neutral, off, danger, success, accent }
 
 export component RoundButton inherits Rectangle {
     in property <string> icon;
+    // Spoken name; also shown as a hover bubble unless the name is printed next to it.
     in property <string> tooltip;
+    in property <bool> show-tip: true;
     in property <RoundKind> kind: RoundKind.neutral;
     in property <bool> enabled: true;
     in property <bool> filled;
@@ -432,7 +439,7 @@ export component RoundButton inherits Rectangle {
             root.clicked();
         }
         changed has-hover => {
-            if self.has-hover && root.tooltip != "" {
+            if self.has-hover && root.tooltip != "" && root.show-tip {
                 Tip.serial += 1;
                 root.my-serial = Tip.serial;
                 Tip.text = root.tooltip;
@@ -461,6 +468,45 @@ export component RoundButton inherits Rectangle {
         filled: root.filled;
         size: root.size * 0.46;
         tint: root.fg;
+    }
+}
+
+// A call control: a big round button with its name printed under it, so nobody has to
+// guess what an icon means.
+export component CallControl inherits VerticalLayout {
+    in property <string> icon;
+    in property <string> text;
+    in property <RoundKind> kind: RoundKind.neutral;
+    in property <bool> enabled: true;
+    in property <bool> filled;
+    in property <length> size: 56px;
+    in property <length> button-width: root.size;
+    callback clicked;
+    spacing: 6px;
+    alignment: start;
+    width: max(92px, root.button-width + 12px);
+    HorizontalLayout {
+        alignment: center;
+        RoundButton {
+            icon: root.icon;
+            tooltip: root.text;
+            show-tip: false;
+            kind: root.kind;
+            enabled: root.enabled;
+            filled: root.filled;
+            size: root.size;
+            width: root.button-width;
+            clicked => { root.clicked(); }
+        }
+    }
+    Text {
+        text: root.text;
+        color: root.enabled ? Theme.text-normal : Theme.text-faint;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+        accessible-role: none;
     }
 }
 

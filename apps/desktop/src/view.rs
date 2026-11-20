@@ -39,10 +39,30 @@ pub struct ShareRowView {
     pub preview_ssrc: Option<u32>,
 }
 
+/// The call's stage as the user sees it (the UI shows one plain sentence per stage).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CallPhase {
+    /// Not in a call.
+    #[default]
+    Idle = 0,
+    /// Joining the room or setting up the media.
+    Connecting = 1,
+    /// Connected, nobody else here yet (ringing the others).
+    Waiting = 2,
+    /// Connected with others.
+    Talking = 3,
+    /// The media link was lost and is being restored.
+    Reconnecting = 4,
+    /// The call failed or ended.
+    Ended = 5,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CallView {
     pub connection: String,
     pub in_room: bool,
+    /// Where the call is, for the big status line: see [`CallPhase`].
+    pub phase: CallPhase,
     pub title: String,
     pub detail: String,
     pub stats: String,
@@ -104,27 +124,36 @@ pub fn render(s: &Snapshot) -> CallView {
         ServerStatus::Disconnected(why) => format!("Нет связи: {why}"),
     };
     let names = s.member_names().join(", ");
-    let (title, detail) = match &s.room {
+    let (title, detail, phase) = match &s.room {
         None => (
             "Не в звонке".to_string(),
             "Введите id комнаты и нажмите «Войти»; второй участник входит в ту же комнату."
                 .to_string(),
+            CallPhase::Idle,
         ),
-        Some(room) if !s.joined => (format!("Комната «{room}»"), "Вход в комнату…".to_string()),
+        Some(room) if !s.joined => (
+            format!("Комната «{room}»"),
+            "Вход в комнату…".to_string(),
+            CallPhase::Connecting,
+        ),
         Some(room) => {
-            let state = match s.media.as_ref().map(|m| &m.state) {
-                None | Some(CallState::Negotiating | CallState::Connecting) => {
-                    "Подключение к медиасерверу…".to_string()
-                }
+            let (state, phase) = match s.media.as_ref().map(|m| &m.state) {
+                None | Some(CallState::Negotiating | CallState::Connecting) => (
+                    "Подключение к медиасерверу…".to_string(),
+                    CallPhase::Connecting,
+                ),
                 Some(CallState::Connected) if s.members.is_empty() => {
-                    "Ожидание собеседника…".to_string()
+                    ("Ожидание собеседника…".to_string(), CallPhase::Waiting)
                 }
-                Some(CallState::Connected) => format!("В звонке: {names}"),
-                Some(CallState::Reconnecting) => "Связь потеряна, восстановление…".to_string(),
-                Some(CallState::Closed) => "Звонок завершён".to_string(),
-                Some(CallState::Failed(e)) => format!("Ошибка звонка: {e}"),
+                Some(CallState::Connected) => (format!("В звонке: {names}"), CallPhase::Talking),
+                Some(CallState::Reconnecting) => (
+                    "Связь потеряна, восстановление…".to_string(),
+                    CallPhase::Reconnecting,
+                ),
+                Some(CallState::Closed) => ("Звонок завершён".to_string(), CallPhase::Ended),
+                Some(CallState::Failed(e)) => (format!("Ошибка звонка: {e}"), CallPhase::Ended),
             };
-            (format!("Комната «{room}»"), state)
+            (format!("Комната «{room}»"), state, phase)
         }
     };
     let mut stats = String::new();
@@ -306,6 +335,7 @@ pub fn render(s: &Snapshot) -> CallView {
     CallView {
         connection,
         in_room: s.room.is_some(),
+        phase,
         title,
         detail,
         stats,
@@ -580,21 +610,45 @@ mod tests {
     use crate::session::MediaStatus;
 
     #[test]
+    fn phase_shows_a_lost_and_a_failed_call() {
+        let mut s = Snapshot {
+            room: Some("r1".into()),
+            joined: true,
+            ..Snapshot::default()
+        };
+        for (state, phase) in [
+            (CallState::Reconnecting, CallPhase::Reconnecting),
+            (CallState::Closed, CallPhase::Ended),
+            (CallState::Failed("x".into()), CallPhase::Ended),
+        ] {
+            s.media = Some(MediaStatus {
+                transport: MediaTransport::Udp,
+                state,
+            });
+            assert_eq!(render(&s).phase, phase);
+        }
+    }
+
+    #[test]
     fn titles_follow_the_call_lifecycle() {
         let mut s = Snapshot::default();
         assert_eq!(call_link(&s), CallLink::None);
         assert_eq!(render(&s).title, "Не в звонке");
         assert!(!render(&s).in_room);
+        assert_eq!(render(&s).phase, CallPhase::Idle);
         s.room = Some("r1".into());
         assert_eq!(render(&s).detail, "Вход в комнату…");
+        assert_eq!(render(&s).phase, CallPhase::Connecting);
         s.joined = true;
         assert_eq!(render(&s).detail, "Подключение к медиасерверу…");
+        assert_eq!(render(&s).phase, CallPhase::Connecting);
         assert_eq!(call_link(&s), CallLink::Connecting);
         s.media = Some(MediaStatus {
             transport: MediaTransport::Tunnel,
             state: CallState::Connected,
         });
         assert_eq!(render(&s).detail, "Ожидание собеседника…");
+        assert_eq!(render(&s).phase, CallPhase::Waiting);
         s.members = vec![Member {
             peer_id: "p2".into(),
             name: "Боб".into(),
@@ -605,6 +659,7 @@ mod tests {
         let v = render(&s);
         assert_eq!(v.title, "Комната «r1»");
         assert_eq!(v.detail, "В звонке: Боб");
+        assert_eq!(v.phase, CallPhase::Talking);
         assert!(v.in_room);
         assert_eq!(v.members.len(), 1);
         assert_eq!(v.members[0].volume_pct, 50.0);

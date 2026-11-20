@@ -7,7 +7,53 @@ Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the o
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; target server PASS incl. reboot; owner-assisted pending: real uplink with remote clients, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-20 (product polish: redesign, notifications and sounds, ADR 0021); before: 2026-11-16 (owner-server release 0.1.4 built; server redeployed with it); before: 2026-11-15, second part (the open items of the audit: repair window, listeners' loss feedback, stereo share audio, pitch-period delay correction, GPU presentation in the share window, SFU worker process, session module split; ADR 0019, 0020); before: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-20, second part (call and chat made obvious at a glance: labelled call controls, call stage line, mute / share strips); before: 2026-11-20 (product polish: redesign, notifications and sounds, ADR 0021); before: 2026-11-16 (owner-server release 0.1.4 built; server redeployed with it); before: 2026-11-15, second part (the open items of the audit: repair window, listeners' loss feedback, stereo share audio, pitch-period delay correction, GPU presentation in the share window, SFU worker process, session module split; ADR 0019, 0020); before: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-20, second part — "obvious at a glance" pass (owner request)
+
+The owner asked that every step be clear without searching for small text, above all in a
+call. No stage changed; S9 is still next. Work on `main`, builds at idle priority, GUI only
+through the offscreen snapshot tool (no window, no sound).
+
+* **Call screen:** header shows the call's stage as one coloured sentence ("Подключаемся…",
+  "Звоним… ждём ответа", "Идёт звонок · 3:12" with a running timer, "Связь пропала —
+  восстанавливаем", "Звонок завершён") instead of the technical detail line. The stage
+  comes from Rust: `view::CallPhase` (`call-phase` on `MainWindow`, unit test
+  `phase_shows_a_lost_and_a_failed_call` + the lifecycle test). Big notice in the stage
+  while connecting / waiting / reconnecting saying what happens and what to do.
+* **Controls with words:** the call bar is `CallControl` — 56 px round buttons with the
+  action printed under each ("Выключить микрофон", "Показать экран", "Настройки звука",
+  "Выйти из звонка"). The tiny chevron is gone: "Показать экран" opens a "Показать свой
+  экран" card with the monitor choice and one big "Начать показ" button.
+* **State you cannot miss:** a red strip "Ваш микрофон выключен — вас не слышат" with an
+  "Включить микрофон" button, a red mic-off mark on the own tile; an accent strip "Вы
+  показываете свой экран — его видят все в звонке" with "Остановить показ" / "Настроить";
+  the speaking member's name plate turns green with "· говорит". Diagnostics (jitter
+  buffer per member, build line) left the stage; they stay under "Подробности соединения".
+* **Watching a share:** "Экран: <имя>", "В ЭФИРЕ" instead of "LIVE", text buttons "На весь
+  экран", "В окне", "Закрыть"; the share list says "Показывают экран: N · нажмите, чтобы
+  смотреть" and a card shows "Смотреть" / "Перестать смотреть" on hover.
+* **Incoming call:** "Вам звонит" + the name in 28 px, two wide 52 px buttons with words
+  ("Отклонить" red, "Принять" green).
+* **Sidebar:** the confusing always-present "Звонок / Голосовая комната" entry shows only
+  before sign-in (the test room). A call in progress is a green panel "Вы в звонке" with
+  "Открыть звонок", "Выключить / Включить микрофон" and "Выйти". The user panel keeps
+  theme and settings only (mute moved to the call panel; sign-out stays in Settings →
+  Приложение, where it cannot be hit by accident).
+* **Chat header:** "Позвонить" is always a green button with words (was a bare handset
+  icon); groups get an "Участники" button.
+* **Build fix:** `crates/protocol/build.rs` read `CARGO_MANIFEST_DIR` with `env!`, so a
+  build-script binary compiled in a removed worktree kept the dead path and the build
+  failed ("not in any include path"); it now reads the variable at run time.
+* **Snapshots:** `ui_snapshot` renders 33 states (new: `call-waiting`, `call-muted`);
+  reviewed before and after by the lead (`.local/logs/ui-before`, `ui-after`, not
+  committed).
+* **Checks:** fmt PASS; workspace Clippy `-D warnings` PASS; workspace tests **260 passed,
+  0 failed, 4 ignored, 1 filtered** (`own_sound_is_excluded`), 59 binaries; startup smoke
+  of the debug client on the invisible desktop PASS (first frame 247 ms, software,
+  `opaque=true`, clean exit). Not run: `regression.ps1 -Full`, a release build.
+* **UNVERIFIED (owner, on the real desktop):** the new layout in a live window (hover
+  hints, the share card, the running timer), keyboard focus order of the new buttons.
 
 ## Session log 2026-11-20 — product polish: redesign, notifications, sounds (owner request)
 

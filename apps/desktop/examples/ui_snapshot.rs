@@ -67,6 +67,8 @@ enum Scene {
     Chat,
     Group,
     Call,
+    CallWaiting,
+    CallMuted,
     CallShares,
     CallSettings,
     Incoming,
@@ -83,6 +85,8 @@ impl Scene {
             Scene::Chat => "chat",
             Scene::Group => "group",
             Scene::Call => "call",
+            Scene::CallWaiting => "call-waiting",
+            Scene::CallMuted => "call-muted",
             Scene::CallShares => "call-shares",
             Scene::CallSettings => "call-voice-panel",
             Scene::Incoming => "incoming",
@@ -551,15 +555,25 @@ fn fill(ui: &MainWindow, scene: Scene) {
             ])));
             ui.set_messages(rows(&group_messages()));
         }
-        Scene::Call | Scene::CallShares | Scene::CallSettings => {
+        Scene::Call
+        | Scene::CallWaiting
+        | Scene::CallMuted
+        | Scene::CallShares
+        | Scene::CallSettings => {
             ui.set_voice_selected(true);
             ui.set_in_room(true);
             ui.set_has_participation(true);
-            ui.set_active_call_title("Команда проекта".into());
-            ui.set_call_detail("4 участника · Opus 48 кГц · соединение отличное".into());
             ui.set_call_stats("RTT 38 мс · потери 0,1 % · джиттер 4 мс · 64 кбит/с".into());
             ui.set_call_devices("Микрофон: USB Audio · вывод: наушники · 48 кГц".into());
-            ui.set_members(members());
+            if scene == Scene::CallWaiting {
+                ui.set_active_call_title("Борис".into());
+                ui.set_call_phase(2);
+            } else {
+                ui.set_active_call_title("Команда проекта".into());
+                ui.set_call_phase(3);
+                ui.set_members(members());
+            }
+            ui.set_muted(scene == Scene::CallMuted);
             ui.set_voice_activation(true);
             ui.set_self_speaking(scene == Scene::CallSettings);
             if scene == Scene::CallSettings {
@@ -708,6 +722,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (Scene::Chat, Some((900.0, 420.0))),
         (Scene::Group, None),
         (Scene::Call, None),
+        (Scene::CallWaiting, None),
+        (Scene::CallMuted, None),
         (Scene::CallShares, None),
         (Scene::CallSettings, None),
         (Scene::Incoming, None),

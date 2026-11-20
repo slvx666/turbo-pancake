@@ -297,10 +297,10 @@ export component Sidebar inherits Rectangle {
             padding-top: 8px;
             spacing: 2px;
             vertical-stretch: 1;
-            ConversationItem {
+            if !root.signed-in: ConversationItem {
                 item: {
-                    title: root.signed-in ? "Звонок" : "Тестовая комната",
-                    last-text: root.active-call-title != "" ? root.active-call-title : "Голосовая комната",
+                    title: "Тестовая комната",
+                    last-text: root.in-call ? "Вы в комнате" : "Голосовая комната без аккаунта",
                     online: false,
                 };
                 icon: Icons.volume;
@@ -344,73 +344,73 @@ export component Sidebar inherits Rectangle {
         }
         // Voice connected: the call this client is in.
         if root.in-call: Rectangle {
-            background: Theme.bg-base;
-            height: 58px;
+            background: Theme.dark ? #1a2a21 : #e3f4ea;
             Rectangle {
-                height: 1px;
+                height: 2px;
                 y: 0px;
-                background: Theme.separator;
+                background: Theme.success;
             }
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 8px;
-                spacing: 4px;
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
-                    HorizontalLayout {
-                        spacing: 6px;
+            VerticalLayout {
+                padding: 10px;
+                padding-top: 12px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 30px;
+                        height: 30px;
+                        border-radius: 15px;
+                        background: Theme.success;
                         Icon {
-                            y: (parent.height - self.height) / 2;
-                            icon: Icons.signal;
-                            size: 15px;
-                            stroke: 2.2px;
-                            tint: Theme.success-text;
-                        }
-                        Text {
-                            text: "Голосовая связь";
-                            color: Theme.success-text;
-                            font-size: 13px;
-                            font-weight: 700;
-                            overflow: elide;
-                            horizontal-stretch: 1;
+                            icon: Icons.phone;
+                            filled: true;
+                            size: 16px;
+                            tint: #ffffff;
                         }
                     }
-                    title-text := Text {
-                        text: root.call-name;
-                        color: title-touch.has-hover ? Theme.text-strong : Theme.text-muted;
-                        font-size: 12px;
-                        overflow: elide;
-                        accessible-role: button;
-                        accessible-label: "Открыть звонок: " + root.call-name;
-                        accessible-action-default => { root.open-voice(); }
-                        title-touch := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.open-voice(); }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Вы в звонке";
+                            color: Theme.success-text;
+                            font-size: 14px;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.call-name;
+                            color: Theme.text-normal;
+                            font-size: 12px;
+                            overflow: elide;
                         }
                     }
                 }
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
+                if !root.voice-selected: AppButton {
+                    text: "Открыть звонок";
+                    kind: ButtonKind.success;
+                    small: true;
+                    horizontal-stretch: 1;
+                    clicked => { root.open-voice(); }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    AppButton {
+                        text: root.muted ? "Включить микрофон" : "Выключить микрофон";
                         icon: root.muted ? Icons.mic-off : Icons.mic;
-                        tooltip: root.muted ? "Включить микрофон" : "Выключить микрофон";
-                        active: root.muted;
-                        danger: true;
+                        kind: root.muted ? ButtonKind.danger : ButtonKind.secondary;
+                        small: true;
+                        horizontal-stretch: 1;
                         clicked => {
                             root.muted = !root.muted;
                             root.mute-changed(root.muted);
                         }
                     }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: Icons.phone-down;
-                        filled: true;
-                        tooltip: "Отключиться";
-                        danger: true;
+                    AppButton {
+                        text: "Выйти";
+                        kind: ButtonKind.danger;
+                        small: true;
                         clicked => { root.leave(); }
                     }
                 }
@@ -455,21 +455,6 @@ export component Sidebar inherits Rectangle {
                     IconButton {
                         size: 30px;
                         icon-size: 18px;
-                        icon: root.muted ? Icons.mic-off : Icons.mic;
-                        tooltip: root.muted ? "Включить микрофон" : "Выключить микрофон";
-                        active: root.muted;
-                        danger: true;
-                        clicked => {
-                            root.muted = !root.muted;
-                            root.mute-changed(root.muted);
-                        }
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        size: 30px;
-                        icon-size: 18px;
                         icon: Theme.dark ? Icons.sun : Icons.moon;
                         tooltip: Theme.dark ? "Светлая тема" : "Тёмная тема";
                         clicked => { root.toggle-theme(); }
@@ -493,17 +478,6 @@ export component Sidebar inherits Rectangle {
                             border-width: 2px;
                             border-color: Theme.bg-base;
                         }
-                    }
-                }
-                if root.signed-in: VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        size: 30px;
-                        icon-size: 18px;
-                        icon: Icons.logout;
-                        tooltip: "Выйти из аккаунта";
-                        danger: true;
-                        clicked => { root.logout(); }
                     }
                 }
             }
@@ -1147,35 +1121,23 @@ export component ChatPanel inherits Rectangle {
                         overflow: elide;
                     }
                 }
-                if root.call-label != "Позвонить": VerticalLayout {
+                VerticalLayout {
                     alignment: center;
                     AppButton {
                         text: root.call-label;
                         icon: Icons.phone;
+                        icon-filled: true;
                         kind: ButtonKind.success;
-                        small: true;
-                        enabled: root.can-send;
-                        clicked => { root.call(); }
-                    }
-                }
-                if root.call-label == "Позвонить": VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: Icons.phone;
-                        filled: true;
-                        tooltip: root.call-label;
-                        tooltip-below: true;
                         enabled: root.can-send;
                         clicked => { root.call(); }
                     }
                 }
                 if root.group: VerticalLayout {
                     alignment: center;
-                    IconButton {
+                    AppButton {
+                        text: root.compact ? "" : "Участники";
                         icon: Icons.users;
-                        tooltip: root.settings-open ? "Скрыть участников" : "Участники";
-                        tooltip-below: true;
-                        active: root.settings-open;
+                        kind: root.settings-open ? ButtonKind.secondary : ButtonKind.ghost;
                         clicked => { root.settings-open = !root.settings-open; }
                     }
                 }
