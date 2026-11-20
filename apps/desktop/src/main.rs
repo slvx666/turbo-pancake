@@ -742,6 +742,7 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
         });
     }
     let save_hint = save.clone();
+    let save_alerts = save.clone();
     {
         let settings = settings.clone();
         window.on_close_to_tray_changed(move |on| {
@@ -752,6 +753,34 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
     window.on_quit_app(|| {
         let _ = slint::quit_event_loop();
     });
+    // Notifications and sounds (ADR 0021): the settings page, the test button and the
+    // unread count in the window title.
+    window.set_notifications_enabled(settings.borrow().notifications);
+    window.set_sounds_enabled(settings.borrow().sounds);
+    window.set_sound_volume(f32::from(settings.borrow().sound_volume));
+    {
+        let (settings, save) = (settings.clone(), save_alerts);
+        window.on_alerts_changed(move |notifications, sounds, volume| {
+            let volume = volume.clamp(0.0, 100.0).round() as u8;
+            alerts::with(|a| a.set_prefs(notifications, sounds, volume));
+            {
+                let mut s = settings.borrow_mut();
+                s.notifications = notifications;
+                s.sounds = sounds;
+                s.sound_volume = volume;
+            }
+            save();
+        });
+    }
+    window.on_test_sound(|| alerts::with(|a| a.test_sound()));
+    {
+        let weak = window.as_weak();
+        alerts::on_unread_changed(move |n| {
+            if let Some(w) = weak.upgrade() {
+                w.set_unread_total(i32::try_from(n).unwrap_or(i32::MAX));
+            }
+        });
+    }
 
     let show_icon = args.smoke_exit_after_ms.is_none() || args.trial_tray;
     let (weak, activate) = (window.as_weak(), !args.no_activate);

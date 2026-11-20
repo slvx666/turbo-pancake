@@ -7,7 +7,52 @@ Current stage: **S9 — macOS + Linux port: NOT_STARTED** (after S8; needs the o
 Stage status: S0 = DONE; **S1 = DONE (Windows)** (2026-11-02; owner-assisted pending: measured two-home trial log, by-ear AEC check); **S2 = DONE** (2026-11-03); **S3 = DONE (Windows)** (2026-11-04; owner-assisted pending: camera screen-to-screen latency, two machines, GUI switch between two physical monitors); **S4 = DONE (Windows)** (2026-11-04; owner-assisted pending: RTX 4070 Super numbers, 1440p120 capture on a 1440p ≥ 120 Hz monitor, camera latency, target-server load); **S5 = DONE (Windows)** (2026-11-04; owner-assisted pending: two separate machines, target server); S6 = DONE (Windows); **S7 = DONE (Windows)** (2026-11-06; owner-assisted pending: keyboard focus order, real tray/message-box clicks, Authenticode, release update key, Slint license, true cold start, 120 Hz display, real network loss); **S8 = DONE (Windows)** (2026-11-09; target server PASS incl. reboot; owner-assisted pending: real uplink with remote clients, Authenticode, release update key); S9 (macOS + Linux port) = NOT_STARTED, after S8
 Last verified upstream commit: 58021ec (CI [41854775355](https://github.com/slvx666/turbo-pancake/actions/runs/41854775355): success; checked 2026-11-05). Local Windows baseline on branch `codex/windows-environment`: fmt/clippy PASS; 141 tests PASS, 0 failed (details below). Earlier: 25c6523, CI 41826651545 Windows green; dbfc33a, CI 41831401852 audit green with issue 41 exception; 48b5fc2, CI 41744388558 on 3 OS
 Platform matrix: Windows = PASS (S6 local automated/native acceptance; no remote S6 CI run). macOS / Linux = deferred to S9 (ADR 0012); CI runs Windows only since 2026-11-04 (last macOS/Linux green: CI 41744388558)
-Last session: 2026-11-16 (owner-server release 0.1.4 built; server redeployed with it); before: 2026-11-15, second part (the open items of the audit: repair window, listeners' loss feedback, stereo share audio, pitch-period delay correction, GPU presentation in the share window, SFU worker process, session module split; ADR 0019, 0020); before: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+Last session: 2026-11-20 (product polish: redesign, notifications and sounds, ADR 0021); before: 2026-11-16 (owner-server release 0.1.4 built; server redeployed with it); before: 2026-11-15, second part (the open items of the audit: repair window, listeners' loss feedback, stereo share audio, pitch-period delay correction, GPU presentation in the share window, SFU worker process, session module split; ADR 0019, 0020); before: 2026-11-15 (owner-requested audit and fixes: opaque windows, audio-class scheduling, adaptive voice resilience, delay correction without cuts, share restart; ADR 0018); before: 2026-11-09 (S8 on the target server: 3 Linux defects found and fixed, all steps PASS, reboot PASS); before: 2026-11-09 (S8 step 7: release build with checksums, server procedures, ADMIN.md; S8 DONE (Windows)); before: 2026-11-09 (S8 steps 2–6: groups of 100 under load; media load with accounts; hardening; backup/restore; regression suite); before: 2026-11-06 (S8 plan; S8 step 1: messenger sessions/presence load tool); before: 2026-11-06 (S7 step 7: profiles, renderer decision, Windows E2E; S7 DONE (Windows)); before: 2026-11-06 (S7 steps 4–6: reconnect banner; signed updates; per-user installer); before: 2026-11-05 (S7 steps 1–3)
+
+## Session log 2026-11-20 — product polish: redesign, notifications, sounds (owner request)
+
+The owner asked to bring the client to a "finished product" feel (look, notifications,
+sounds). No stage changed; S9 is still next. Done by two subagents on their own branches,
+merged into `main` by the lead. This session the owner allowed full machine resources (builds
+at normal priority); sounds and notifications were still never played or shown here.
+
+* **Redesign (Slint):** design tokens for dark / light (accent taken from the app icon),
+  own controls (buttons, round icon buttons, toggle, badge, field, card), vector icons drawn
+  as `Path`, window-wide tooltips. Sidebar with initials avatars (deterministic colour),
+  unread pills, last-message time, a "voice connected" panel (mute, hang up). Chat: date
+  separators (Сегодня / Вчера / date, computed in Rust), grouped feed, reply connector,
+  floating action bar, multi-line composer (Enter sends, Shift+Enter new line, Esc cancels),
+  "jump to newest". Call: participant tiles (self included, speaking ring), bottom control
+  bar, share cards with LIVE, voice settings side panel, stats under "details". Incoming
+  call as a modal card (pulse animates only while shown). Settings as a modal with
+  sections Appearance / Notifications / Voice / App. Window title "(N) turbo-pancake".
+  All `MainWindow` / `ShareWindow` properties and callbacks kept.
+* **Offscreen snapshots:** `cargo run -p turbo-pancake-desktop --example ui_snapshot`
+  renders 29 states (both themes, 760 px compact, 150 % scale) to PNG with the software
+  renderer — no window. Reviewed by the lead.
+* **Notifications and sounds (ADR 0021, `docs/NOTIFICATIONS.md`):** procedurally
+  synthesized original sounds (message, incoming ring, ringback, join / leave, peer join /
+  leave, mute, share, connection lost / restored) played by `PlaySoundW` from a worker
+  thread; tray-balloon notifications (Windows 10/11 show them as toasts, quiet hours
+  respected, no system sound) with click → open the conversation / call; taskbar flash and
+  an unread overlay badge; settings `notifications`, `sounds`, `sound_volume` (old files
+  load with defaults). Policy: no alert for own messages, edits, deletes, resync; open
+  conversation in a focused window → nothing; rate limit for message sounds; coalescing.
+  Silent mode (`--no-activate` or `TURBO_PANCAKE_SILENT=1`) logs `TURBO_PANCAKE_ALERT`
+  lines instead; `s6-trial.ps1` now requires them in real client processes.
+* **Limitations:** UI sounds use the default output device, one sound at a time; no
+  accept / decline buttons inside the notification; other members' mute state is not in
+  the call data (only the own tile shows it); Slint 1.18 software renderer has no real
+  shadows (layered), std Slider / ComboBox keep their own accent colour.
+* **Checks (merged tree, lead):** fmt PASS; workspace Clippy `-D warnings` PASS; workspace
+  tests **259 passed, 0 failed, 4 ignored, 1 filtered** (`own_sound_is_excluded`, plays
+  tones), 59 binaries, real PostgreSQL; release build of desktop + server; startup smoke on
+  the invisible desktop PASS (first frame 24 ms, software, opaque, clean exit);
+  `s6-trial.ps1` PASS incl. "Alerts (silent): message / ringtone / ring_stop / call_join,
+  own message no alert, no text in log". Not run: the full `regression.ps1 -Full`.
+* **UNVERIFIED (owner, on the real desktop):** how the sounds sound (level, clicks, ring
+  cadence), toasts with icon and quiet hours, a real click on a toast, the taskbar badge
+  and flash, hover / tooltips / scrolling in a live window, idle RAM with the new UI.
 
 ## Session log 2026-11-16 — owner-server release 0.1.4
 
