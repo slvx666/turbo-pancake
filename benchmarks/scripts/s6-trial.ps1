@@ -147,12 +147,24 @@ try {
         if ($played -lt 200 -or $text -notmatch '(?s)joined=true.*joined=false others=0 media=none' -or $text -notmatch 'messages=1' -or $text -notmatch 'draft_preserved=true' -or $text -match 'draft_preserved=false|decode_errors=[1-9]' -or $text -notmatch 'SNAPSHOT success=true') { throw "Direct native call/history failed: $label" }
         $summary += "$label : native_window=PASS; exit=0; played=$played; accept_leave=PASS; history=PASS; draft_switch=PASS"
     }
+    # ADR 0021: the receiver's window is never in front on the invisible desktop, so a live
+    # message alerts with sound + notification + flash and the call rings until accepted.
+    # Silent mode (--no-activate): reported on stderr, nothing played or shown.
+    $bobText=Get-Content (Join-Path $work 'direct-bob.log') -Raw
+    foreach ($pattern in @('kind=message conv=\S+ actions=sound:message,notify,flash','kind=incoming_ring conv=\S+ actions=loop:incoming_ring,notify,flash','kind=ring_stop ','kind=call_join ')) {
+        if ($bobText -notmatch "TURBO_PANCAKE_ALERT $pattern") { throw "Alert not observed: direct-bob / $pattern" }
+    }
+    $aliceText=Get-Content (Join-Path $work 'direct-alice.log') -Raw
+    if ($aliceText -match 'TURBO_PANCAKE_ALERT kind=message' -or $aliceText -notmatch 'TURBO_PANCAKE_ALERT kind=call_join ') { throw 'Alerts: own message alerted or own join missing (direct-alice)' }
+    if (($bobText + $aliceText) -match 'TURBO_PANCAKE_ALERT[^\r\n]*direct S6 history') { throw 'Message text in an alert line' }
+    $summary += 'Alerts (silent): direct-bob message/ringtone/ring_stop/call_join=PASS; own message no alert=PASS; no text in log=PASS'
     # A new invitation is explicitly declined by the native recipient.
     $declineB=$native.Start($desktopExe,(Quote-Args ($common + @('--profile',$profiles[0],'--auto-decline-call','--smoke-exit-after-ms','12000'))),$workspacePath,(Join-Path $work 'decline-bob.log'))
     Start-Sleep -Milliseconds 1000
     $declineA=$native.Start($desktopExe,(Quote-Args ($common + @('--profile',$profiles[2],'--chat-with','bob_s6','--call','--smoke-exit-after-ms','9000'))),$workspacePath,(Join-Path $work 'decline-alice.log'))
     $native.Wait($declineA,15000); $native.Wait($declineB,7000)
     if ((Get-Content (Join-Path $work 'decline-alice.log') -Raw) -notmatch 'reason=declined') { throw 'Native direct-call decline not observed' }
+    if ((Get-Content (Join-Path $work 'decline-bob.log') -Raw) -notmatch '(?s)TURBO_PANCAKE_ALERT kind=incoming_ring .*TURBO_PANCAKE_ALERT kind=ring_stop ') { throw 'Ringtone start/stop around the decline not observed' }
     $summary += 'Direct decline: native_window=PASS; exit=0; ended_reason=declined'
     $summary += "S6 native trial PASS; backend=$Backend; TLS/WSS; simulated audio; isolated invisible desktop; no foreground/input/capture"
     $summary | Set-Content -Encoding utf8 (Join-Path $work 'summary.log')

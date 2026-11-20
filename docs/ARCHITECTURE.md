@@ -113,6 +113,14 @@ show through whenever the surface is not fully painted. After a show, a focus ch
 display change or a resume from sleep the window repaints in full (the software renderer
 otherwise repaints only what changed).
 
+## Notifications and sounds
+
+New messages, incoming calls and call events give UI sounds (synthesized in the client, played with
+`PlaySoundW` on a worker thread), desktop notifications (the tray icon's notifications,
+shown as toasts by Windows 10/11), a taskbar flash and an unread badge on the taskbar
+button. Policy, silent mode for trials and limitations: [NOTIFICATIONS.md](NOTIFICATIONS.md),
+[ADR 0021](ADR/0021-notifications-and-ui-sounds.md).
+
 ## Wire protocol
 
 WebSocket + protobuf envelopes (`ClientEnvelope` / `ServerEnvelope`), versioned by package
@@ -143,3 +151,4 @@ WebSocket + protobuf envelopes (`ClientEnvelope` / `ServerEnvelope`), versioned 
 | 0018 | Opaque windows, audio-class scheduling, adaptive voice resilience |
 | 0019 | The share window shows pictures from the GPU (own swap chain, no CPU copy) |
 | 0020 | The SFU can run as a supervised worker process of the server |
+| 0021 | Notifications through the tray icon, UI sounds synthesized and played with PlaySound |
