@@ -6,11 +6,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use turbo_pancake_desktop::alerts::{self, IncomingCall, MessageAlert};
 use turbo_pancake_desktop::chat::{self, Compose};
 use turbo_pancake_desktop::credentials;
 use turbo_pancake_desktop::session::{Command as MediaCommand, CommandSender};
 use turbo_pancake_messenger_client::{
-    Command, ConversationView, MessageView, Service, ServiceConfig, Status, Update,
+    Command, ConversationView, IncomingMessage, MessageView, Service, ServiceConfig, Status, Update,
 };
 use turbo_pancake_protocol::v1;
 
@@ -286,12 +287,14 @@ fn wire(window: &MainWindow, service: &Rc<Service>, media: Option<CommandSender>
     let s = service.clone();
     window.on_accept_call(move || {
         if let Some(call_id) = STATE.with_borrow(|s| s.incoming.clone()) {
+            alerts::with(|a| a.call_answered(&call_id));
             s.send(Command::JoinCall { call_id });
         }
     });
     let s = service.clone();
     window.on_decline_call(move || {
         if let Some(call_id) = STATE.with_borrow(|s| s.incoming.clone()) {
+            alerts::with(|a| a.call_answered(&call_id));
             s.send(Command::DeclineCall { call_id });
         }
     });
@@ -622,7 +625,7 @@ fn show_header(w: &MainWindow) {
 }
 
 fn update_calls(w: &MainWindow) {
-    let (title, incoming, incoming_title, label, has) = STATE.with_borrow(|s| {
+    let (title, incoming, incoming_title, label, has, ringback) = STATE.with_borrow(|s| {
         let name = |id: &str| {
             s.conversations
                 .iter()
@@ -647,17 +650,33 @@ fn update_calls(w: &MainWindow) {
         } else {
             "Позвонить".into()
         };
+        // Our own call still waiting for the others to answer.
+        let ringback = own
+            .and_then(|o| s.calls.iter().find(|c| c.call_id == o.call_id))
+            .filter(|c| {
+                c.state == v1::ConversationCallState::Inviting as i32 && c.started_by == s.user_id
+            })
+            .map(|c| c.call_id.clone());
         (
             own.map(|c| name(&c.conversation_id)).unwrap_or_default(),
-            incoming.map(|c| c.call_id.clone()),
+            incoming.map(|c| IncomingCall {
+                call_id: c.call_id.clone(),
+                conversation_id: c.conversation_id.clone(),
+                title: name(&c.conversation_id),
+            }),
             incoming
                 .map(|c| name(&c.conversation_id))
                 .unwrap_or_default(),
             label,
             own.is_some(),
+            ringback,
         )
     });
-    STATE.with_borrow_mut(|s| s.incoming = incoming);
+    alerts::with(|a| {
+        a.incoming_call(incoming.as_ref());
+        a.outgoing_call(ringback.as_deref());
+    });
+    STATE.with_borrow_mut(|s| s.incoming = incoming.map(|c| c.call_id));
     w.set_active_call_title(title.into());
     w.set_incoming_title(incoming_title.into());
     w.set_chat_call_label(label.into());
@@ -888,6 +907,11 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
             if reason != "signed out" {
                 w.set_auth_error(chat::error_text(&reason).into());
             }
+            alerts::with(|a| {
+                a.set_unread_total(0);
+                a.incoming_call(None);
+                a.outgoing_call(None);
+            });
             w.set_current_conversation("".into());
             w.set_conversations(ModelRc::new(VecModel::<ConversationRow>::default()));
             w.set_messages(ModelRc::new(VecModel::<MessageRow>::default()));
@@ -918,8 +942,9 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
                     has_draft: r.has_draft,
                 })
                 .collect();
+            let unread: i32 = model.iter().map(|r| r.unread).sum();
+            alerts::with(|a| a.set_unread_total(unread.max(0) as u32));
             if log {
-                let unread: i32 = model.iter().map(|r| r.unread).sum();
                 println!(
                     "TURBO_PANCAKE_CHAT conversations={} unread={unread}",
                     model.len()
@@ -999,6 +1024,7 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
                 w.set_chat_can_send(false);
             }
         }
+        Update::Incoming(m) => alert_message(w, m),
         Update::Error(e) => {
             let text: SharedString = chat::error_text(&e).into();
             if STATE.with_borrow(|s| s.signed_in) {
@@ -1012,6 +1038,33 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
             }
         }
     }
+}
+
+/// A live message from someone else: sound / notification per the alert policy. The
+/// conversation counts as read on screen only while the chat (not the call view) shows it.
+fn alert_message(w: &MainWindow, m: IncomingMessage) {
+    let group = STATE.with_borrow(|s| {
+        s.conversations
+            .iter()
+            .find(|c| c.id == m.conversation_id && c.kind == v1::ConversationKind::Group)
+            .map(|c| c.title.clone())
+    });
+    let title = match group {
+        Some(g) => format!("{} · {g}", m.author_name),
+        None => m.author_name.clone(),
+    };
+    let open = if w.get_voice_selected() {
+        None
+    } else {
+        current()
+    };
+    let alert = MessageAlert {
+        conversation_id: m.conversation_id,
+        message_id: m.message_id,
+        title,
+        text: m.body,
+    };
+    alerts::with(|a| a.message(&alert, open.as_deref()));
 }
 
 /// `StartDirect` found the user: select the conversation (the service already opened it)

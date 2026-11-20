@@ -89,6 +89,7 @@ use slint::winit_030::winit::event::WindowEvent;
 use slint::winit_030::winit::event_loop::ActiveEventLoop;
 use slint::winit_030::winit::window::{Window as WinitWindow, WindowId};
 use slint::winit_030::{CustomApplicationHandler, EventResult};
+use turbo_pancake_desktop::alerts::{self, Alerts, Target};
 use turbo_pancake_desktop::app_settings::{self, AppSettings};
 use turbo_pancake_desktop::instance;
 use turbo_pancake_desktop::screen::PictureSlot;
@@ -534,11 +535,18 @@ fn sync_video_surface(
 /// moment later, when a window created by this very call exists.
 fn refresh_main(w: &MainWindow) {
     make_opaque(w.window());
+    // Taskbar flash and badge follow the live native window.
+    if let Some(h) = native_handle(w.window()) {
+        alerts::with(|a| a.set_main_window(h));
+    }
     w.invoke_repaint();
     let weak = w.as_weak();
     slint::Timer::single_shot(Duration::from_millis(150), move || {
         if let Some(w) = weak.upgrade() {
             let opaque = make_opaque(w.window());
+            if let Some(h) = native_handle(w.window()) {
+                alerts::with(|a| a.set_main_window(h));
+            }
             w.invoke_repaint();
             // Scripted runs: the mode was switched off on the live native window (after a
             // restore from the tray that is a new window).
@@ -751,14 +759,16 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
         show_icon,
         move |event| match event {
             TrayEvent::Open => {
+                let _ = weak.upgrade_in_event_loop(move |w| restore_main(&w, activate));
+            }
+            TrayEvent::NotificationClicked(tag) => {
+                // The user clicked our notification: show what it was about.
+                let target = alerts::get().and_then(|a| a.target(tag));
                 let _ = weak.upgrade_in_event_loop(move |w| {
-                    let _ = w.show();
-                    w.window().set_minimized(false);
-                    // Only after the user's own click on the icon (trials pass --no-activate).
-                    if activate {
-                        w.window().with_winit_window(|ww| ww.focus_window());
+                    restore_main(&w, activate);
+                    if let Some(Target::Conversation(id) | Target::Call(id)) = target {
+                        w.invoke_open_conversation(id.into());
                     }
-                    refresh_main(&w);
                 });
             }
             TrayEvent::Exit => {
@@ -772,6 +782,9 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
     .map_err(|e| eprintln!("tray unavailable: {e}"))
     .ok()
     .map(Rc::new);
+    if let Some(n) = tray.as_ref().and_then(|t| t.notifier()) {
+        alerts::with(|a| a.set_tray(n));
+    }
     // The trial exercises the hidden state where no shell shows icons (an isolated
     // desktop), restoring through the tray window's own message path.
     let can_hide = tray.as_ref().is_some_and(|t| t.icon_shown())
@@ -811,6 +824,17 @@ fn window_lifecycle(window: &MainWindow, args: &Args, loaded: AppSettings) -> Op
         EventResult::Propagate
     });
     tray
+}
+
+/// Shows the main window again (tray click, notification click); takes the focus only
+/// after the user's own click (trials pass --no-activate).
+fn restore_main(w: &MainWindow, activate: bool) {
+    let _ = w.show();
+    w.window().set_minimized(false);
+    if activate {
+        w.window().with_winit_window(|ww| ww.focus_window());
+    }
+    refresh_main(w);
 }
 
 /// `--trial-tray`: close → hidden, restore through the tray, exit through its menu command.
@@ -1253,6 +1277,15 @@ fn main() -> Result<(), slint::PlatformError> {
         .unwrap_or_default();
     // Before the first window and before any thread (environment write).
     let scale = ui_scale::apply(settings.ui_scale);
+    // Sounds and notifications (ADR 0021); silent in trials (`--no-activate`).
+    alerts::install(Alerts::for_this_process(
+        alerts::silent_requested(args.no_activate),
+        alerts::Prefs {
+            notifications: settings.notifications,
+            sounds: settings.sounds,
+            volume: settings.sound_volume,
+        },
+    ));
 
     let window = MainWindow::new()?;
     if args.smoke_exit_after_ms.is_some() {

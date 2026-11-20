@@ -73,12 +73,17 @@ pub fn call(w: &MainWindow, link: CallLink) {
 
 fn refresh(w: &MainWindow) {
     let now = Instant::now();
-    let (banner, changed, tick) = STATE.with_borrow_mut(|s| {
+    let (banner, changed, tick, online) = STATE.with_borrow_mut(|s| {
         let b = s.tracker.banner(now);
         let changed = b != s.shown;
         s.shown = b.clone();
-        (b, changed, s.tracker.needs_tick(now))
+        let (messenger, call) = s.tracker.link_names();
+        let online = messenger == "online" || call == "connected";
+        (b, changed, s.tracker.needs_tick(now), online)
     });
+    // Lost / restored sounds (the policy debounces and needs a prior "online").
+    let problem = matches!(banner.kind, Kind::Offline | Kind::Reconnecting);
+    turbo_pancake_desktop::alerts::with(|a| a.connection(problem, online));
     if changed {
         w.set_banner_kind(banner.kind.ui());
         w.set_banner_text(banner.text.as_str().into());

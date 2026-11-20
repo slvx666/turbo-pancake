@@ -21,6 +21,7 @@ impl Core {
                     self.push(C::LeaveRoom(v1::LeaveRoom { room_id: j.room_id }));
                     return;
                 }
+                crate::alerts::with(|a| a.call_joined(&j.room_id));
                 self.joined = Some(j.room_id);
                 self.members.clear();
                 for p in j.peers {
@@ -33,12 +34,17 @@ impl Core {
                     return;
                 }
                 if let Some(peer) = p.peer {
+                    if !self.members.contains_key(&peer.peer_id) {
+                        crate::alerts::with(|a| a.peer_joined());
+                    }
                     self.add_member(peer);
                 }
             }
             S::PeerLeft(l) => {
                 // Its stream ends with TrackUnpublished.
-                self.members.remove(&l.peer_id);
+                if self.members.remove(&l.peer_id).is_some() {
+                    crate::alerts::with(|a| a.peer_left());
+                }
                 self.member_volumes.remove(&l.peer_id);
                 self.shares.remove(&l.peer_id);
                 if self.watching.as_deref() == Some(l.peer_id.as_str()) {

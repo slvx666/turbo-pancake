@@ -986,6 +986,9 @@ impl Core {
                 self.stop_audio();
             }
             Command::SetMuted(m) => {
+                if m != self.cfg.engine.muted {
+                    crate::alerts::with(|a| a.mute_changed(m));
+                }
                 self.cfg.engine.muted = m;
                 self.with_engine(|e| e.set_muted(m));
             }
@@ -1028,9 +1031,18 @@ impl Core {
             Command::StartShare(config) => {
                 self.share_restarts = RestartBudget::default();
                 self.share_retry = None;
-                self.start_share(config)
+                let was = self.share.is_some();
+                self.start_share(config);
+                if !was && self.share.is_some() {
+                    crate::alerts::with(|a| a.share_changed(true));
+                }
             }
-            Command::StopShare => self.stop_share(),
+            Command::StopShare => {
+                if self.share.is_some() {
+                    crate::alerts::with(|a| a.share_changed(false));
+                }
+                self.stop_share();
+            }
             Command::SetShareAudio(on) => {
                 self.cfg.share_audio = on;
                 if self.share.is_some() {
@@ -1092,6 +1104,8 @@ impl Core {
         self.members.clear();
         self.tracks.clear();
         self.member_volumes.clear();
+        // Our call ends for us (sound only once the server had confirmed it).
+        crate::alerts::with(|a| a.call_left());
         let room = self.joined.take().or_else(|| self.want_room.clone());
         if let (Some(room), true) = (room, self.online) {
             self.push(C::LeaveRoom(v1::LeaveRoom { room_id: room }));
