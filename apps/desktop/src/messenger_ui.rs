@@ -189,6 +189,8 @@ pub fn start(
         });
     } else if let Some((token, user)) = credentials::load(&target) {
         window.set_user_name(user.display_name.as_str().into());
+        window.set_user_initials(chat::initials(&user.display_name).into());
+        window.set_user_avatar(chat::avatar_index(&user.user_id));
         service.send(Command::Resume { token, user });
     }
     if let Some(peer) = script.chat_with {
@@ -575,7 +577,7 @@ fn send(w: &MainWindow, service: &Service, text: &str) {
 /// Peers' presence dots and the header follow the server link (stale while offline).
 fn show_presence(w: &MainWindow, server_online: bool) {
     let online: Vec<bool> = STATE.with_borrow(|s| {
-        chat::conversation_rows(&s.conversations)
+        chat::conversation_rows(&s.conversations, 0, 0)
             .into_iter()
             .map(|r| r.online && server_online)
             .collect()
@@ -609,10 +611,20 @@ fn show_header(w: &MainWindow) {
                     id: m.user_id.clone().into(),
                     name: format!("{} · @{}", m.display_name, m.username).into(),
                     creator: m.role == v1::MemberRole::Creator as i32,
+                    initials: chat::initials(&m.display_name).into(),
+                    avatar: chat::avatar_index(&m.user_id),
                 })
                 .collect::<Vec<_>>(),
         )));
         w.set_chat_title(c.title.as_str().into());
+        w.set_chat_initials(chat::initials(&c.title).into());
+        w.set_chat_avatar(chat::avatar_index(
+            if c.kind == v1::ConversationKind::Group || c.peer_user_id.is_empty() {
+                &c.id
+            } else {
+                &c.peer_user_id
+            },
+        ));
         w.set_chat_username(c.peer_username.as_str().into());
         w.set_chat_online(c.online && STATE.with_borrow(|s| s.server_online));
         w.set_chat_can_send(c.can_send);
@@ -863,6 +875,8 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
             w.set_auth_busy(false);
             w.set_auth_error("".into());
             w.set_user_name(user.display_name.as_str().into());
+            w.set_user_initials(chat::initials(&user.display_name).into());
+            w.set_user_avatar(chat::avatar_index(&user.user_id));
             if log {
                 println!("TURBO_PANCAKE_CHAT signed_in user={}", user.username);
             }
@@ -898,7 +912,7 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
             }
         }
         Update::Conversations(list) => {
-            let rows = chat::conversation_rows(&list);
+            let rows = chat::conversation_rows(&list, local_offset_s(), now_ms());
             let presence = STATE.with_borrow_mut(|s| {
                 s.conversations = list;
                 s.server_online
@@ -916,6 +930,10 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
                     can_send: r.can_send,
                     blocked_by_me: r.blocked_by_me,
                     has_draft: r.has_draft,
+                    group: r.group,
+                    initials: r.initials.into(),
+                    avatar: r.avatar,
+                    last_time: r.last_time.into(),
                 })
                 .collect();
             if log {
@@ -978,6 +996,10 @@ fn apply(w: &MainWindow, u: Update, media: Option<&CommandSender>) {
                     state: r.state.into(),
                     failed: r.failed,
                     error: chat::error_text(&r.error).into(),
+                    initials: r.initials.into(),
+                    avatar: r.avatar,
+                    clock: r.clock.into(),
+                    day: r.day.into(),
                 })
                 .collect();
             sync_messages(w, model);

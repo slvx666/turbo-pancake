@@ -1,8 +1,9 @@
-// S5 messenger UI: conversation list, sign-in screen, direct chat (spec §7, §9).
-// Discord-like: one compact feed, author name + time on the left, no bubbles.
+// S5 messenger UI: conversation list, sign-in screen, the open conversation (spec §7, §9).
+// One compact feed without bubbles: avatar, name and time on the first message of a
+// group, hover actions on a floating toolbar.
 
-import { Button, LineEdit, ListView } from "std-widgets.slint";
-import { Theme, IconButton } from "theme.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme, Icons, Icon, IconButton, AppButton, ButtonKind, Pill, SectionHeader, Avatar, Field, Card } from "theme.slint";
 
 export struct ConversationRow {
     id: string,
@@ -15,9 +16,14 @@ export struct ConversationRow {
     can-send: bool,
     blocked-by-me: bool,
     has-draft: bool,
+    // Presentation (chat.rs): group kind, avatar letters and colour, last activity.
+    group: bool,
+    initials: string,
+    avatar: int,
+    last-time: string,
 }
 
-export struct GroupMemberRow { id: string, name: string, creator: bool }
+export struct GroupMemberRow { id: string, name: string, creator: bool, initials: string, avatar: int }
 
 export struct MessageRow {
     key: string,
@@ -36,98 +42,122 @@ export struct MessageRow {
     state: string,
     failed: bool,
     error: string,
-}
-
-component Avatar inherits Rectangle {
-    in property <string> name;
-    in property <bool> online;
-    in property <bool> show-presence: true;
-    width: 32px;
-    height: 32px;
-    border-radius: 16px;
-    background: Theme.accent;
-    Text {
-        text: root.name.character-count > 0 ? "●" : "?";
-        color: white;
-        font-size: 11px;
-    }
-    if root.show-presence: Rectangle {
-        x: parent.width - 11px;
-        y: parent.height - 11px;
-        width: 12px;
-        height: 12px;
-        border-radius: 6px;
-        border-width: 2px;
-        border-color: Theme.bg-secondary;
-        background: root.online ? #23a55a : #80848e;
-        accessible-role: text;
-        accessible-label: root.online ? "в сети" : "не в сети";
-    }
+    // Presentation (chat.rs): avatar, "14:05" for grouped lines, date separator text.
+    initials: string,
+    avatar: int,
+    clock: string,
+    day: string,
 }
 
 component ConversationItem inherits Rectangle {
     in property <ConversationRow> item;
     in property <bool> selected;
     in property <bool> presence: true;
+    in property <string> icon;
     callback clicked;
-    height: 44px;
-    border-radius: 4px;
-    background: root.selected ? (Theme.dark ? #404249 : #d4d7dc)
-        : touch.has-hover ? (Theme.dark ? #35373c : #e3e5e8) : transparent;
+    height: 50px;
     accessible-role: button;
     accessible-label: root.item.title + (root.item.unread > 0 ? ", непрочитанных: " + root.item.unread : "");
     accessible-action-default => { root.clicked(); }
-    touch := TouchArea { clicked => { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 10px;
-        Avatar {
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Rectangle {
+        x: 8px;
+        y: 2px;
+        width: parent.width - 16px;
+        height: parent.height - 4px;
+        border-radius: 8px;
+        background: root.selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+        animate background { duration: Theme.fast; }
+        // Unread marker on the edge.
+        if root.item.unread > 0 && !root.selected: Rectangle {
+            x: -8px;
             y: (parent.height - self.height) / 2;
-            name: root.item.title;
-            online: root.item.online;
-            show-presence: root.presence && root.item.peer-id != "";
+            width: 4px;
+            height: 8px;
+            border-radius: 2px;
+            background: Theme.text-strong;
         }
-        VerticalLayout {
-            alignment: center;
-            Text {
-                text: root.item.title;
-                color: root.item.unread > 0 || root.selected ? Theme.text-normal : Theme.text-muted;
-                font-weight: root.item.unread > 0 ? 700 : 500;
-                overflow: elide;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 10px;
+            if root.icon == "": Avatar {
+                y: (parent.height - self.height) / 2;
+                size: 34px;
+                initials: root.item.initials;
+                color-index: root.item.avatar;
+                group: root.item.group;
+                ring-color: root.selected ? (Theme.dark ? #2f3036 : #dcdee2) : touch.has-hover ? (Theme.dark ? #26272c : #e4e5e8) : Theme.bg-sidebar;
+                presence: root.presence && root.item.peer-id != "" && !root.item.group ? (root.item.online ? 1 : 2) : 0;
             }
-            Text {
-                text: root.item.has-draft ? "черновик" : root.item.last-text;
-                color: Theme.text-muted;
-                font-size: 11px;
-                overflow: elide;
+            if root.icon != "": Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 34px;
+                height: 34px;
+                border-radius: 10px;
+                background: root.selected ? Theme.success : Theme.hover;
+                Icon {
+                    icon: root.icon;
+                    size: 18px;
+                    tint: root.selected ? #ffffff : Theme.text-muted;
+                }
             }
-        }
-        if root.item.unread > 0: Rectangle {
-            width: max(18px, badge.preferred-width + 10px);
-            height: 18px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 9px;
-            background: #f23f43;
-            badge := Text {
-                text: root.item.unread > 99 ? "99+" : root.item.unread;
-                color: white;
-                font-size: 11px;
-                font-weight: 700;
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: root.item.title;
+                        color: root.item.unread > 0 || root.selected ? Theme.text-strong : Theme.text-normal;
+                        font-weight: root.item.unread > 0 ? 700 : 600;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.item.last-time != "": Text {
+                        text: root.item.last-time;
+                        color: root.item.unread > 0 ? Theme.accent-text : Theme.text-faint;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    if root.item.has-draft: Text {
+                        text: "Черновик";
+                        color: Theme.danger-text;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.item.has-draft ? "" : root.item.last-text;
+                        color: root.item.unread > 0 ? Theme.text-normal : Theme.text-muted;
+                        font-size: 12px;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.item.unread > 0: Pill {
+                        y: (parent.height - self.height) / 2;
+                        text: root.item.unread > 99 ? "99+" : root.item.unread;
+                        bg: Theme.accent;
+                    }
+                }
             }
         }
     }
 }
 
-// Left column: search by @username, the voice room, direct conversations, user panel.
+// Left column: search, new group, the voice room, conversations, voice and user panels.
 export component Sidebar inherits Rectangle {
     in-out property <bool> new-group-open;
     in property <string> active-call-title;
-    in property <string> incoming-title;
     callback create-group(string, string);
-    callback accept-call;
-    callback decline-call;
     in property <string> user-name;
+    in property <string> user-initials;
+    in property <int> user-avatar;
     in property <string> connection-status;
     in property <bool> signed-in;
     in property <[ConversationRow]> conversations;
@@ -136,83 +166,175 @@ export component Sidebar inherits Rectangle {
     in property <string> find-error;
     // A verified update is ready to install (badge on the settings button).
     in property <bool> update-available;
+    // The voice-connected panel: shown while in a call.
+    in property <bool> in-call;
+    in property <string> call-name;
+    in-out property <bool> muted;
+    callback mute-changed(bool);
+    callback leave;
     callback toggle-theme;
     callback open-app-settings;
     callback find-user(string);
     callback open-conversation(string);
     callback open-voice;
     callback logout;
-    background: Theme.bg-secondary;
+    background: Theme.bg-sidebar;
     VerticalLayout {
-        if root.signed-in: Button {
-            text: root.new-group-open ? "Закрыть создание группы" : "+ Создать группу";
-            clicked => { root.new-group-open = !root.new-group-open; }
-        }
-        if root.new-group-open && root.signed-in: VerticalLayout {
-            padding: 8px; spacing: 6px;
-            group-name := LineEdit { placeholder-text: "Название группы"; }
-            group-users := LineEdit { placeholder-text: "@имя, @имя — через запятую"; }
-            Button { text: "Создать"; clicked => { root.create-group(group-name.text, group-users.text); } }
-        }
-        if root.incoming-title != "": VerticalLayout {
-            padding: 8px; spacing: 6px;
-            Text { text: "Входящий звонок: " + root.incoming-title; color: Theme.text-normal; wrap: word-wrap; }
-            HorizontalLayout {
-                Button { text: "Принять"; clicked => { root.accept-call(); } }
-                Button { text: "Отклонить"; clicked => { root.decline-call(); } }
-            }
-        }
+        // Search and "new group".
         Rectangle {
-            height: 48px;
+            height: 52px;
             HorizontalLayout {
-                padding: 8px;
-                find := LineEdit {
+                padding-left: 10px;
+                padding-right: 8px;
+                padding-top: 10px;
+                padding-bottom: 10px;
+                spacing: 6px;
+                find := Field {
+                    field-height: 32px;
+                    icon: Icons.search;
                     enabled: root.signed-in;
-                    placeholder-text: "Найти по @username";
+                    placeholder: "Найти по @username";
+                    field-background: Theme.bg-base;
                     accepted(t) => {
                         root.find-user(t);
                         self.text = "";
                     }
                 }
+                if root.signed-in: IconButton {
+                    icon: root.new-group-open ? Icons.close : Icons.plus;
+                    tooltip: root.new-group-open ? "Закрыть создание группы" : "Создать группу";
+                    tooltip-below: true;
+                    active: root.new-group-open;
+                    clicked => { root.new-group-open = !root.new-group-open; }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.separator;
             }
         }
-        if root.find-error != "": Text {
-            x: 10px;
-            width: parent.width - 20px;
-            text: root.find-error;
-            color: #f23f43;
-            font-size: 11px;
-            wrap: word-wrap;
+        if root.new-group-open && root.signed-in: Rectangle {
+            VerticalLayout {
+                padding: 10px;
+                Card {
+                    shadow: false;
+                    radius: 10px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.users;
+                                size: 18px;
+                                tint: Theme.accent-text;
+                            }
+                            Text {
+                                text: "Новая группа";
+                                color: Theme.text-strong;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        group-name := Field {
+                            field-height: 34px;
+                            placeholder: "Название группы";
+                            accepted => { group-users.focus(); }
+                        }
+                        group-users := Field {
+                            field-height: 34px;
+                            placeholder: "@имя, @имя — через запятую";
+                            accepted => { root.create-group(group-name.text, group-users.text); }
+                        }
+                        Text {
+                            text: "До 100 участников; добавить можно и позже.";
+                            color: Theme.text-faint;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: end;
+                            AppButton {
+                                text: "Отмена";
+                                kind: ButtonKind.ghost;
+                                small: true;
+                                clicked => { root.new-group-open = false; }
+                            }
+                            AppButton {
+                                text: "Создать";
+                                kind: ButtonKind.primary;
+                                small: true;
+                                clicked => { root.create-group(group-name.text, group-users.text); }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Rectangle { height: 1px; background: Theme.separator; }
+        if root.find-error != "": HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 8px;
+            spacing: 6px;
+            Icon {
+                icon: Icons.alert;
+                size: 14px;
+                tint: Theme.danger-text;
+            }
+            Text {
+                text: root.find-error;
+                color: Theme.danger-text;
+                font-size: 12px;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
         VerticalLayout {
-            padding: 8px;
+            padding-top: 8px;
             spacing: 2px;
+            vertical-stretch: 1;
             ConversationItem {
-                item: { title: root.signed-in ? "Звонок" : "Тестовая комната", last-text: root.active-call-title, online: false };
+                item: {
+                    title: root.signed-in ? "Звонок" : "Тестовая комната",
+                    last-text: root.active-call-title != "" ? root.active-call-title : "Голосовая комната",
+                    online: false,
+                };
+                icon: Icons.volume;
                 selected: root.voice-selected;
                 presence: false;
                 clicked => { root.open-voice(); }
             }
-            Text {
-                text: "ДИАЛОГИ И ГРУППЫ";
-                color: Theme.text-muted;
-                font-size: 11px;
-                font-weight: 700;
-                height: 24px;
-                vertical-alignment: bottom;
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 12px;
+                height: 30px;
+                SectionHeader {
+                    text: "ДИАЛОГИ И ГРУППЫ";
+                    vertical-alignment: bottom;
+                }
             }
             if root.signed-in && root.conversations.length == 0: Text {
+                x: 18px;
+                width: parent.width - 36px;
                 text: "Пока нет диалогов: найдите собеседника по @username";
                 color: Theme.text-muted;
+                font-size: 12px;
                 wrap: word-wrap;
             }
             if !root.signed-in: Text {
+                x: 18px;
+                width: parent.width - 36px;
                 text: "Войдите, чтобы переписываться";
                 color: Theme.text-muted;
+                font-size: 12px;
                 wrap: word-wrap;
             }
             ListView {
+                vertical-stretch: 1;
                 for c in root.conversations: ConversationItem {
                     item: c;
                     selected: !root.voice-selected && c.id == root.current;
@@ -220,27 +342,105 @@ export component Sidebar inherits Rectangle {
                 }
             }
         }
-        // User panel
-        Rectangle {
-            height: 52px;
-            background: Theme.dark ? #232428 : #ebedef;
+        // Voice connected: the call this client is in.
+        if root.in-call: Rectangle {
+            background: Theme.bg-base;
+            height: 58px;
+            Rectangle {
+                height: 1px;
+                y: 0px;
+                background: Theme.separator;
+            }
             HorizontalLayout {
-                padding-left: 8px;
+                padding-left: 12px;
                 padding-right: 8px;
-                spacing: 8px;
-                Avatar {
-                    y: (parent.height - self.height) / 2;
-                    name: root.user-name;
-                    online: root.connection-status == "В сети";
-                    show-presence: root.signed-in;
+                spacing: 4px;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Icon {
+                            y: (parent.height - self.height) / 2;
+                            icon: Icons.signal;
+                            size: 15px;
+                            stroke: 2.2px;
+                            tint: Theme.success-text;
+                        }
+                        Text {
+                            text: "Голосовая связь";
+                            color: Theme.success-text;
+                            font-size: 13px;
+                            font-weight: 700;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    title-text := Text {
+                        text: root.call-name;
+                        color: title-touch.has-hover ? Theme.text-strong : Theme.text-muted;
+                        font-size: 12px;
+                        overflow: elide;
+                        accessible-role: button;
+                        accessible-label: "Открыть звонок: " + root.call-name;
+                        accessible-action-default => { root.open-voice(); }
+                        title-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-voice(); }
+                        }
+                    }
                 }
                 VerticalLayout {
                     alignment: center;
+                    IconButton {
+                        icon: root.muted ? Icons.mic-off : Icons.mic;
+                        tooltip: root.muted ? "Включить микрофон" : "Выключить микрофон";
+                        active: root.muted;
+                        danger: true;
+                        clicked => {
+                            root.muted = !root.muted;
+                            root.mute-changed(root.muted);
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: Icons.phone-down;
+                        filled: true;
+                        tooltip: "Отключиться";
+                        danger: true;
+                        clicked => { root.leave(); }
+                    }
+                }
+            }
+        }
+        // User panel.
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-base;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 6px;
+                spacing: 2px;
+                Avatar {
+                    y: (parent.height - self.height) / 2;
+                    size: 34px;
+                    initials: root.user-initials;
+                    color-index: root.user-avatar;
+                    ring-color: Theme.bg-base;
+                    presence: root.signed-in ? (root.connection-status == "В сети" ? 1 : 2) : 0;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    padding-left: 8px;
+                    horizontal-stretch: 1;
                     Text {
                         text: root.user-name;
-                        color: Theme.text-normal;
+                        color: Theme.text-strong;
                         font-size: 13px;
-                        font-weight: 600;
+                        font-weight: 700;
                         overflow: elide;
                     }
                     Text {
@@ -253,32 +453,56 @@ export component Sidebar inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     IconButton {
-                        label: Theme.dark ? "☀" : "☾";
-                        tooltip: "Переключить тему";
+                        size: 30px;
+                        icon-size: 18px;
+                        icon: root.muted ? Icons.mic-off : Icons.mic;
+                        tooltip: root.muted ? "Включить микрофон" : "Выключить микрофон";
+                        active: root.muted;
+                        danger: true;
+                        clicked => {
+                            root.muted = !root.muted;
+                            root.mute-changed(root.muted);
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        size: 30px;
+                        icon-size: 18px;
+                        icon: Theme.dark ? Icons.sun : Icons.moon;
+                        tooltip: Theme.dark ? "Светлая тема" : "Тёмная тема";
                         clicked => { root.toggle-theme(); }
                     }
                 }
                 VerticalLayout {
                     alignment: center;
                     IconButton {
-                        label: "⚙";
-                        tooltip: root.update-available ? "Настройки приложения · доступно обновление" : "Настройки приложения";
+                        size: 30px;
+                        icon-size: 18px;
+                        icon: Icons.gear;
+                        tooltip: root.update-available ? "Настройки · доступно обновление" : "Настройки";
                         clicked => { root.open-app-settings(); }
                         if root.update-available: Rectangle {
-                            x: parent.width - 10px;
-                            y: 2px;
-                            width: 8px;
-                            height: 8px;
-                            border-radius: 4px;
-                            background: #23a55a;
+                            x: parent.width - 11px;
+                            y: 3px;
+                            width: 9px;
+                            height: 9px;
+                            border-radius: 4.5px;
+                            background: Theme.success;
+                            border-width: 2px;
+                            border-color: Theme.bg-base;
                         }
                     }
                 }
                 if root.signed-in: VerticalLayout {
                     alignment: center;
                     IconButton {
-                        label: "🚪";
+                        size: 30px;
+                        icon-size: 18px;
+                        icon: Icons.logout;
                         tooltip: "Выйти из аккаунта";
+                        danger: true;
                         clicked => { root.logout(); }
                     }
                 }
@@ -287,7 +511,7 @@ export component Sidebar inherits Rectangle {
     }
 }
 
-// Sign in / create an account.
+// Sign in / create an account: a centred card over a soft backdrop of shapes.
 export component AuthPanel inherits Rectangle {
     in property <string> error;
     in property <bool> busy;
@@ -295,76 +519,267 @@ export component AuthPanel inherits Rectangle {
     callback login(string, string);
     callback register(string, string, string);
     in-out property <bool> register-mode;
-    background: Theme.bg-primary;
-    VerticalLayout {
-        alignment: center;
-        HorizontalLayout {
+    background: Theme.bg-content;
+    clip: true;
+    // Decorative backdrop.
+    // Soft discs: a few concentric translucent circles (no gradient banding).
+    for i in 3: Rectangle {
+        property <length> d: root.height * (0.9 - i * 0.22);
+        x: root.height * 0.2 - self.d / 2;
+        y: root.height * 0.15 - self.d / 2;
+        width: self.d;
+        height: self.d;
+        border-radius: self.d / 2;
+        background: Theme.accent.transparentize(Theme.dark ? 0.93 : 0.94);
+    }
+    for i in 3: Rectangle {
+        property <length> d: root.height * (0.85 - i * 0.2);
+        x: root.width - root.height * 0.15 - self.d / 2;
+        y: root.height * 0.95 - self.d / 2;
+        width: self.d;
+        height: self.d;
+        border-radius: self.d / 2;
+        background: Theme.avatar(2).transparentize(Theme.dark ? 0.92 : 0.94);
+    }
+    Rectangle {
+        x: root.width * 0.72;
+        y: root.height * 0.12;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: Theme.accent.transparentize(0.6);
+    }
+    Rectangle {
+        x: root.width * 0.14;
+        y: root.height * 0.78;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: Theme.avatar(6).transparentize(0.5);
+    }
+    Rectangle {
+        x: root.width * 0.84;
+        y: root.height * 0.3;
+        width: 46px;
+        height: 46px;
+        border-radius: 14px;
+        border-width: 2px;
+        border-color: Theme.border-strong;
+    }
+    ScrollView {
+        VerticalLayout {
             alignment: center;
-            Rectangle {
-                width: 420px;
-                background: Theme.bg-secondary;
-                border-radius: 8px;
-                VerticalLayout {
-                    padding: 28px;
-                    spacing: 12px;
-                    Text {
-                        text: root.register-mode ? "Создать аккаунт" : "С возвращением!";
-                        color: Theme.text-normal;
-                        font-size: 22px;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: "Сервер: " + root.server;
-                        color: Theme.text-muted;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        overflow: elide;
-                    }
-                    Text { text: "ИМЯ ПОЛЬЗОВАТЕЛЯ"; color: Theme.text-muted; font-size: 11px; font-weight: 700; }
-                    username := LineEdit {
-                        placeholder-text: "латиница, цифры и _";
-                        accepted => { password.focus(); }
-                    }
-                    if root.register-mode: Text { text: "ОТОБРАЖАЕМОЕ ИМЯ"; color: Theme.text-muted; font-size: 11px; font-weight: 700; }
-                    if root.register-mode: display := LineEdit {
-                        placeholder-text: "как вас видят другие (необязательно)";
-                        edited(t) => { root.display-text = t; }
-                    }
-                    Text { text: "ПАРОЛЬ"; color: Theme.text-muted; font-size: 11px; font-weight: 700; }
-                    password := LineEdit {
-                        input-type: InputType.password;
-                        placeholder-text: root.register-mode ? "не короче 8 символов" : "";
-                        accepted => { submit.clicked(); }
-                    }
-                    if root.error != "": Text {
-                        text: root.error;
-                        color: #f23f43;
-                        wrap: word-wrap;
-                    }
-                    submit := Button {
-                        text: root.busy ? "Подождите…" : root.register-mode ? "Зарегистрироваться" : "Войти";
-                        primary: true;
-                        enabled: !root.busy;
-                        clicked => {
-                            if (root.register-mode) {
-                                root.register(username.text, password.text, root.display-text);
-                            } else {
-                                root.login(username.text, password.text);
+            padding: 24px;
+            HorizontalLayout {
+                alignment: center;
+                Card {
+                    width: min(420px, root.width - 48px);
+                    radius: 16px;
+                    VerticalLayout {
+                        padding: 32px;
+                        padding-top: 28px;
+                        spacing: 10px;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 10px;
+                            Image {
+                                width: 36px;
+                                height: 36px;
+                                source: @image-url("../../../assets/icon/turbo-pancake-64.png");
+                                accessible-role: none;
                             }
-                            password.text = "";
+                            Text {
+                                text: "turbo-pancake";
+                                color: Theme.text-strong;
+                                font-size: 18px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
                         }
-                    }
-                    Button {
-                        text: root.register-mode ? "Уже есть аккаунт? Войти" : "Нужен аккаунт? Зарегистрироваться";
-                        enabled: !root.busy;
-                        clicked => { root.register-mode = !root.register-mode; }
+                        Rectangle { height: 6px; }
+                        Text {
+                            text: root.register-mode ? "Создать аккаунт" : "С возвращением!";
+                            color: Theme.text-strong;
+                            font-size: 24px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Сервер: " + root.server;
+                            color: Theme.text-muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle { height: 8px; }
+                        SectionHeader { text: "ИМЯ ПОЛЬЗОВАТЕЛЯ"; }
+                        username := Field {
+                            placeholder: "латиница, цифры и _";
+                            enabled: !root.busy;
+                            accepted => { password.focus(); }
+                        }
+                        if root.register-mode: SectionHeader { text: "ОТОБРАЖАЕМОЕ ИМЯ"; }
+                        if root.register-mode: display := Field {
+                            placeholder: "как вас видят другие (необязательно)";
+                            enabled: !root.busy;
+                            edited(t) => { root.display-text = t; }
+                        }
+                        SectionHeader { text: "ПАРОЛЬ"; }
+                        password := Field {
+                            input-type: InputType.password;
+                            enabled: !root.busy;
+                            placeholder: root.register-mode ? "не короче 8 символов" : "";
+                            accepted => { submit.clicked(); }
+                        }
+                        if root.error != "": Rectangle {
+                            border-radius: 8px;
+                            background: Theme.danger-soft;
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 8px;
+                                Icon {
+                                    icon: Icons.alert;
+                                    size: 16px;
+                                    tint: Theme.danger-text;
+                                }
+                                Text {
+                                    text: root.error;
+                                    color: Theme.danger-text;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                        Rectangle { height: 4px; }
+                        submit := AppButton {
+                            min-height: 42px;
+                            horizontal-stretch: 1;
+                            text: root.busy ? "Подождите…" : root.register-mode ? "Зарегистрироваться" : "Войти";
+                            kind: ButtonKind.primary;
+                            enabled: !root.busy;
+                            clicked => {
+                                if (root.register-mode) {
+                                    root.register(username.text, password.text, root.display-text);
+                                } else {
+                                    root.login(username.text, password.text);
+                                }
+                                password.text = "";
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            Text {
+                                text: root.register-mode ? "Уже есть аккаунт?" : "Нужен аккаунт?";
+                                color: Theme.text-muted;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            AppButton {
+                                text: root.register-mode ? "Войти" : "Зарегистрироваться";
+                                kind: ButtonKind.link;
+                                small: true;
+                                enabled: !root.busy;
+                                clicked => { root.register-mode = !root.register-mode; }
+                            }
+                        }
                     }
                 }
             }
         }
     }
     property <string> display-text;
+}
+
+// The "nothing open" picture: two chat bubbles on a soft disc (simple shapes only).
+export component EmptyArt inherits Rectangle {
+    in property <length> size: 180px;
+    width: root.size;
+    height: root.size * 0.8;
+    Rectangle {
+        x: root.size * 0.1;
+        width: root.size * 0.8;
+        height: self.width;
+        y: (root.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: Theme.accent-soft;
+    }
+    // Back bubble.
+    Rectangle {
+        x: root.size * 0.42;
+        y: root.size * 0.16;
+        width: root.size * 0.46;
+        height: root.size * 0.3;
+        border-radius: root.size * 0.08;
+        background: Theme.avatar(1);
+        for i in 3: Rectangle {
+            x: parent.width * (0.25 + i * 0.25) - 4px;
+            y: (parent.height - 8px) / 2;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: #ffffffcc;
+        }
+    }
+    // Front bubble with a tail.
+    Rectangle {
+        x: root.size * 0.12;
+        y: root.size * 0.36;
+        width: root.size * 0.52;
+        height: root.size * 0.32;
+        border-radius: root.size * 0.09;
+        background: Theme.accent;
+        Path {
+            x: parent.width * 0.16;
+            y: parent.height - 1px;
+            width: 18px;
+            height: 13px;
+            viewbox-width: 18;
+            viewbox-height: 13;
+            commands: "M0 0 L18 0 L3 13 Z";
+            fill: Theme.accent;
+        }
+        for i in 2: Rectangle {
+            x: 16px;
+            y: parent.height * (0.32 + i * 0.3) - 3px;
+            width: (parent.width - 32px) * (i == 0 ? 1 : 0.6);
+            height: 6px;
+            border-radius: 3px;
+            background: #ffffffd9;
+        }
+    }
+    Rectangle {
+        x: root.size * 0.86;
+        y: root.size * 0.12;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.avatar(3);
+    }
+    Rectangle {
+        x: root.size * 0.04;
+        y: root.size * 0.2;
+        width: 7px;
+        height: 7px;
+        border-radius: 3.5px;
+        background: Theme.avatar(4);
+    }
+}
+
+// A small link-like text button inside the feed ("Повторить", "Удалить").
+component InlineAction inherits Text {
+    callback clicked;
+    font-size: 12px;
+    font-weight: 600;
+    color: touch.has-hover ? Theme.text-strong : Theme.accent-text;
+    accessible-role: button;
+    accessible-label: self.text;
+    accessible-action-default => { root.clicked(); }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
 }
 
 component MessageItem inherits Rectangle {
@@ -375,82 +790,287 @@ component MessageItem inherits Rectangle {
     callback delete;
     callback retry;
     callback discard;
-    background: hover.has-hover ? (Theme.dark ? #2e3035 : #f2f3f5) : transparent;
+    property <bool> busy: root.msg.state == "отправляется";
+    property <length> day-height: root.msg.day != "" ? 40px : 0px;
     hover := TouchArea {
     VerticalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        padding-top: root.msg.grouped ? 1px : 8px;
-        padding-bottom: 1px;
-        if root.msg.has-reply: Text {
-            x: 48px;
-            text: "↱ " + root.msg.reply-author + ": " + root.msg.reply-text;
-            color: Theme.text-muted;
-            font-size: 12px;
-            overflow: elide;
-        }
-        HorizontalLayout {
-            spacing: 16px;
-            if !root.msg.grouped: Avatar {
-                name: root.msg.author;
-                show-presence: false;
+        padding-top: root.msg.grouped || root.msg.day != "" ? 0px : 10px;
+        if root.msg.day != "": HorizontalLayout {
+            height: root.day-height;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 10px;
+            Rectangle {
+                horizontal-stretch: 1;
+                Rectangle { height: 1px; background: Theme.separator; }
             }
-            if root.msg.grouped: Rectangle { width: 32px; }
+            Text {
+                text: root.msg.day;
+                color: Theme.text-muted;
+                font-size: 12px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                Rectangle { height: 1px; background: Theme.separator; }
+            }
+        }
+        Rectangle {
+            background: hover.has-hover ? Theme.msg-hover : (root.msg.failed ? Theme.danger-soft.transparentize(0.5) : transparent);
+            animate background { duration: 80ms; }
             VerticalLayout {
-                if !root.msg.grouped: HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-                    Text {
-                        text: root.msg.author;
-                        color: Theme.text-normal;
-                        font-weight: 600;
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: root.msg.grouped ? 1px : 4px;
+                padding-bottom: 2px;
+                // Reply preview with a connector into the avatar.
+                if root.msg.has-reply: HorizontalLayout {
+                    height: 22px;
+                    spacing: 6px;
+                    Rectangle {
+                        width: 52px;
+                        Path {
+                            x: 19px;
+                            y: 11px;
+                            width: 31px;
+                            height: 11px;
+                            viewbox-width: 31;
+                            viewbox-height: 11;
+                            commands: "M1 11 V7 a6 6 0 0 1 6 -6 H31";
+                            stroke: Theme.border-strong;
+                            stroke-width: 2px;
+                            fill: transparent;
+                        }
                     }
                     Text {
-                        text: root.msg.time;
-                        color: Theme.text-muted;
-                        font-size: 11px;
+                        text: root.msg.reply-author;
+                        color: Theme.text-normal;
+                        font-size: 12px;
+                        font-weight: 700;
                         vertical-alignment: center;
                     }
+                    Text {
+                        text: root.msg.reply-text;
+                        color: Theme.text-muted;
+                        font-size: 12px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
                 }
-                // Read-only text input: the text can be selected and copied (Ctrl+C).
-                body := TextInput {
-                    text: root.msg.deleted ? "сообщение удалено" : root.msg.body;
-                    read-only: true;
-                    wrap: word-wrap;
-                    color: root.msg.deleted ? Theme.text-muted : root.msg.failed ? #f23f43 : Theme.text-normal;
-                    single-line: false;
-                }
-                if root.msg.edited || root.msg.state != "" || root.msg.failed: Text {
-                    text: (root.msg.edited && !root.msg.deleted ? "(изменено) " : "")
-                        + (root.msg.failed ? "не отправлено: " + root.msg.error : root.msg.state);
-                    color: root.msg.failed ? #f23f43 : Theme.text-muted;
-                    font-size: 11px;
-                    wrap: word-wrap;
+                HorizontalLayout {
+                    spacing: 14px;
+                    if !root.msg.grouped: Avatar {
+                        size: 40px;
+                        initials: root.msg.initials;
+                        color-index: root.msg.avatar;
+                    }
+                    if root.msg.grouped: Rectangle {
+                        width: 40px;
+                        Text {
+                            y: 3px;
+                            width: parent.width;
+                            text: hover.has-hover ? root.msg.clock : "";
+                            color: Theme.text-faint;
+                            font-size: 10px;
+                            horizontal-alignment: right;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 1px;
+                        if !root.msg.grouped: HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Text {
+                                text: root.msg.author;
+                                color: root.msg.mine ? Theme.accent-text : Theme.text-strong;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.msg.time;
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.msg.deleted: HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.trash;
+                                size: 14px;
+                                tint: Theme.text-faint;
+                            }
+                            Text {
+                                text: "сообщение удалено";
+                                color: Theme.text-faint;
+                                font-italic: true;
+                            }
+                        }
+                        // Read-only text input: the text can be selected and copied (Ctrl+C).
+                        if !root.msg.deleted: TextInput {
+                            text: root.msg.body;
+                            read-only: true;
+                            wrap: word-wrap;
+                            color: root.busy ? Theme.text-muted : Theme.text-normal;
+                            selection-background-color: Theme.accent.with-alpha(0.45);
+                            single-line: false;
+                        }
+                        if (root.msg.edited && !root.msg.deleted) || (root.msg.state != "" && !root.msg.failed): HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            if root.msg.edited && !root.msg.deleted: Text {
+                                text: "(изменено)";
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                            }
+                            if root.msg.state != "" && !root.msg.failed && !root.busy: Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: root.msg.state == "прочитано" ? Icons.checks : Icons.check;
+                                size: 13px;
+                                tint: root.msg.state == "прочитано" ? Theme.accent-text : Theme.text-faint;
+                            }
+                            if root.msg.state != "" && !root.msg.failed: Text {
+                                text: root.msg.state;
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                            }
+                        }
+                        if root.msg.failed: HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            padding-top: 2px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.alert;
+                                size: 14px;
+                                tint: Theme.danger-text;
+                            }
+                            Text {
+                                text: "Не отправлено: " + root.msg.error;
+                                color: Theme.danger-text;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                            InlineAction {
+                                text: "Повторить";
+                                clicked => { root.retry(); }
+                            }
+                            Text {
+                                text: "·";
+                                color: Theme.text-faint;
+                                font-size: 12px;
+                            }
+                            InlineAction {
+                                text: "Убрать";
+                                clicked => { root.discard(); }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+    // Actions on hover: a floating toolbar card over the message's top edge.
+    toolbar := Rectangle {
+        visible: hover.has-hover && !root.msg.deleted && tools.preferred-width > 8px;
+        x: parent.width - self.width - 20px;
+        y: root.day-height + (root.msg.grouped ? -16px : -6px) + (root.msg.grouped || root.msg.day != "" ? 0px : 10px);
+        width: tools.preferred-width;
+        height: 34px;
+        Rectangle {
+            y: 2px;
+            x: -1px;
+            width: parent.width + 2px;
+            height: parent.height;
+            border-radius: 9px;
+            background: Theme.shadow.transparentize(0.5);
+        }
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border;
+        }
+        tools := HorizontalLayout {
+            padding: 1px;
+            spacing: 0px;
+            if root.msg.failed: IconButton { icon: Icons.retry; tooltip: "Отправить снова"; clicked => { root.retry(); } }
+            if root.msg.failed: IconButton { icon: Icons.close; tooltip: "Убрать"; danger: true; clicked => { root.discard(); } }
+            if !root.msg.failed && !root.busy && root.can-write: IconButton { icon: Icons.reply; tooltip: "Ответить"; clicked => { root.reply(); } }
+            if root.msg.mine && !root.msg.failed && !root.busy && root.can-write: IconButton { icon: Icons.edit; tooltip: "Изменить"; clicked => { root.edit(); } }
+            if root.msg.mine && !root.msg.failed && !root.busy: IconButton { icon: Icons.trash; tooltip: "Удалить для всех"; danger: true; clicked => { root.delete(); } }
+        }
     }
-    // Actions on hover (and on keyboard focus of the buttons).
-    if hover.has-hover && !root.msg.deleted: HorizontalLayout {
-        x: parent.width - self.preferred-width - 16px;
-        y: 0px;
-        height: 28px;
-        spacing: 2px;
-        if root.msg.failed: IconButton { label: "⟳"; tooltip: "Отправить снова"; clicked => { root.retry(); } }
-        if root.msg.failed: IconButton { label: "✕"; tooltip: "Убрать"; clicked => { root.discard(); } }
-        if !root.msg.failed && root.msg.state != "отправляется" && root.can-write: IconButton { label: "↩"; tooltip: "Ответить"; clicked => { root.reply(); } }
-        if root.msg.mine && !root.msg.failed && root.msg.state != "отправляется" && root.can-write: IconButton { label: "✎"; tooltip: "Изменить"; clicked => { root.edit(); } }
-        if root.msg.mine && !root.msg.failed && root.msg.state != "отправляется": IconButton { label: "🗑"; tooltip: "Удалить для всех"; clicked => { root.delete(); } }
     }
 }
 
-// The open direct conversation.
+// A group member in the members panel.
+component MemberListItem inherits Rectangle {
+    in property <GroupMemberRow> member;
+    in property <bool> can-remove;
+    callback remove;
+    height: 44px;
+    touch := TouchArea { }
+    Rectangle {
+        x: 8px;
+        width: parent.width - 16px;
+        border-radius: 8px;
+        background: touch.has-hover ? Theme.hover : transparent;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 4px;
+            spacing: 10px;
+            Avatar {
+                y: (parent.height - self.height) / 2;
+                size: 30px;
+                initials: root.member.initials;
+                color-index: root.member.avatar;
+            }
+            Text {
+                text: root.member.name;
+                color: Theme.text-normal;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.member.creator: Icon {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.crown;
+                size: 15px;
+                tint: Theme.warning;
+                accessible-role: text;
+                accessible-label: "создатель";
+            }
+            if root.can-remove: VerticalLayout {
+                alignment: center;
+                IconButton {
+                    size: 28px;
+                    icon-size: 16px;
+                    icon: Icons.close;
+                    tooltip: "Удалить из группы";
+                    danger: true;
+                    opacity: touch.has-hover ? 1 : 0;
+                    clicked => { root.remove(); }
+                }
+            }
+        }
+    }
+}
+
+// The open conversation.
 export component ChatPanel inherits Rectangle {
     in property <bool> group;
     in property <bool> can-manage;
     in property <[GroupMemberRow]> group-members;
     in property <string> call-label: "Позвонить";
+    in property <string> initials;
+    in property <int> avatar;
+    in property <bool> compact;
     callback call;
     callback rename-group(string);
     callback add-member(string);
@@ -490,108 +1110,384 @@ export component ChatPanel inherits Rectangle {
             root.scroll-pending = false;
         }
     }
-    background: Theme.bg-primary;
+    // Scrolled away from the newest messages (shows the "jump" button).
+    property <bool> away: list.content-y > list.visible-height - list.content-height + 120px;
+    background: Theme.bg-content;
     VerticalLayout {
+        // Header.
         Rectangle {
-            height: 48px;
+            height: 52px;
             HorizontalLayout {
                 padding-left: 16px;
-                padding-right: 8px;
-                spacing: 8px;
-                Text {
-                    text: (root.group ? "# " : "@ ") + root.title;
-                    color: Theme.text-normal;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                padding-right: 10px;
+                spacing: 10px;
+                Avatar {
+                    y: (parent.height - self.height) / 2;
+                    size: 30px;
+                    initials: root.initials;
+                    color-index: root.avatar;
+                    group: root.group;
+                    ring-color: Theme.bg-content;
+                    presence: root.group ? 0 : (root.online ? 1 : 2);
                 }
-                Text {
-                    text: root.group ? root.group-members.length + " участников" : "@" + root.username + (root.online ? " · в сети" : " · не в сети");
-                    color: Theme.text-muted;
-                    font-size: 12px;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
                     horizontal-stretch: 1;
-                    overflow: elide;
+                    Text {
+                        text: root.title;
+                        color: Theme.text-strong;
+                        font-size: 15px;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.group ? root.group-members.length + " участников" : "@" + root.username + (root.online ? " · в сети" : " · не в сети");
+                        color: !root.group && root.online ? Theme.success-text : Theme.text-muted;
+                        font-size: 12px;
+                        overflow: elide;
+                    }
                 }
-                Button { text: root.call-label; enabled: root.can-send; clicked => { root.call(); } }
-                if root.group: Button { text: "Участники"; clicked => { root.settings-open = !root.settings-open; } }
-                if !root.group: Button {
-                    text: root.blocked-by-me ? "Разблокировать" : "Заблокировать";
-                    clicked => { root.toggle-block(); }
+                if root.call-label != "Позвонить": VerticalLayout {
+                    alignment: center;
+                    AppButton {
+                        text: root.call-label;
+                        icon: Icons.phone;
+                        kind: ButtonKind.success;
+                        small: true;
+                        enabled: root.can-send;
+                        clicked => { root.call(); }
+                    }
                 }
-            }
-        }
-        Rectangle { height: 1px; background: Theme.separator; }
-        if root.group && root.settings-open: Rectangle {
-            height: root.can-manage ? 240px : 170px;
-            background: Theme.bg-secondary;
-            VerticalLayout {
-                padding: 8px; spacing: 6px;
-                if root.can-manage: HorizontalLayout {
-                    rename := LineEdit { text: root.title; placeholder-text: "Название группы"; }
-                    Button { text: "Переименовать"; clicked => { root.rename-group(rename.text); } }
-                    add := LineEdit { placeholder-text: "@username"; }
-                    Button { text: "Добавить"; clicked => { root.add-member(add.text); add.text = ""; } }
+                if root.call-label == "Позвонить": VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: Icons.phone;
+                        filled: true;
+                        tooltip: root.call-label;
+                        tooltip-below: true;
+                        enabled: root.can-send;
+                        clicked => { root.call(); }
+                    }
                 }
-                ListView {
-                    for member in root.group-members: HorizontalLayout {
-                        height: 30px;
-                        Text { text: member.name + (member.creator ? " · создатель" : ""); color: Theme.text-normal; vertical-alignment: center; }
-                        if root.can-manage && !member.creator: Button { text: "Удалить"; clicked => { root.remove-member(member.id); } }
+                if root.group: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: Icons.users;
+                        tooltip: root.settings-open ? "Скрыть участников" : "Участники";
+                        tooltip-below: true;
+                        active: root.settings-open;
+                        clicked => { root.settings-open = !root.settings-open; }
+                    }
+                }
+                if !root.group: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: Icons.ban;
+                        tooltip: root.blocked-by-me ? "Разблокировать" : "Заблокировать";
+                        tooltip-below: true;
+                        active: root.blocked-by-me;
+                        danger: true;
+                        clicked => { root.toggle-block(); }
                     }
                 }
             }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.separator;
+            }
         }
-        list := ListView {
+        HorizontalLayout {
             vertical-stretch: 1;
-            for m in root.messages: MessageItem {
-                msg: m;
-                can-write: root.can-send;
-                reply => { root.reply-to(m.key); }
-                edit => { root.edit-message(m.key); }
-                delete => { root.delete-message(m.key); }
-                retry => { root.retry(m.key); }
-                discard => { root.discard(m.key); }
-            }
-        }
-        if root.compose-mode != "": Rectangle {
-            height: 30px;
-            background: Theme.bg-secondary;
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 8px;
-                Text {
-                    text: root.compose-label;
-                    color: Theme.text-muted;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    overflow: elide;
+            // Feed and composer.
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Rectangle {
+                    vertical-stretch: 1;
+                    list := ListView {
+                        width: 100%;
+                        height: 100%;
+                        for m in root.messages: MessageItem {
+                            msg: m;
+                            can-write: root.can-send;
+                            reply => { root.reply-to(m.key); }
+                            edit => { root.edit-message(m.key); }
+                            delete => { root.delete-message(m.key); }
+                            retry => { root.retry(m.key); }
+                            discard => { root.discard(m.key); }
+                        }
+                    }
+                    if root.messages.length == 0: VerticalLayout {
+                        alignment: center;
+                        spacing: 10px;
+                        padding: 24px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Avatar {
+                                size: 72px;
+                                initials: root.initials;
+                                color-index: root.avatar;
+                                group: root.group;
+                            }
+                        }
+                        Text {
+                            text: root.title;
+                            color: Theme.text-strong;
+                            font-size: 22px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: root.group ? "Это начало группы. Напишите первое сообщение!" : "Это начало вашей переписки с @" + root.username + ".";
+                            color: Theme.text-muted;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if root.away && root.messages.length > 0: Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: parent.height - self.height - 10px;
+                        width: jump.preferred-width;
+                        height: 32px;
+                        border-radius: 16px;
+                        background: jump-touch.has-hover ? Theme.accent-hover : Theme.accent;
+                        animate background { duration: Theme.fast; }
+                        accessible-role: button;
+                        accessible-label: "К новым сообщениям";
+                        accessible-action-default => { root.scroll-pending = true; }
+                        jump-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.scroll-pending = true; }
+                        }
+                        jump := HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 14px;
+                            spacing: 6px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: Icons.arrow-down;
+                                size: 15px;
+                                tint: #ffffff;
+                            }
+                            Text {
+                                text: "К новым сообщениям";
+                                color: #ffffff;
+                                font-size: 12px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
-                IconButton { label: "✕"; tooltip: "Отменить"; clicked => { root.cancel-compose(); } }
-            }
-        }
-        Rectangle {
-            height: 56px;
-            HorizontalLayout {
-                padding: 10px;
-                padding-left: 16px;
-                padding-right: 16px;
-                if !root.can-send: Text {
-                    text: root.blocked-by-me
-                        ? "Вы заблокировали этого пользователя. Разблокируйте, чтобы написать."
-                        : "Вы не можете писать этому пользователю.";
-                    color: Theme.text-muted;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
+                // Composer.
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 18px;
+                    padding-top: 4px;
+                    if !root.can-send: Rectangle {
+                        border-radius: 10px;
+                        background: Theme.bg-input;
+                        HorizontalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+                            Icon {
+                                icon: Icons.lock;
+                                size: 18px;
+                                tint: Theme.text-faint;
+                            }
+                            Text {
+                                text: root.blocked-by-me
+                                    ? "Вы заблокировали этого пользователя. Разблокируйте, чтобы написать."
+                                    : "Вы не можете писать этому пользователю.";
+                                color: Theme.text-muted;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                    if root.can-send && root.compose-mode != "": Rectangle {
+                        height: 34px;
+                        border-top-left-radius: 10px;
+                        border-top-right-radius: 10px;
+                        background: Theme.dark ? #2b2d34 : #dfe1e6;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 4px;
+                            spacing: 8px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                icon: root.compose-mode == "edit" ? Icons.edit : Icons.reply;
+                                size: 15px;
+                                tint: Theme.accent-text;
+                            }
+                            Text {
+                                text: root.compose-label;
+                                color: Theme.text-muted;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    size: 26px;
+                                    icon-size: 15px;
+                                    icon: Icons.close;
+                                    tooltip: "Отменить (Esc)";
+                                    clicked => { root.cancel-compose(); }
+                                }
+                            }
+                        }
+                    }
+                    if root.can-send: Rectangle {
+                        border-radius: 10px;
+                        border-top-left-radius: root.compose-mode != "" ? 0px : 10px;
+                        border-top-right-radius: root.compose-mode != "" ? 0px : 10px;
+                        background: Theme.bg-input;
+                        border-width: 1px;
+                        border-color: input.has-focus ? Theme.border-strong : Theme.border;
+                        min-height: 46px;
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 6px;
+                            spacing: 8px;
+                            flick := Flickable {
+                                horizontal-stretch: 1;
+                                height: min(max(input.preferred-height, 22px), 160px) + 24px;
+                                content-height: max(self.height, input.preferred-height + 24px);
+                                interactive: false;
+                                Text {
+                                    x: 0px;
+                                    y: 12px;
+                                    width: flick.width;
+                                    text: root.compose-text == "" && input.preedit-text == ""
+                                        ? (root.compose-mode == "edit" ? "Изменить сообщение"
+                                            : root.group ? "Написать в «" + root.title + "»" : "Написать @" + root.username)
+                                        : "";
+                                    color: Theme.text-faint;
+                                    overflow: elide;
+                                    accessible-role: none;
+                                }
+                                input := TextInput {
+                                    x: 0px;
+                                    y: 12px;
+                                    width: flick.width;
+                                    height: max(self.preferred-height, 22px);
+                                    text <=> root.compose-text;
+                                    wrap: word-wrap;
+                                    single-line: false;
+                                    color: Theme.text-strong;
+                                    selection-background-color: Theme.accent.with-alpha(0.45);
+                                    accessible-placeholder-text: "Сообщение";
+                                    // Enter sends, Shift+Enter starts a new line, Esc cancels a reply/edit.
+                                    key-pressed(event) => {
+                                        if event.text == Key.Return && !event.modifiers.shift {
+                                            if self.text != "" {
+                                                root.send(self.text);
+                                            }
+                                            return accept;
+                                        }
+                                        if event.text == Key.Escape && root.compose-mode != "" {
+                                            root.cancel-compose();
+                                            return accept;
+                                        }
+                                        reject
+                                    }
+                                    edited => { root.draft-changed(self.text); }
+                                    // Keep the cursor's line visible inside the 160 px box.
+                                    cursor-position-changed(p) => {
+                                        if 12px + p.y + flick.content-y < 0px {
+                                            flick.content-y = min(0px, -p.y);
+                                        } else if 12px + p.y + 22px + flick.content-y > flick.height {
+                                            flick.content-y = max(flick.height - flick.content-height, flick.height - p.y - 46px);
+                                        }
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                padding-bottom: 7px;
+                                IconButton {
+                                    icon: Icons.send;
+                                    tooltip: "Отправить (Enter)";
+                                    tint: root.compose-text != "" ? Theme.accent-text : Theme.text-faint;
+                                    enabled: root.compose-text != "";
+                                    clicked => { root.send(root.compose-text); }
+                                }
+                            }
+                        }
+                    }
                 }
-                input := LineEdit {
-                    visible: root.can-send;
-                    text <=> root.compose-text;
-                    placeholder-text: root.compose-mode == "edit" ? "Изменить сообщение" : "Написать @" + root.username;
-                    edited(t) => { root.draft-changed(t); }
-                    accepted(t) => {
-                        if (t != "") {
-                            root.send(t);
+            }
+            // Group members (the "Участники" button).
+            if root.group && root.settings-open: Rectangle {
+                width: root.compact ? 210px : 248px;
+                background: Theme.bg-sidebar;
+                Rectangle {
+                    x: 0px;
+                    width: 1px;
+                    background: Theme.separator;
+                }
+                VerticalLayout {
+                    padding-top: 12px;
+                    spacing: 6px;
+                    if root.can-manage: VerticalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 6px;
+                        SectionHeader { text: "НАЗВАНИЕ"; }
+                        rename := Field {
+                            field-height: 32px;
+                            text: root.title;
+                            placeholder: "Название группы";
+                            accepted(t) => { root.rename-group(t); }
+                        }
+                        AppButton {
+                            text: "Переименовать";
+                            small: true;
+                            clicked => { root.rename-group(rename.text); }
+                        }
+                        SectionHeader {
+                            text: "ДОБАВИТЬ";
+                            height: 24px;
+                            vertical-alignment: bottom;
+                        }
+                        add := Field {
+                            field-height: 32px;
+                            icon: Icons.user-plus;
+                            placeholder: "@username";
+                            accepted(t) => {
+                                root.add-member(t);
+                                self.text = "";
+                            }
+                        }
+                        AppButton {
+                            text: "Добавить";
+                            small: true;
+                            kind: ButtonKind.primary;
+                            clicked => {
+                                root.add-member(add.text);
+                                add.text = "";
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        height: 30px;
+                        SectionHeader {
+                            text: "УЧАСТНИКИ — " + root.group-members.length;
+                            vertical-alignment: bottom;
+                        }
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for member in root.group-members: MemberListItem {
+                            member: member;
+                            can-remove: root.can-manage && !member.creator;
+                            remove => { root.remove-member(member.id); }
                         }
                     }
                 }

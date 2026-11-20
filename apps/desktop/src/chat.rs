@@ -23,6 +23,39 @@ pub fn server_label(http: &str) -> String {
     http.split("://").nth(1).unwrap_or(http).to_owned()
 }
 
+/// Number of avatar colours in the UI palette (`Theme.avatar-colors` in theme.slint).
+pub const AVATAR_COLORS: u32 = 8;
+
+/// Up to two letters for an avatar: the first letters of the first two words
+/// ("Алиса Петрова" → "АП"), else the first letter ("борис" → "Б"); digits count,
+/// punctuation such as '@' or '·' does not. "?" when nothing is left.
+pub fn initials(name: &str) -> String {
+    let words = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty());
+    let letters: String = words
+        .take(2)
+        .filter_map(|w| w.chars().next())
+        .flat_map(char::to_uppercase)
+        .collect();
+    if letters.is_empty() {
+        "?".to_owned()
+    } else {
+        letters
+    }
+}
+
+/// A stable avatar colour (index into the UI palette) for a user or conversation id:
+/// FNV-1a over the id's bytes, so the same person keeps their colour everywhere.
+pub fn avatar_index(id: &str) -> i32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in id.bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    (h % AVATAR_COLORS) as i32
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConversationRowData {
     pub id: String,
@@ -35,21 +68,46 @@ pub struct ConversationRowData {
     pub can_send: bool,
     pub blocked_by_me: bool,
     pub has_draft: bool,
+    pub group: bool,
+    pub initials: String,
+    pub avatar: i32,
+    /// When the last message came: "14:05", "вчера", "12.11" ("" without messages).
+    pub last_time: String,
 }
 
-pub fn conversation_rows(list: &[ConversationView]) -> Vec<ConversationRowData> {
+pub fn conversation_rows(
+    list: &[ConversationView],
+    utc_offset_s: i32,
+    now_ms: i64,
+) -> Vec<ConversationRowData> {
     list.iter()
-        .map(|c| ConversationRowData {
-            id: c.id.clone(),
-            title: c.title.clone(),
-            username: c.peer_username.clone(),
-            peer_id: c.peer_user_id.clone(),
-            online: c.online,
-            unread: c.unread.min(i64::from(i32::MAX)) as i32,
-            last_text: c.last_text.clone(),
-            can_send: c.can_send,
-            blocked_by_me: c.blocked_by_me,
-            has_draft: !c.draft.is_empty(),
+        .map(|c| {
+            let group = c.kind == turbo_pancake_protocol::v1::ConversationKind::Group;
+            ConversationRowData {
+                id: c.id.clone(),
+                title: c.title.clone(),
+                username: c.peer_username.clone(),
+                peer_id: c.peer_user_id.clone(),
+                online: c.online,
+                unread: c.unread.min(i64::from(i32::MAX)) as i32,
+                last_text: c.last_text.clone(),
+                can_send: c.can_send,
+                blocked_by_me: c.blocked_by_me,
+                has_draft: !c.draft.is_empty(),
+                group,
+                initials: initials(&c.title),
+                // A direct conversation takes the peer's colour (the same as in the feed).
+                avatar: avatar_index(if group || c.peer_user_id.is_empty() {
+                    &c.id
+                } else {
+                    &c.peer_user_id
+                }),
+                last_time: if c.last_at_ms > 0 {
+                    short_when(c.last_at_ms, utc_offset_s, now_ms)
+                } else {
+                    String::new()
+                },
+            }
         })
         .collect()
 }
@@ -70,6 +128,13 @@ pub struct MessageRowData {
     pub state: String,
     pub failed: bool,
     pub error: String,
+    pub initials: String,
+    pub avatar: i32,
+    /// "14:05": shown on hover next to grouped lines.
+    pub clock: String,
+    /// A date separator above this message ("Сегодня", "Вчера", "12 ноября 2026") when it
+    /// is the first one of its local day, else "".
+    pub day: String,
 }
 
 /// Messages from one author within this window are shown without a new header.
@@ -79,7 +144,11 @@ pub fn message_rows(list: &[MessageView], utc_offset_s: i32, now_ms: i64) -> Vec
     let mut out: Vec<MessageRowData> = Vec::with_capacity(list.len());
     for (i, m) in list.iter().enumerate() {
         let prev = i.checked_sub(1).map(|p| &list[p]);
+        let new_day = prev.is_none_or(|p| {
+            local_day(p.created_at_ms, utc_offset_s) != local_day(m.created_at_ms, utc_offset_s)
+        });
         let grouped = m.reply.is_none()
+            && !new_day
             && prev.is_some_and(|p| {
                 p.author_id == m.author_id && (m.created_at_ms - p.created_at_ms).abs() < GROUP_MS
             });
@@ -141,9 +210,74 @@ pub fn message_rows(list: &[MessageView], utc_offset_s: i32, now_ms: i64) -> Vec
             },
             failed,
             error,
+            initials: initials(&m.author_name),
+            avatar: avatar_index(&m.author_id),
+            clock: clock(m.created_at_ms, utc_offset_s),
+            day: if new_day {
+                day_label(m.created_at_ms, utc_offset_s, now_ms)
+            } else {
+                String::new()
+            },
         });
     }
     out
+}
+
+fn local_day(ms: i64, utc_offset_s: i32) -> i64 {
+    (ms.div_euclid(1000) + i64::from(utc_offset_s)).div_euclid(86_400)
+}
+
+/// "14:05" in local time.
+pub fn clock(ms: i64, utc_offset_s: i32) -> String {
+    let tod = (ms.div_euclid(1000) + i64::from(utc_offset_s)).rem_euclid(86_400);
+    format!("{:02}:{:02}", tod / 3600, (tod % 3600) / 60)
+}
+
+const MONTHS_GENITIVE: [&str; 12] = [
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+];
+
+/// A date separator: "Сегодня", "Вчера" or "12 ноября 2026" (local days).
+pub fn day_label(ms: i64, utc_offset_s: i32, now_ms: i64) -> String {
+    let (day, today) = (local_day(ms, utc_offset_s), local_day(now_ms, utc_offset_s));
+    match today - day {
+        0 => "Сегодня".to_owned(),
+        1 => "Вчера".to_owned(),
+        _ => {
+            let (y, m, d) = civil_from_days(day);
+            format!("{d} {} {y}", MONTHS_GENITIVE[(m - 1) as usize])
+        }
+    }
+}
+
+/// Last activity in the conversation list: "14:05" today, "вчера", else "12.11"
+/// ("12.11.25" in another year).
+pub fn short_when(ms: i64, utc_offset_s: i32, now_ms: i64) -> String {
+    let (day, today) = (local_day(ms, utc_offset_s), local_day(now_ms, utc_offset_s));
+    match today - day {
+        0 => clock(ms, utc_offset_s),
+        1 => "вчера".to_owned(),
+        _ => {
+            let (y, m, d) = civil_from_days(day);
+            let (ny, _, _) = civil_from_days(today);
+            if y == ny {
+                format!("{d:02}.{m:02}")
+            } else {
+                format!("{d:02}.{m:02}.{:02}", y.rem_euclid(100))
+            }
+        }
+    }
 }
 
 /// "сегодня в 14:05", "вчера в 09:30" or "03.11.2026 22:17" in local time.
@@ -285,6 +419,56 @@ mod tests {
             format_time(now - 3 * 86_400_000, 0, now),
             "01.11.2026 12:00"
         );
+    }
+
+    #[test]
+    fn avatars() {
+        assert_eq!(initials("Алиса Петрова"), "АП");
+        assert_eq!(initials("борис"), "Б");
+        assert_eq!(initials("  @ivan_k "), "IK");
+        assert_eq!(initials("Команда проекта · 2026"), "КП");
+        assert_eq!(initials("…"), "?");
+        assert_eq!(initials(""), "?");
+        let a = avatar_index("user-1");
+        assert_eq!(a, avatar_index("user-1"), "stable");
+        assert!((0..AVATAR_COLORS as i32).contains(&a));
+        let spread: std::collections::HashSet<i32> =
+            (0..64).map(|i| avatar_index(&format!("u{i}"))).collect();
+        assert!(spread.len() > 4, "ids spread over the palette");
+    }
+
+    #[test]
+    fn day_labels() {
+        // 2026-11-04 12:00:00 UTC.
+        let now = 1_793_793_600_000;
+        assert_eq!(day_label(now, 3 * 3600, now), "Сегодня");
+        assert_eq!(day_label(now - 86_400_000, 0, now), "Вчера");
+        assert_eq!(day_label(now - 3 * 86_400_000, 0, now), "1 ноября 2026");
+        assert_eq!(clock(now, 3 * 3600), "15:00");
+        assert_eq!(short_when(now, 0, now), "12:00");
+        assert_eq!(short_when(now - 86_400_000, 0, now), "вчера");
+        assert_eq!(short_when(now - 3 * 86_400_000, 0, now), "01.11");
+        assert_eq!(short_when(now - 400 * 86_400_000, 0, now), "30.09.25");
+    }
+
+    #[test]
+    fn day_separators_break_groups() {
+        // 23:58 and 00:01 local (UTC here): same author, 3 minutes apart.
+        let midnight = 1_793_750_400_000; // 2026-11-04 00:00 UTC
+        let list = vec![
+            msg("a", "bob", midnight - 120_000, MessageState::Received),
+            msg("b", "bob", midnight + 60_000, MessageState::Received),
+            msg("c", "bob", midnight + 120_000, MessageState::Received),
+        ];
+        let rows = message_rows(&list, 0, midnight + 3_600_000);
+        assert_eq!(rows[0].day, "Вчера");
+        assert_eq!(rows[1].day, "Сегодня");
+        assert!(!rows[1].grouped, "a new day starts a new header");
+        assert_eq!(rows[2].day, "");
+        assert!(rows[2].grouped);
+        assert_eq!(rows[2].clock, "00:02");
+        assert_eq!(rows[0].initials, "B");
+        assert_eq!(rows[0].avatar, avatar_index("bob"));
     }
 
     fn msg(key: &str, author: &str, at: i64, state: MessageState) -> MessageView {
