@@ -6,6 +6,9 @@
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayEvent {
+    /// The user clicked the last notification shown through [`TrayNotifier::balloon`];
+    /// carries the tag given there (what was notified).
+    NotificationClicked(u64),
     /// Left click on the icon or "Открыть" in its menu.
     Open,
     /// "Выйти" in the menu.
@@ -15,7 +18,7 @@ pub enum TrayEvent {
     Refresh,
 }
 
-pub use imp::{Tray, signal_running};
+pub use imp::{Tray, TrayNotifier, signal_running};
 
 /// Dispatches the messages already queued for this thread (tests without an event loop).
 pub fn pump_pending() {
@@ -28,24 +31,26 @@ mod imp {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
-    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
 
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Shell::{
-        NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-        NOTIFYICONDATAW, Shell_NotifyIconW,
+        NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_LARGE_ICON, NIIF_NOSOUND,
+        NIIF_RESPECT_QUIET_TIME, NIIF_USER, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+        Shell_NotifyIconW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW,
         DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW,
         GetCursorPos, GetSystemMetrics, GetWindowThreadProcessId, HICON, IMAGE_ICON,
         LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE, PeekMessageW,
-        PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON,
-        SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-        WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DISPLAYCHANGE,
-        WM_DWMCOMPOSITIONCHANGED, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST,
-        WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+        PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXICON, SM_CXSMICON, SM_CYICON,
+        SM_CYSMICON, SYSTEM_METRICS_INDEX, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
+        TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU,
+        WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL,
+        WM_POWERBROADCAST, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
     use windows::core::{PCWSTR, w};
 
@@ -59,6 +64,26 @@ mod imp {
     const PBT_APMRESUMESUSPEND: usize = 0x0007;
     const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
     const CLASS: PCWSTR = w!("turbo-pancake-tray");
+    /// Shell → us (lParam of `WM_TRAY`): the user clicked the balloon / toast.
+    const NIN_BALLOONUSERCLICK: u32 = 0x0400 + 5;
+
+    /// Tag of the newest balloon (a click reports it).
+    static LAST_TAG: AtomicU64 = AtomicU64::new(0);
+
+    /// Current tooltip per tray window, set from any thread; used when Explorer restarts.
+    fn tips() -> &'static Mutex<HashMap<isize, Vec<u16>>> {
+        static TIPS: OnceLock<Mutex<HashMap<isize, Vec<u16>>>> = OnceLock::new();
+        TIPS.get_or_init(Mutex::default)
+    }
+
+    /// Copies `text` into a fixed, zero-terminated UTF-16 field (truncated).
+    fn fill(dst: &mut [u16], text: &str) {
+        dst.fill(0);
+        let max = dst.len() - 1;
+        for (d, s) in dst.iter_mut().zip(text.encode_utf16().take(max)) {
+            *d = s;
+        }
+    }
 
     struct Entry {
         handler: Rc<dyn Fn(TrayEvent)>,
@@ -118,6 +143,10 @@ mod imp {
         if msg == WM_TRAY {
             match lp.0 as u32 {
                 WM_LBUTTONUP | WM_LBUTTONDBLCLK => dispatch(hwnd, TrayEvent::Open),
+                NIN_BALLOONUSERCLICK => dispatch(
+                    hwnd,
+                    TrayEvent::NotificationClicked(LAST_TAG.load(Ordering::Relaxed)),
+                ),
                 WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
                 _ => {}
             }
@@ -141,7 +170,16 @@ mod imp {
         if msg == taskbar_created() {
             dispatch(hwnd, TrayEvent::Refresh);
             let data = ENTRIES.with(|e| e.borrow().get(&(hwnd.0 as isize)).and_then(|e| e.data));
-            if let Some(d) = data {
+            if let Some(mut d) = data {
+                if let Some(tip) = tips()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&(hwnd.0 as isize))
+                {
+                    let n = tip.len().min(d.szTip.len() - 1);
+                    d.szTip.fill(0);
+                    d.szTip[..n].copy_from_slice(&tip[..n]);
+                }
                 let _ = unsafe { Shell_NotifyIconW(NIM_ADD, &d) };
             }
         }
@@ -151,6 +189,11 @@ mod imp {
     /// The executable's own icon (resource id 1, `crates/win-icon`) at the small-icon
     /// size of the current DPI, else a drawn fallback (test binaries have no resource).
     fn app_icon() -> Option<HICON> {
+        load_icon(SM_CXSMICON, SM_CYSMICON).or_else(make_icon)
+    }
+
+    /// The executable's icon at this size (no fallback).
+    fn load_icon(cx: SYSTEM_METRICS_INDEX, cy: SYSTEM_METRICS_INDEX) -> Option<HICON> {
         unsafe {
             let module = GetModuleHandleW(None).ok()?;
             let loaded = LoadImageW(
@@ -158,13 +201,13 @@ mod imp {
                 // MAKEINTRESOURCE(1): an integer resource id, not a real pointer.
                 PCWSTR(std::ptr::without_provenance::<u16>(1)),
                 IMAGE_ICON,
-                GetSystemMetrics(SM_CXSMICON),
-                GetSystemMetrics(SM_CYSMICON),
+                GetSystemMetrics(cx),
+                GetSystemMetrics(cy),
                 LR_DEFAULTCOLOR,
             );
             match loaded {
                 Ok(h) if !h.is_invalid() => Some(HICON(h.0)),
-                _ => make_icon(),
+                _ => None,
             }
         }
     }
@@ -238,7 +281,59 @@ mod imp {
     pub struct Tray {
         hwnd: HWND,
         icon: Option<HICON>,
+        /// The app icon at the large size, for notifications.
+        large_icon: Option<HICON>,
         shown: bool,
+    }
+
+    /// Shows notifications and changes the tooltip of a tray icon from any thread
+    /// (`Shell_NotifyIconW` only messages Explorer). Valid while its [`Tray`] lives.
+    #[derive(Clone, Copy, Debug)]
+    pub struct TrayNotifier {
+        hwnd: isize,
+        large_icon: isize,
+    }
+
+    impl TrayNotifier {
+        fn data(&self) -> NOTIFYICONDATAW {
+            NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: HWND(self.hwnd as *mut _),
+                uID: 1,
+                ..Default::default()
+            }
+        }
+
+        /// A notification at the icon (a toast on Windows 10/11) with the app's large
+        /// icon, without the system sound (the app plays its own) and held back during
+        /// quiet hours / Focus Assist. A click reports [`TrayEvent::NotificationClicked`]
+        /// with `tag`.
+        pub fn balloon(&self, title: &str, text: &str, tag: u64) {
+            LAST_TAG.store(tag, Ordering::Relaxed);
+            let mut d = self.data();
+            d.uFlags = NIF_INFO;
+            d.dwInfoFlags = NIIF_NOSOUND | NIIF_RESPECT_QUIET_TIME;
+            if self.large_icon != 0 {
+                d.dwInfoFlags |= NIIF_USER | NIIF_LARGE_ICON;
+                d.hBalloonIcon = HICON(self.large_icon as *mut _);
+            } else {
+                d.dwInfoFlags |= NIIF_INFO;
+            }
+            fill(&mut d.szInfoTitle, title);
+            fill(&mut d.szInfo, text);
+            let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &d) };
+        }
+
+        pub fn set_tooltip(&self, text: &str) {
+            let mut d = self.data();
+            d.uFlags = NIF_TIP;
+            fill(&mut d.szTip, text);
+            tips()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(self.hwnd, text.encode_utf16().collect());
+            let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &d) };
+        }
     }
 
     impl Tray {
@@ -285,6 +380,7 @@ mod imp {
                 let mut tray = Tray {
                     hwnd,
                     icon: None,
+                    large_icon: None,
                     shown: false,
                 };
                 let mut data = None;
@@ -303,6 +399,9 @@ mod imp {
                         *dst = src;
                     }
                     tray.shown = Shell_NotifyIconW(NIM_ADD, &d).as_bool();
+                    if tray.shown {
+                        tray.large_icon = load_icon(SM_CXICON, SM_CYICON);
+                    }
                     data = Some(d);
                 }
                 ENTRIES.with(|e| {
@@ -347,6 +446,14 @@ mod imp {
             let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &d) };
         }
 
+        /// Sends notifications / sets the tooltip from any thread; `None` without an icon.
+        pub fn notifier(&self) -> Option<TrayNotifier> {
+            self.shown.then(|| TrayNotifier {
+                hwnd: self.hwnd.0 as isize,
+                large_icon: self.large_icon.map_or(0, |i| i.0 as isize),
+            })
+        }
+
         /// Queues the message a click on the icon (`Open`) or on the menu's "Выйти"
         /// (`Exit`) would send; it is handled by the message loop like the real one.
         pub fn post(&self, event: TrayEvent) {
@@ -354,6 +461,10 @@ mod imp {
                 TrayEvent::Open => (WM_TRAY, 0, WM_LBUTTONUP as isize),
                 TrayEvent::Exit => (WM_COMMAND, ID_EXIT, 0),
                 TrayEvent::Refresh => (WM_DISPLAYCHANGE, 0, 0),
+                TrayEvent::NotificationClicked(tag) => {
+                    LAST_TAG.store(tag, Ordering::Relaxed);
+                    (WM_TRAY, 0, NIN_BALLOONUSERCLICK as isize)
+                }
             };
             let _ = unsafe { PostMessageW(Some(self.hwnd), msg, WPARAM(wp), LPARAM(lp)) };
         }
@@ -362,6 +473,10 @@ mod imp {
     impl Drop for Tray {
         fn drop(&mut self) {
             let entry = ENTRIES.with(|e| e.borrow_mut().remove(&(self.hwnd.0 as isize)));
+            tips()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&(self.hwnd.0 as isize));
             unsafe {
                 if self.shown
                     && let Some(d) = entry.and_then(|e| e.data)
@@ -369,7 +484,7 @@ mod imp {
                     let _ = Shell_NotifyIconW(NIM_DELETE, &d);
                 }
                 let _ = DestroyWindow(self.hwnd);
-                if let Some(icon) = self.icon {
+                for icon in [self.icon, self.large_icon].into_iter().flatten() {
                     let _ = DestroyIcon(icon);
                 }
             }
@@ -394,6 +509,14 @@ mod imp {
     /// No tray before S9 (ADR 0012): closing the window exits.
     pub struct Tray;
 
+    #[derive(Clone, Copy, Debug)]
+    pub struct TrayNotifier;
+
+    impl TrayNotifier {
+        pub fn balloon(&self, _title: &str, _text: &str, _tag: u64) {}
+        pub fn set_tooltip(&self, _text: &str) {}
+    }
+
     impl Tray {
         pub fn new(
             _tooltip: &str,
@@ -407,6 +530,9 @@ mod imp {
             false
         }
         pub fn post(&self, _event: TrayEvent) {}
+        pub fn notifier(&self) -> Option<TrayNotifier> {
+            None
+        }
         pub fn notify(&self, _title: &str, _text: &str) {}
     }
 
@@ -435,16 +561,24 @@ mod tests {
         assert!(!tray.icon_shown());
         tray.post(TrayEvent::Open);
         tray.post(TrayEvent::Refresh);
+        tray.post(TrayEvent::NotificationClicked(7));
         tray.post(TrayEvent::Exit);
         pump_pending();
         assert_eq!(
             *seen.borrow(),
-            [TrayEvent::Open, TrayEvent::Refresh, TrayEvent::Exit]
+            [
+                TrayEvent::Open,
+                TrayEvent::Refresh,
+                TrayEvent::NotificationClicked(7),
+                TrayEvent::Exit
+            ]
         );
+        // No icon, no notifications: nothing can appear in the notification area.
+        assert!(tray.notifier().is_none());
         drop(tray);
         // A dropped tray's window is gone: nothing is delivered any more.
         pump_pending();
-        assert_eq!(seen.borrow().len(), 3);
+        assert_eq!(seen.borrow().len(), 4);
     }
 
     #[test]

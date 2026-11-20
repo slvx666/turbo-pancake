@@ -18,6 +18,12 @@ pub struct AppSettings {
     pub ui_scale: u32,
     /// The one-time notification "the app keeps running in the tray" was shown.
     pub tray_hint_shown: bool,
+    /// Desktop notifications for messages and calls while the window is not in front.
+    pub notifications: bool,
+    /// UI sounds (messages, ringtone, call cues).
+    pub sounds: bool,
+    /// Volume of the UI sounds, percent (0–100).
+    pub sound_volume: u8,
 }
 
 impl Default for AppSettings {
@@ -27,6 +33,9 @@ impl Default for AppSettings {
             dark_theme: true,
             ui_scale: 100,
             tray_hint_shown: false,
+            notifications: true,
+            sounds: true,
+            sound_volume: 70,
         }
     }
 }
@@ -57,6 +66,13 @@ impl AppSettings {
                 "close_to_tray" => s.close_to_tray = value.unwrap_or(s.close_to_tray),
                 "dark_theme" => s.dark_theme = value.unwrap_or(s.dark_theme),
                 "tray_hint_shown" => s.tray_hint_shown = value.unwrap_or(s.tray_hint_shown),
+                "notifications" => s.notifications = value.unwrap_or(s.notifications),
+                "sounds" => s.sounds = value.unwrap_or(s.sounds),
+                "sound_volume" => {
+                    if let Ok(v) = raw.parse::<u32>() {
+                        s.sound_volume = v.min(100) as u8;
+                    }
+                }
                 _ => {}
             }
         }
@@ -66,8 +82,14 @@ impl AppSettings {
     pub fn to_text(&self) -> String {
         format!(
             "# turbo-pancake settings\nclose_to_tray={}\ndark_theme={}\nui_scale={}\n\
-             tray_hint_shown={}\n",
-            self.close_to_tray, self.dark_theme, self.ui_scale, self.tray_hint_shown
+             tray_hint_shown={}\nnotifications={}\nsounds={}\nsound_volume={}\n",
+            self.close_to_tray,
+            self.dark_theme,
+            self.ui_scale,
+            self.tray_hint_shown,
+            self.notifications,
+            self.sounds,
+            self.sound_volume
         )
     }
 
@@ -110,9 +132,23 @@ mod tests {
             dark_theme: false,
             ui_scale: 150,
             tray_hint_shown: true,
+            notifications: false,
+            sounds: false,
+            sound_volume: 35,
         };
         assert_eq!(AppSettings::parse(&s.to_text()), s);
         assert_eq!(AppSettings::parse(""), AppSettings::default());
+    }
+
+    #[test]
+    fn files_without_alert_keys_get_the_defaults() {
+        // A file written before notifications existed.
+        let s = AppSettings::parse("close_to_tray=false\ndark_theme=true\nui_scale=125\n");
+        assert!(s.notifications && s.sounds);
+        assert_eq!(s.sound_volume, 70);
+        assert_eq!(AppSettings::parse("sound_volume=400").sound_volume, 100);
+        assert_eq!(AppSettings::parse("sound_volume=-3").sound_volume, 70);
+        assert!(!AppSettings::parse("sounds=off").sounds);
     }
 
     #[test]
